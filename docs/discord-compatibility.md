@@ -577,8 +577,10 @@ The standard build adds macOS 14+ ScreenCaptureKit and Windows Graphics Capture 
 Linux extension (September 15, 2026): the existing H.264/DAVE sender now accepts
 portal-approved PipeWire screen/window capture. It uses the system picker, an ephemeral
 portal session. Outgoing camera/screen encoding now uses native FFmpeg with
-NVENC/VideoToolbox and FFmpeg OpenH264 fallback; Media Foundation and VA-API are
-excluded from encoding. The pipeline has one source
+NVENC/AMD AMF/Intel Quick Sync/VideoToolbox and FFmpeg OpenH264 fallback. Media
+Foundation and the VA-API encoder are excluded. Quick Sync on Linux uses the iHD
+VA driver interface for its device. These hardware paths and actual runtime
+availability remain unverified locally. The pipeline has one source
 queue (at most 7680×4320 / 132,710,400 bytes per buffer; PipeWire negotiates 2–4 buffers), one raw frame per encode/preview
 branch (at most 33,177,600 bytes each), one raw appsink frame per branch
 (screen ≤33,177,600 bytes; preview ≤925,696 bytes including padding), and the existing

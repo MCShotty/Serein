@@ -37,9 +37,13 @@ Screen sharing additionally requires the Base plugins and the PipeWire source pl
 these are native package dependencies (`gstreamer1.0-pipewire` on Debian/Ubuntu,
 `pipewire-gstreamer` on Fedora, `gstreamer-plugin-pipewire` on openSUSE and
 `gst-plugin-pipewire` on Arch). Use a ScreenCast-capable portal backend matching your
-desktop; the GTK fallback alone does not provide screen capture. VA-API/NVENC and OpenGL
-plugins plus compatible drivers enable hardware encoding; otherwise Serein uses bundled
-OpenH264. Hardware plugin names/availability vary by distribution and repository.
+desktop; the GTK fallback alone does not provide screen capture.
+Camera and screen encoders use bundled
+FFmpeg with NVENC, AMF, Quick Sync and OpenH264 fallback. Compatible NVIDIA/AMD/Intel
+GPU runtimes must be installed for hardware encoding. Linux x64 Quick Sync links
+libva/libva-drm/libdrm for device setup; native package tools derive these runtime
+dependencies from the private FFmpeg libraries. The `h264_vaapi` encoder remains
+disabled. See [the pinned encoder recipe](../ffmpeg/README.md).
 Stream audio additionally links the system `libpulse` client library and uses individual
 application monitors on PulseAudio or PipeWire-Pulse. Serein's playback is excluded;
 no virtual device or output rerouting is required. Native package tools derive the
@@ -59,6 +63,8 @@ include voice. Download the Ubuntu asset ending in `_arm64.deb` for ARM64;
 are not built by this workflow. Native ARM desktop behavior remains unverified.
 
 ```sh
+python3 scripts/build-ffmpeg.py
+export FFMPEG_DIR="$PWD/target/ffmpeg/prefix"
 cargo xtask package --format deb    # Debian/Ubuntu; also the default Linux format
 cargo xtask package --format rpm    # Fedora or openSUSE
 cargo xtask package --format arch   # Arch; makepkg must run without root

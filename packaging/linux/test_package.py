@@ -40,8 +40,12 @@ class NativePackageTest(unittest.TestCase):
                             "-l:libavcodec-serein.so.61"], check=True)
             (staged / "ffmpeg-source/source").mkdir(parents=True)
             for name in ("build.json", "configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE",
-                         "nv-codec-headers-README", "source/ffmpeg-7.1.5.tar.xz", "source/nv-codec-headers-12.2.72.0.tar.gz"):
+                         "nv-codec-headers-README", "source/ffmpeg-7.1.5.tar.xz", "source/openh264-2.6.0-source.tar.bz2",
+                         "source/nv-codec-headers-12.2.72.0.tar.gz", "AMF-LICENSE", "source/AMF-1.4.36-headers.tar",
+                         "oneVPL-LICENSE", "oneVPL-third-party-programs.txt", "source/libvpl-2.14.0.tar.gz"):
                 (staged / "ffmpeg-source" / name).write_text("synthetic FFmpeg provenance\n")
+            (staged / "ffmpeg-source/source/AMF-1.4.36.tar.gz").write_text("full SDK must not ship\n")
+            (staged / "lib/libvpl.so.2").write_text("dynamic dispatcher must not ship\n")
             for name in ["README.md", "LICENSE-MIT", "LICENSE-APACHE", "THIRD_PARTY_NOTICES.md"]:
                 (staged / name).write_text("synthetic package fixture\n")
             (staged / "docs").mkdir()
@@ -107,6 +111,11 @@ class NativePackageTest(unittest.TestCase):
             self.assertIn("licenses/voice/", listing)
             self.assertIn("usr/lib/serein/libavcodec-serein.so.61", listing)
             self.assertIn("ffmpeg-source/source/ffmpeg-7.1.5.tar.xz", listing)
+            for name in ("openh264-2.6.0-source.tar.bz2", "AMF-1.4.36-headers.tar", "libvpl-2.14.0.tar.gz",
+                         "AMF-LICENSE", "oneVPL-LICENSE", "oneVPL-third-party-programs.txt"):
+                self.assertIn(name, listing)
+            self.assertNotIn("AMF-1.4.36.tar.gz", listing)
+            self.assertNotIn("libvpl.so", listing)
             depends = packaging.output("dpkg-deb", "--field", str(artifact), "Depends")
             self.assertNotIn("libavcodec", depends)
             self.assertNotIn("libopenh264", depends)

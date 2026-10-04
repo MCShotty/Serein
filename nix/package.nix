@@ -42,6 +42,8 @@
     python3,
     nasm,
     patchelf,
+    libva,
+    libdrm,
 }: let
     inherit (stdenv.hostPlatform) isLinux isDarwin;
 
@@ -62,6 +64,17 @@
             name = "nv-codec-headers-12.2.72.0.tar.gz";
             sha256 = "dbeaec433d93b850714760282f1d0992b1254fc3b5a6cb7d76fc1340a1e47563";
         })
+        (fetchurl {
+            url = "https://codeload.github.com/GPUOpen-LibrariesAndSDKs/AMF/tar.gz/refs/tags/v1.4.36";
+            name = "AMF-1.4.36.tar.gz";
+            sha256 = "240a42033babc7920e5476506d5ac0c5628f67908833168e746406808d0ef146";
+        })
+    ] ++ lib.optionals (isLinux && stdenv.hostPlatform.isx86_64) [
+        (fetchurl {
+            url = "https://codeload.github.com/intel/libvpl/tar.gz/refs/tags/v2.14.0";
+            name = "libvpl-2.14.0.tar.gz";
+            sha256 = "7c6bff1c1708d910032c2e6c44998ffff3f5fdbf06b00972bc48bf2dd9e5ac06";
+        })
     ];
 
     # Reuse the same small, LGPL-only recipe as official native packages. Never
@@ -70,8 +83,10 @@
         pname = "serein-ffmpeg";
         version = "7.1.5";
         dontUnpack = true;
-        nativeBuildInputs = [python3 pkg-config nasm] ++ lib.optionals isLinux [patchelf];
-        buildInputs = lib.optionals isDarwin [apple-sdk_15];
+        nativeBuildInputs = [python3 pkg-config nasm] ++ lib.optionals isLinux [cmake patchelf];
+        buildInputs = lib.optionals isDarwin [apple-sdk_15]
+            ++ lib.optionals (isLinux && stdenv.hostPlatform.isx86_64) [libva libdrm];
+        dontUseCmakeConfigure = true;
         installPhase = ''
             runHook preInstall
             mkdir sources

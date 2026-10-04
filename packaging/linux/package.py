@@ -55,10 +55,17 @@ def stage_payload(root, stage, prefix="usr"):
     for name in ("build.json", "configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE"):
         copy(root / "ffmpeg-source" / name, doc / "ffmpeg-source" / name)
     copy(root / "ffmpeg-source/source/ffmpeg-7.1.5.tar.xz", doc / "ffmpeg-source/source/ffmpeg-7.1.5.tar.xz")
+    copy(root / "ffmpeg-source/source/openh264-2.6.0-source.tar.bz2", doc / "ffmpeg-source/source/openh264-2.6.0-source.tar.bz2")
     if (root / "ffmpeg-source/nv-codec-headers-README").is_file():
         copy(root / "ffmpeg-source/nv-codec-headers-README", doc / "ffmpeg-source/nv-codec-headers-README")
         copy(root / "ffmpeg-source/source/nv-codec-headers-12.2.72.0.tar.gz",
              doc / "ffmpeg-source/source/nv-codec-headers-12.2.72.0.tar.gz")
+    if (root / "ffmpeg-source/AMF-LICENSE").is_file():
+        copy(root / "ffmpeg-source/AMF-LICENSE", doc / "ffmpeg-source/AMF-LICENSE")
+        copy(root / "ffmpeg-source/source/AMF-1.4.36-headers.tar", doc / "ffmpeg-source/source/AMF-1.4.36-headers.tar")
+    if (root / "ffmpeg-source/oneVPL-LICENSE").is_file():
+        for name in ("oneVPL-LICENSE", "oneVPL-third-party-programs.txt", "source/libvpl-2.14.0.tar.gz"):
+            copy(root / "ffmpeg-source" / name, doc / "ffmpeg-source" / name)
     desktop = stage / prefix / "share/applications/cz.viceverse.serein.desktop"
     desktop.parent.mkdir(parents=True)
     desktop.write_text(Path("packaging/linux/serein.desktop").read_text(), encoding="utf-8")

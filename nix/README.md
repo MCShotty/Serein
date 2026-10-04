@@ -19,6 +19,11 @@ source recipe as native releases, as a separate Nix store dependency. FFmpeg's
 complete corresponding source and build recipe ship under `ffmpeg-source` in
 that documentation directory. `nix develop` sets `FFMPEG_DIR` to this build.
 No system GPL FFmpeg is linked into this package.
+Linux x64 includes pinned AMF headers and a static oneVPL dispatcher. libva/libdrm
+are Nix dependencies for Quick Sync device setup, while compatible Intel/AMD/NVIDIA
+GPU runtimes remain system-provided. The `h264_vaapi` encoder is excluded; device
+initialization failures select OpenH264. The package retains exact vendor source
+and notices for the same offline rebuild recipe as native distributions.
 
 The package version is the Cargo workspace version, as with `cargo build`. Nix
 installations are updated through Nix; the in-app updater does not replace store

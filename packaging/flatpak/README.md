@@ -6,9 +6,15 @@ native media/build libraries. The toolchain is copied into build-only sources;
 no moving Rust SDK extension or compiler is shipped in the application.
 The preceding FFmpeg module builds checksum-pinned LGPL-only avcodec/avutil and
 OpenH264 sources without network access; shared libraries, the build recipe and
-complete FFmpeg corresponding source ship with the application. NVENC requires
-accessible NVIDIA drivers; otherwise it falls back to OpenH264 under the existing
-sandbox permissions. See [the encoder recipe](../ffmpeg/README.md).
+complete FFmpeg corresponding source ship with the application. The module also
+uses pinned AMF public headers and a static oneVPL dispatcher for x64 Quick Sync.
+GNOME SDK 49 must provide CMake and the libva/libva-drm/libdrm development files;
+the module checks the latter before its offline build. Target-specific oneVPL
+source downloads remain restricted to x86_64 in the prepared manifest.
+Hardware encoding requires accessible compatible NVIDIA/AMD/Intel GPU runtimes;
+failed device setup falls back to OpenH264 under the existing sandbox permissions.
+Quick Sync uses VA-API only for Intel's low-level driver device interface; the
+`h264_vaapi` encoder stays disabled. See [the encoder recipe](../ffmpeg/README.md).
 
 ```sh
 flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo

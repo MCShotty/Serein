@@ -133,6 +133,8 @@ jobs:
         run: '"$env:FFMPEG_DIR/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append'
       - name: Offline checks
         run: cargo xtask check
+      - name: FFmpeg native libraries and packaging regression (offline)
+        run: python packaging/ffmpeg/test_bundle.py
       - uses: oven-sh/setup-bun@v2.2.0
         with:
           bun-version: 1.4.2

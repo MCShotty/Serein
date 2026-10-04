@@ -471,20 +471,11 @@ impl ScreenEncoder {
 		if !software_rate_change(self.bitrate, bitrate) {
 			return Ok(false);
 		}
-		let hardware = self
-			.encoder
-			.as_ref()
-			.is_some_and(|encoder| encoder.hardware());
-		self.encoder = None;
 		self.diagnostics.set(None);
 		let config = Self::config(self.settings, bitrate);
-		let encoder = if hardware {
-			crate::video_encode::Encoder::new(config)?
-		} else {
-			crate::video_encode::Encoder::software(config)?
-		};
+		let encoder = self.encoder.as_mut().ok_or("Screen encoder stopped")?;
+		encoder.reconfigure(config)?;
 		self.diagnostics.set(Some(encoder.hardware()));
-		self.encoder = Some(encoder);
 		self.bitrate = bitrate;
 		Ok(true)
 	}

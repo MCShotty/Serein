@@ -444,8 +444,9 @@ Source discovery alone does not start streaming. Closing or minimizing a selecte
 Linux uses the desktop ScreenCast portal and PipeWire. Share Screen opens the system
 screen/window picker after the quality dialog; source discovery never opens that picker.
 The default is 720p30. GStreamer captures bounded raw BGRA pictures; the shared
-FFmpeg encoder tries NVENC, then FFmpeg OpenH264 software encoding. VA-API and
-Media Foundation are excluded from outgoing encoding. The call stage identifies
+FFmpeg encoder tries NVENC, AMD AMF and Intel Quick Sync, then FFmpeg OpenH264
+software encoding. The VA-API and Media Foundation encoders are excluded; Intel
+Quick Sync uses the Linux VA driver interface underneath its own encoder. The call stage identifies
 the active FFmpeg encoder and software fallback.
 On Niri, portal frames receive pipeline running-time timestamps before frame-rate
 filtering. This handles Niri 26.04's constant presentation timestamps, which otherwise
@@ -462,7 +463,8 @@ target/debug/examples/linux_screen --niri-timestamps
 ```
 
 Outgoing encoding uses CPU BGRA readback, bounded scaling and I420 conversion.
-NVENC uploads that I420 picture; this path does not provide GPU-only scaling or
+NVENC and AMF accept that I420 picture; Quick Sync receives bounded NV12 packing
+from the same input before upload. This path does not provide GPU-only scaling or
 zero-copy capture. Capture/conversion cost requires native measurement. Local preview
 is capped at 640×360/10 fps and suspended when minimized or viewing another channel.
 The system picker requires a ScreenCast-capable portal backend. Native X11 sessions
@@ -508,7 +510,7 @@ It compiles the actual portal/pipeline/worker modules on Linux with GStreamer,
 checks pre-cancellation without D-Bus, and exercises synthetic preview, the secure-readiness
 gate, stereo audio, bounded slow-consumer behavior, oversized-buffer rejection and software
 H.264. It never captures a desktop or opens an audio device. Native Linux portal interaction,
-NVENC, native performance and Discord viewing remain unverified.
+NVENC/AMF/Quick Sync, native performance and Discord viewing remain unverified.
 Windows process exclusion, Linux application selection and actual remote sound still
 require owner-controlled tests; synthetic samples do not establish those outcomes.
 Use two clients with headphones, enable audio on the sender, play another app and speak
@@ -522,12 +524,31 @@ The native demo (`cargo run --locked -p serein -- --demo --demo-voice`) exposes 
 ### Shared FFmpeg encoding
 
 Camera and screen sharing use native FFmpeg 7.1.5 `libavcodec`/`libavutil` contexts
-on their media worker, without a CLI process. Windows/Linux try `h264_nvenc`;
-macOS tries `h264_videotoolbox` with hardware required. Initialization, frame,
-packet-limit or bounded output-delay failure releases hardware and switches to
-`libopenh264`. Windows ARM64 has software encoding only. A software fallback is
-retained across bitrate restarts. No Media Foundation, VA-API, x264 or automatic
-encoder selection is used. Incoming decoding and native capture APIs are separate.
+on their media worker, without a CLI process. Windows/Linux try `h264_nvenc`,
+`h264_amf` (AMD) and `h264_qsv` (Intel Quick Sync), in that order, before
+`libopenh264`. macOS tries `h264_videotoolbox` with hardware required.
+Initialization, frame, packet-limit or bounded output-delay failure releases the
+failed backend before trying the next. Bitrate restarts retain the active backend
+and do not retry earlier failed GPUs; software fallback stays software.
+Windows ARM64 uses software encoding. No Media Foundation, `h264_vaapi`, x264 or
+automatic encoder selection is used. Incoming decoding and native capture APIs
+are separate.
+
+AMF needs the installed AMD runtime: D3D11 on Windows, Vulkan through AMF on
+Linux. Quick Sync uses the statically linked oneVPL dispatcher and an installed
+Intel GPU runtime, with an Intel-selected D3D11 device on Windows or an iHD VA
+driver device on Linux. Linux VA-API is enabled only as that Quick Sync device
+interface; its encoder remains disabled. Packages do not install or redistribute
+GPU drivers. Flatpak needs the matching runtime inside its sandbox; host driver
+installation alone does not establish availability. Missing runtimes/devices fall
+through to another backend or software. Actual hardware remains unverified locally.
+
+Quick Sync receives NV12 from the same bounded I420 input. FFmpeg 7.1's AMF
+wrapper does not forward forced picture types, so Main-profile screen encoding
+reopens AMF after an explicit IDR request once output has been produced. Pending
+startup output is allowed to drain; camera GOP 1 does not reopen per frame.
+This reset cost needs native-device measurement. Native SDK startup, polling and
+retirement can still block; the packet queue limit is not a driver-call deadline.
 
 The pinned FFmpeg OpenH264 wrapper uses camera-realtime/low-complexity tuning
 for software fallback, including screen sharing; it exposes no screen-content
@@ -586,11 +607,13 @@ V4L2 interval before ranking it and reapplies the selected interval after the fi
 format change. Drivers without interval metadata rank last at the same resolution.
 Capture is converted to 640×480, capped at 15 encoded frames/second, encoded on a worker with a
 600 kbit/s target (not a measured bandwidth guarantee). The worker uses the shared
-FFmpeg NVENC/VideoToolbox encoder and FFmpeg OpenH264 fallback described above.
-A hardware failure switches the remaining capture to software. Every path requests the
-Baseline profile and codes each picture as an IDR, so the wire format is unchanged; a
-hardware encoder whose output is not independently decodable is rejected in favor of the
-software one. macOS retains one pending
+FFmpeg NVENC/AMF/Quick Sync/VideoToolbox encoder and FFmpeg OpenH264 fallback
+described above.
+A hardware failure advances through the remaining hardware backends, then software.
+Every path requests the
+Baseline profile and codes each picture as an IDR, so the wire format is unchanged.
+Output that is not independently decodable advances to the remaining backends,
+ending with software. macOS retains one pending
 BGRA frame (1,228,800 bytes). Windows validates each native buffer against a 3,194,880-byte
 ceiling (including row padding), requests one source buffer and queues at most one
 921,600-byte RGB frame. Linux requests two mapped buffers, accepts at most four of

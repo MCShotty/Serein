@@ -1,5 +1,9 @@
 # FFmpeg outgoing video verification
 
+This records the initial migration. The subsequent
+[AMD/Intel extension](../ffmpeg-vendor-encoding/README.md) retains its own baseline,
+final native recipe and measurements.
+
 Baseline: `6313e271e9c34b39069eb20787afb1476741b21c`, initially clean `main`.
 The implementation uses the pinned Rust 1.98.1 toolchain and locked dependencies.
 No UI layout or interaction change; the active encoder diagnostic label now names
@@ -15,8 +19,10 @@ export FFMPEG_DIR="$PWD/target/ffmpeg/prefix"
 cargo xtask check
 cargo xtask package
 python3 packaging/ffmpeg/test_bundle.py
-cargo run --locked -p discord-voice --example linux_screen
-cargo run --locked -p discord-voice --example linux_screen -- --niri-timestamps
+cargo build --locked -p discord-voice -p platform \
+  --features winit/x11,winit/wayland --example linux_screen
+target/debug/examples/linux_screen
+target/debug/examples/linux_screen --niri-timestamps
 ```
 
 The Linux example uses synthetic video/audio and pre-cancelled portal requests.

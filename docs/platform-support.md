@@ -89,11 +89,13 @@ export FFMPEG_DIR="$PWD/target/ffmpeg/prefix"
 cargo xtask package
 ```
 
-The source builder needs Python 3, Make, a C/C++ compiler, pkg-config and NASM
-(x86_64); Linux also needs `patchelf`. Windows uses an MSVC developer shell with
+The source builder needs Python 3.12+, Make, CMake, a C/C++ compiler, pkg-config
+and NASM (x86_64); Linux also needs `patchelf`, libva and libdrm development
+packages for Quick Sync's device interface. Windows uses an MSVC developer shell with
 MSYS2 Bash/Make/pkgconf/NASM and places `FFMPEG_DIR/bin` on PATH for source runs.
 macOS uses Xcode tools and `install_name_tool`. Official packages bundle the three
-replaceable shared libraries and LGPL corresponding source. Native builds can also
+replaceable shared libraries, LGPL corresponding source and the AMD/Intel
+interface/dispatcher source and notices. GPU runtimes remain system provided. Native builds can also
 find the private `libavcodec-serein`/`libavutil-serein` pkg-config files. System
 FFmpeg executables used for attachment playback are independent.
 
@@ -333,13 +335,17 @@ available with a visible recovery path on the next update attempt.
 The system screen-sharing picker requires PipeWire, a ScreenCast-capable portal backend for the current
 desktop (GNOME, KDE or the compositor-specific backend), and GStreamer Base/Good plus
 the PipeWire source plugin. GStreamer supplies bounded raw capture, CPU scaling
-and preview; outgoing encoding uses the shared FFmpeg libraries with NVENC when
-available and OpenH264 software fallback. GStreamer VA/NVCodec/OpenGL encoder
+and preview; outgoing encoding uses the shared FFmpeg libraries with NVENC,
+AMD AMF or Intel Quick Sync when available, then OpenH264 software fallback.
+GStreamer VA/NVCodec/OpenGL encoder
 plugins are no longer needed for outgoing media. Inbound playback can still use
-its existing VA-API hardware decoder. Native NVIDIA drivers and GPU access are
-required for NVENC; Windows ARM64 uses software encoding. Flatpak uses the pinned
-FFmpeg build inside its runtime with its existing GPU access permissions. Native
-hardware validation remains pending.
+its existing VA-API hardware decoder. NVENC requires the NVIDIA runtime; AMF
+requires the AMD AMF runtime (Vulkan on Linux); Quick Sync requires an Intel GPU
+runtime and iHD VA driver. The Linux VA interface supplies Quick Sync's device,
+while `h264_vaapi` remains excluded. Device permissions and matching runtimes must
+be available. Windows ARM64 uses software encoding. Flatpak uses the pinned
+FFmpeg build with its existing GPU access permissions; matching hardware runtimes
+must also be present inside the sandbox. Native hardware validation remains pending.
 
 Niri portal capture normalizes frame timestamps at arrival before frame-rate filtering,
 including on Niri 26.04 where presentation timestamps remain constant. This preserves

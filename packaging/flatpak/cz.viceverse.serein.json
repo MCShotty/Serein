@@ -23,6 +23,7 @@
       "name": "serein-ffmpeg",
       "buildsystem": "simple",
       "build-commands": [
+        "test \"$(uname -m)\" != x86_64 || pkg-config --exists libva libva-drm libdrm",
         "python3 build-ffmpeg.py --prefix /app/serein-ffmpeg --cache-dir . --work-dir build --offline"
       ],
       "sources": [
@@ -43,6 +44,21 @@
           "url": "https://codeload.github.com/FFmpeg/nv-codec-headers/tar.gz/refs/tags/n12.2.72.0",
           "sha256": "dbeaec433d93b850714760282f1d0992b1254fc3b5a6cb7d76fc1340a1e47563",
           "dest-filename": "nv-codec-headers-12.2.72.0.tar.gz"
+        },
+        {
+          "type": "file",
+          "url": "https://codeload.github.com/GPUOpen-LibrariesAndSDKs/AMF/tar.gz/refs/tags/v1.4.36",
+          "sha256": "240a42033babc7920e5476506d5ac0c5628f67908833168e746406808d0ef146",
+          "dest-filename": "AMF-1.4.36.tar.gz"
+        },
+        {
+          "type": "file",
+          "url": "https://codeload.github.com/intel/libvpl/tar.gz/refs/tags/v2.14.0",
+          "sha256": "7c6bff1c1708d910032c2e6c44998ffff3f5fdbf06b00972bc48bf2dd9e5ac06",
+          "dest-filename": "libvpl-2.14.0.tar.gz",
+          "only-arches": [
+            "x86_64"
+          ]
         },
         {
           "type": "file",

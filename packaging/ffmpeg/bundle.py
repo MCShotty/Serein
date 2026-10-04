@@ -44,11 +44,20 @@ def bundle(root, prefix=None):
     for name in ("build.json", "configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE"):
         shutil.copyfile(provenance / name, source / name)
     (source / "source").mkdir(exist_ok=True)
-    name = "ffmpeg-7.1.5.tar.xz"
-    shutil.copyfile(provenance / "source" / name, source / "source" / name)
+    for name in ("ffmpeg-7.1.5.tar.xz", "openh264-2.6.0-source.tar.bz2"):
+        shutil.copyfile(provenance / "source" / name, source / "source" / name)
     if recipe["nvenc"]:
         shutil.copyfile(provenance / "nv-codec-headers-README", source / "nv-codec-headers-README")
         name = "nv-codec-headers-12.2.72.0.tar.gz"
+        shutil.copyfile(provenance / "source" / name, source / "source" / name)
+    if recipe["amf"]:
+        shutil.copyfile(provenance / "AMF-LICENSE", source / "AMF-LICENSE")
+        name = "AMF-1.4.36-headers.tar"
+        shutil.copyfile(provenance / "source" / name, source / "source" / name)
+    if recipe["qsv"]:
+        for name in ("oneVPL-LICENSE", "oneVPL-third-party-programs.txt"):
+            shutil.copyfile(provenance / name, source / name)
+        name = "libvpl-2.14.0.tar.gz"
         shutil.copyfile(provenance / "source" / name, source / "source" / name)
     print(f"Staged FFmpeg shared libraries and corresponding source: {root}")
 

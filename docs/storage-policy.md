@@ -1,21 +1,30 @@
 # Local storage policy and audit
 
-## Shared FFmpeg outgoing video (October 4, 2026)
+## Shared FFmpeg outgoing video (October 5, 2026)
 
 Each camera/screen worker owns one FFmpeg codec context, frame and packet. The
-context cannot move between threads. Allowed backends are NVENC/VideoToolbox and
-OpenH264; no capture, network or CLI process is opened by encoding. Hardware
-failure closes the old context before opening software. Secure-readiness loss
+context cannot move between threads. Allowed backends are NVENC, AMD AMF, Intel
+Quick Sync, VideoToolbox and OpenH264; no capture, network or CLI process is opened
+by encoding. Hardware failure closes the old context before advancing to the next
+backend or software. Reconfiguration retains the active backend and excludes
+earlier failed GPUs. Secure-readiness loss
 closes the screen encoder and discards pending native output.
 
 Camera I420 input is 460,800 bytes; screen I420 is at most 3,110,400 bytes
 (1920×1080). Each encoder retains one reusable output buffer capped at 128 KiB
 (camera) or 2 MiB (screen), plus the actual current packet and returned bounded
 access unit. The native packet allocator rejects payloads exceeding the same cap
-before copying. At most four submitted pictures can lack output; no B frames or
+before copying. The pinned Quick Sync wrapper is patched to use that allocator
+instead of allocating its driver-advised packet size directly. Returned packets
+must also fit their actual backing allocation before inspection/copy.
+Quick Sync packs chroma into the allocated NV12 frame; it retains no extra
+conversion vector. At most four submitted pictures can lack output; no B frames or
 lookahead are enabled. Software uses at most two camera/four screen threads; NVENC
 requests four surfaces. Codec/driver reference and scratch storage is additional
-and is not a whole-process memory cap.
+and is not a whole-process memory cap. AMF reopens Main-profile encoding for
+requested IDRs after output has started; camera GOP 1 avoids a per-frame reopen.
+SDK startup/polling/shutdown can still block, retaining the worker retirement
+barrier. Queue bounds do not imply bounded driver-call time.
 
 Linux raw capture and preview each use one-item/byte-bounded appsinks; its worker
 retains at most one validated latest BGRA picture for static-desktop IDR recovery

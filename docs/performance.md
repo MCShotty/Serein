@@ -4279,3 +4279,87 @@ Outgoing encoding bounds remain 128 KiB per camera packet and 2 MiB per screen
 packet, with at most four pending native packets. The encoder uses two camera
 threads or four screen threads, no B-frames/lookahead and a bounded single latest
 raw screen frame. These are component limits, not an application-wide RAM cap.
+
+## FFmpeg AMD AMF and Intel Quick Sync — October 5, 2026
+
+The preserved, verified initial FFmpeg migration `b4c32bb98edbe16e07b60bf8b2d2a138eb536e88`
+is compared with the vendor extension's final source/binary hashes in
+[the raw measurements](pr-evidence/ffmpeg-vendor-encoding/measurements.json).
+The original project baseline `6313e27` and initial migration measurements above
+remain historical evidence. This comparison adds AMD AMF and Intel QSV while
+retaining NVENC/VideoToolbox and software fallback. Linux QSV uses a VA driver
+device; `h264_vaapi` encoding remains excluded.
+
+Debian 13 / Linux x86_64 Docker, Intel Xeon Platinum 8573C, five visible logical
+CPUs, 18,882,699,264 B RAM, GStreamer 1.26.2, pinned Rust 1.98.1 and locked
+dependencies. Compiler work was serialized and stopped before measurement.
+No GPU device, account, camera, microphone or native desktop capture was used.
+
+| Metric / method | FFmpeg baseline | With AMD/Intel | Delta |
+| --- | ---: | ---: | ---: |
+| 300 camera frames, median of five release runs | 986.725 ms | 979.601 ms | −7.124 ms / −0.72% |
+| Native preview CPU, mean of 40 one-second samples, one core | 347.475% | 336.945% | −10.530 percentage points |
+| Native preview sampled peak RSS, maximum over two launches | 202,584,064 B | 201,699,328 B | −884,736 B / −0.44% |
+| Native preview settled RSS, median over two launches | 201,234,432 B | 201,469,952 B | +235,520 B / +0.12% |
+| Standard voice-inclusive executable | 85,702,192 B | 85,704,880 B | +2,688 B / +0.0031% |
+| Installed regular files | 104,848,408 B | 120,678,267 B | +15,829,859 B / +15.10% |
+| Complete compressed DEB | 56,252,124 B | 70,674,624 B | +14,422,500 B / +25.64% |
+
+The actual `CameraEncoder` workload includes RGB allocation/conversion and
+encoding of a deterministic 640×480 gradient. Each process warms 30 frames,
+then times 300. One process warmup precedes five alternating measured pairs.
+Baseline range is 967.395–1,005.343 ms; after is 973.157–1,021.608 ms. Both
+produce 300 independent packets and exactly 5,831,668 encoded bytes per run.
+The ranges overlap; no software speed improvement is claimed. Camera-process
+RSS sampled every 10 ms is retained in the raw data and can miss brief peaks.
+Both revisions use the same software codec/tuning on this machine; hardware
+speed, quality and active screen conversion remain unmeasured.
+
+The native fixture uses `profile_preview --demo --interactive --page=appearance`
+at 1120×760, dark, scale 1, isolated Xvfb :88 and forced Mesa lavapipe Vulkan,
+with its mapped driver verified. Release builds use no default features, demo
+and final-example `-C lto=off`. Eight seconds of warmup precede a pointer move
+to (1100,740), three seconds of settling and twenty one-second CPU/RSS samples.
+Two fresh pairs reverse order. Per-launch baseline/after mean CPU is
+356.775→344.280%, then 338.175→329.610%. There are no helper children.
+Settled RSS is each launch's last-five-sample median. The preview has no media
+adapters and consumes several cores in software rendering; this small sample
+does not establish encoder-related or production-idle CPU/RAM improvement.
+Small RSS differences include allocator/driver variation. Startup/full-frame
+p95 latency, GPU memory, AMF IDR reset cost and live calls remain unmeasured.
+
+The standard package passes Debian smoke and host shared-library closure.
+Normal fat LTO, one codegen unit, stripping and no default/demo features are
+unchanged. Installed bytes sum regular extracted files, excluding symlinks and
+allocation overhead (239→248 files). The extracted executable resolves all
+three private codec libraries from `usr/lib/serein` before its development-prefix
+fallback. The final DEB includes 25,923,241 bytes of source archives, three
+replaceable codec libraries and notices. The source-built static oneVPL
+dispatcher, exact AMF public headers and OpenH264 rebuild source explain most
+of the package increase. The OpenH264 subset omits only root test media and
+retains every source/build/license entry and file mode. Compared with the
+original project package, final executable/installed/DEB sizes are
+85,704,880 / 120,678,267 / 70,674,624 B, versus
+85,705,128 / 90,219,249 / 44,277,080 B; package growth is the main tradeoff.
+
+The delivery prefix and shipped builder match recipe SHA-256
+`5daeee263ee108de8958e315dc55ed3777cfb027d86c5e92f45bc3ee3a3e5be2`.
+Full `cargo xtask check` passes (1,166 test executions, 26 ignored).
+Strict C11 ASan/UBSan/leak ABI, NV12/canary/packet bounds, actual native option
+compatibility for six hardware profile combinations, independent decode and
+both synthetic Linux screen variants pass. FFmpeg native/package checks pass
+10 tests with the Windows-only import check skipped. Debian, four Flatpak
+preparation tests and the synthetic signing fixture pass. See the
+[evidence README](pr-evidence/ffmpeg-vendor-encoding/README.md) for reproduction.
+Physical GPUs, native Windows/macOS, actual Nix/Flatpak and other Linux package
+formats remain unverified. GPU drivers are not redistributed.
+
+Component caps remain 128 KiB per camera packet, 2 MiB per screen packet and
+four pending native pictures. QSV packs directly into owned NV12 storage and
+its patched packet path uses the capped allocator before allocation/copying.
+Returned packets must fit their actual backing allocation before inspection.
+Failed backends remain excluded through bitrate restarts. AMF Main-profile IDR
+requests reopen the context only after output has started; pending startup
+output can drain and camera GOP 1 avoids a per-frame restart. SDK startup,
+polling and shutdown can still block; bounded queues do not bound native call
+time or remove the worker retirement barrier.

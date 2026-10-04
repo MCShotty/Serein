@@ -137,3 +137,12 @@ class PreparationTest(unittest.TestCase):
             self.assertIn('[alias]', config)
             self.assertIn('directory = "cargo-vendor"', config)
             self.assertEqual(json.loads((destination / "cz.viceverse.serein.json").read_text()), manifest)
+            prepared = json.loads((destination / "cz.viceverse.serein.json").read_text())
+            encoders = next(module for module in prepared["modules"] if module["name"] == "serein-ffmpeg")
+            archives = {item["dest-filename"]: item for item in encoders["sources"] if "dest-filename" in item}
+            self.assertEqual(set(archives), {"ffmpeg-7.1.5.tar.xz", "openh264-2.6.0.tar.gz",
+                                            "nv-codec-headers-12.2.72.0.tar.gz", "AMF-1.4.36.tar.gz", "libvpl-2.14.0.tar.gz"})
+            # Preparation passes arch restrictions through to flatpak-builder,
+            # which selects SDK source downloads for the target architecture.
+            self.assertEqual(archives["libvpl-2.14.0.tar.gz"]["only-arches"], ["x86_64"])
+            self.assertTrue(all(len(item["sha256"]) == 64 for item in archives.values()))

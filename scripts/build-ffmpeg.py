@@ -2,13 +2,15 @@
 """Build Serein's LGPL-only shared video encoders; never capture or open media.
 
 Linux/macOS: Python 3.12+, make, pkg-config, C/C++ compiler, nasm; Linux also
-needs patchelf. Windows: run from MSYS2 bash with make/pkgconf/nasm and the
+needs cmake, patchelf, libva and libdrm development files. Windows: run from
+MSYS2 bash with make/pkgconf/nasm, native cmake/nmake and the
 MSVC developer environment (x64 or arm64). Sources are checksum verified.
 """
 
 import argparse
 import difflib
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -30,10 +32,33 @@ SOURCES = {
         "url": "https://codeload.github.com/cisco/openh264/tar.gz/refs/tags/v2.6.0",
         "sha256": "558544ad358283a7ab2930d69a9ceddf913f4a51ee9bf1bfb9e377322af81a69",
     },
+    "openh264-source": {
+        "file": "openh264-2.6.0-source.tar.bz2",
+        "sha256": "783c8cdede353f0b0c77784a505438a32454917e9a95338b3b8d30a01f8ce0e5",
+        "generated_from": "openh264",
+        "omitted_paths": ["openh264-2.6.0/res/"],
+    },
     "nv-codec-headers": {
         "file": "nv-codec-headers-12.2.72.0.tar.gz",
         "url": "https://codeload.github.com/FFmpeg/nv-codec-headers/tar.gz/refs/tags/n12.2.72.0",
         "sha256": "dbeaec433d93b850714760282f1d0992b1254fc3b5a6cb7d76fc1340a1e47563",
+    },
+    "amf-sdk": {
+        "file": "AMF-1.4.36.tar.gz",
+        "url": "https://codeload.github.com/GPUOpen-LibrariesAndSDKs/AMF/tar.gz/refs/tags/v1.4.36",
+        "sha256": "240a42033babc7920e5476506d5ac0c5628f67908833168e746406808d0ef146",
+        "max_bytes": 192 * 1024 * 1024,
+    },
+    "amf-headers": {
+        "file": "AMF-1.4.36-headers.tar",
+        "sha256": "eb1a8cf31da12bcc4613f188809e7cc74d2582387f1c3346c0f541fb0e1dd21e",
+        "generated_from": "amf-sdk",
+        "paths": ["LICENSE.txt", "amf/public/include/"],
+    },
+    "onevpl": {
+        "file": "libvpl-2.14.0.tar.gz",
+        "url": "https://codeload.github.com/intel/libvpl/tar.gz/refs/tags/v2.14.0",
+        "sha256": "7c6bff1c1708d910032c2e6c44998ffff3f5fdbf06b00972bc48bf2dd9e5ac06",
     },
 }
 
@@ -61,15 +86,78 @@ def fetch(source, cache, offline):
                 total = 0
                 while block := response.read(1024 * 1024):
                     total += len(block)
-                    if total > 128 * 1024 * 1024:
-                        raise ValueError("Dependency source exceeds 128 MiB")
+                    if total > source.get("max_bytes", 128 * 1024 * 1024):
+                        raise ValueError(f"Dependency source exceeds its download bound: {source['file']}")
                     output.write(block)
             temporary.replace(destination)
         finally:
             temporary.unlink(missing_ok=True)
-    if hashlib.sha256(destination.read_bytes()).hexdigest() != source["sha256"]:
+    with destination.open("rb") as stream:
+        checksum = hashlib.file_digest(stream, "sha256").hexdigest()
+    if checksum != source["sha256"]:
         raise ValueError(f"Source SHA-256 mismatch: {destination}")
     return destination
+
+
+def amf_headers(cache, offline):
+    """Keep only the exact MIT public headers, and allow package-local rebuilds."""
+    definition = SOURCES["amf-headers"]
+    destination = cache / definition["file"]
+    if not destination.exists():
+        sdk = fetch(SOURCES["amf-sdk"], cache, offline)
+        temporary = destination.with_suffix(".tar.generated")
+        try:
+            with tarfile.open(sdk) as source, tarfile.open(temporary, "w", format=tarfile.USTAR_FORMAT) as target:
+                entries = []
+                for member in source.getmembers():
+                    if member.name == "AMF-1.4.36/LICENSE.txt":
+                        name = "AMF-1.4.36-headers/LICENSE.txt"
+                    elif member.isfile() and member.name.startswith("AMF-1.4.36/amf/public/include/"):
+                        name = "AMF-1.4.36-headers/AMF/" + member.name.split("/amf/public/include/", 1)[1]
+                    else:
+                        continue
+                    if not member.isfile() or member.size > 1024 * 1024:
+                        raise ValueError("Unexpected AMF header archive member")
+                    data = source.extractfile(member).read()
+                    entries.append((name, data))
+                # Plain USTAR, fixed metadata and sorted paths avoid gzip and
+                # host-specific metadata changing the shipped subset's checksum.
+                for name, data in sorted(entries):
+                    entry = tarfile.TarInfo(name)
+                    entry.mode, entry.size = 0o644, len(data)
+                    target.addfile(entry, io.BytesIO(data))
+            temporary.replace(destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+    return fetch(definition, cache, offline=True)
+
+
+def write_openh264_subset(archive, destination):
+    """Preserve every source/build file and its mode; omit only root test media."""
+    with tarfile.open(archive) as source, tarfile.open(destination, "w:bz2", compresslevel=9,
+                                                    format=tarfile.USTAR_FORMAT) as target:
+        for member in sorted(source.getmembers(), key=lambda item: item.name):
+            if member.name == "openh264-2.6.0/res" or member.name.startswith("openh264-2.6.0/res/"):
+                continue
+            if not (member.isfile() or member.isdir()):
+                raise ValueError(f"Unexpected OpenH264 source member: {member.name}")
+            entry = tarfile.TarInfo(member.name)
+            entry.type, entry.mode, entry.size = member.type, member.mode & 0o777, member.size
+            target.addfile(entry, source.extractfile(member) if member.isfile() else None)
+
+
+def openh264_source(cache, offline):
+    definition = SOURCES["openh264-source"]
+    destination = cache / definition["file"]
+    if not destination.exists():
+        archive = fetch(SOURCES["openh264"], cache, offline)
+        temporary = destination.with_suffix(".bz2.generated")
+        try:
+            write_openh264_subset(archive, temporary)
+            temporary.replace(destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+    return fetch(definition, cache, offline=True)
 
 
 def unpack(archive, destination):
@@ -96,6 +184,47 @@ def toolchain_options(system, arm64):
     return options
 
 
+def encoder_backends(system, arm64):
+    return {
+        "nvenc": system in {"Linux", "Windows"} and not (system == "Windows" and arm64),
+        "amf": system == "Linux" or (system == "Windows" and not arm64),
+        "qsv": system in {"Linux", "Windows"} and not arm64,
+        "videotoolbox": system == "Darwin",
+    }
+
+
+def hardware_options(system, backends):
+    options = ["--disable-mediafoundation", "--disable-encoder=h264_vaapi", "--disable-vulkan", "--disable-dxva2"]
+    options += (["--enable-vaapi", "--enable-libdrm"] if system == "Linux" and backends["qsv"] else
+                ["--disable-vaapi", "--disable-libdrm"])
+    options += ["--enable-d3d11va" if system == "Windows" and (backends["qsv"] or backends["amf"]) else "--disable-d3d11va"]
+    options += (["--enable-ffnvcodec", "--enable-nvenc", "--enable-encoder=h264_nvenc"] if backends["nvenc"] else
+                ["--disable-ffnvcodec", "--disable-nvenc"])
+    options += (["--enable-amf", "--enable-encoder=h264_amf"] if backends["amf"] else ["--disable-amf"])
+    options += (["--enable-libvpl", "--enable-encoder=h264_qsv"] if backends["qsv"] else ["--disable-libvpl"])
+    options += (["--enable-videotoolbox", "--enable-encoder=h264_videotoolbox", "--install-name-dir=@rpath"] if backends["videotoolbox"] else
+                ["--disable-videotoolbox"])
+    return options
+
+
+def patch_ffmpeg(tree):
+    patches = []
+    replacements = [("libavcodec/libavcodec.v", "LIBAVCODEC_MAJOR", "SEREIN_LIBAVCODEC_MAJOR"),
+                    ("libavutil/libavutil.v", "LIBAVUTIL_MAJOR", "SEREIN_LIBAVUTIL_MAJOR"),
+                    ("libavcodec/qsvenc.c", "ret = av_new_packet(&pkt.pkt, q->packet_size);",
+                     "ret = ff_get_encode_buffer(avctx, &pkt.pkt, q->packet_size, 0);")]
+    for relative, old, new in replacements:
+        path = tree / relative
+        before = path.read_text()
+        if before.count(old) != 1:
+            raise ValueError(f"Expected exactly one FFmpeg source patch target: {relative}")
+        after = before.replace(old, new)
+        patches.extend(difflib.unified_diff(before.splitlines(keepends=True), after.splitlines(keepends=True),
+                                           fromfile="a/" + relative, tofile="b/" + relative))
+        path.write_text(after)
+    return "".join(patches)
+
+
 def build(args):
     system = platform.system()
     if system.startswith(("MSYS", "MINGW", "CYGWIN")):
@@ -106,13 +235,14 @@ def build(args):
     arm64 = architecture in {"arm64", "aarch64"}
     if architecture not in {"x86_64", "amd64", "x64", "arm64", "aarch64"}:
         raise ValueError(f"Unsupported native FFmpeg architecture: {architecture}")
-    nvenc = system in {"Linux", "Windows"} and not (system == "Windows" and arm64)
+    backends = encoder_backends(system, arm64)
+    nvenc = backends["nvenc"]
     prefix = args.prefix.resolve()
     cache = args.cache_dir.resolve()
     work = args.work_dir.resolve()
     cache.mkdir(parents=True, exist_ok=True)
     recipe = {"sources": SOURCES, "system": system, "architecture": architecture,
-              "nvenc": nvenc, "videotoolbox": system == "Darwin", "recipe_sha256":
+              **backends, "recipe_sha256":
               hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     stamp = prefix / "share/serein-ffmpeg/build.json"
     if stamp.is_file() and json.loads(stamp.read_text()) == recipe:
@@ -123,22 +253,15 @@ def build(args):
     if work.exists() and any(work.iterdir()):
         raise ValueError(f"FFmpeg work directory contains an incomplete build; choose a fresh work directory: {work}")
     work.mkdir(parents=True, exist_ok=True)
-    archives = {name: fetch(source, cache, args.offline) for name, source in SOURCES.items()
-                if name != "nv-codec-headers" or nvenc}
+    required = ["ffmpeg"] + (["nv-codec-headers"] if nvenc else []) + (["onevpl"] if backends["qsv"] else [])
+    archives = {name: fetch(SOURCES[name], cache, args.offline) for name in required}
+    archives["openh264-source"] = openh264_source(cache, args.offline)
+    if backends["amf"]:
+        archives["amf-headers"] = amf_headers(cache, args.offline)
     trees = {name: unpack(archive, work / name) for name, archive in archives.items()}
     # Keep host GStreamer's FFmpeg in its own ELF symbol namespace. A distinct
     # SONAME alone cannot prevent LIBAVCODEC_61/LIBAVUTIL_59 interposition.
-    version_patch = []
-    for name, namespace in (("avcodec", "LIBAVCODEC"), ("avutil", "LIBAVUTIL")):
-        relative = f"lib{name}/lib{name}.v"
-        path = trees["ffmpeg"] / relative
-        before = path.read_text()
-        after = before.replace(namespace + "_MAJOR", "SEREIN_" + namespace + "_MAJOR")
-        if before == after:
-            raise ValueError(f"Expected FFmpeg version namespace missing: {relative}")
-        version_patch.extend(difflib.unified_diff(before.splitlines(keepends=True), after.splitlines(keepends=True),
-                                                fromfile="a/" + relative, tofile="b/" + relative))
-        path.write_text(after)
+    source_patch = patch_ffmpeg(trees["ffmpeg"])
     env = dict(os.environ)
     env["PKG_CONFIG_PATH"] = posix(prefix / "lib/pkgconfig") + os.pathsep + env.get("PKG_CONFIG_PATH", "")
     # MSYS pkgconf uses ':' even when driven by Windows Python.
@@ -147,38 +270,65 @@ def build(args):
     openh264_args = [f"PREFIX={posix(prefix)}", f"ARCH={'arm64' if arm64 else 'x86_64'}"]
     if system == "Windows":
         openh264_args += ["OS=msvc", "USE_ASM=No" if arm64 else "USE_ASM=Yes"]
-    run("make", f"-j{args.jobs}", *openh264_args, "install-shared", cwd=trees["openh264"], env=env)
+    run("make", f"-j{args.jobs}", *openh264_args, "install-shared", cwd=trees["openh264-source"], env=env)
     if system == "Windows":
         # FFmpeg/pkgconf's -lopenh264 must select the shared import library.
         shutil.copyfile(prefix / "lib/openh264_dll.lib", prefix / "lib/openh264.lib")
     if nvenc:
         run("make", f"PREFIX={posix(prefix)}", "install", cwd=trees["nv-codec-headers"], env=env)
+    if backends["amf"]:
+        shutil.copytree(trees["amf-headers"] / "AMF", prefix / "include/AMF")
+    if backends["qsv"]:
+        vpl_build = work / "onevpl-cmake"
+        # vpl.pc advertises dl/pthread/C++ dependencies in Libs on Linux.
+        # Build only the PIC static dispatcher, which loads the system GPU runtime.
+        run("cmake", "-S", trees["onevpl"], "-B", vpl_build,
+            "-G", "NMake Makefiles" if system == "Windows" else "Unix Makefiles",
+            f"-DCMAKE_INSTALL_PREFIX={prefix.as_posix()}", "-DCMAKE_INSTALL_LIBDIR=lib",
+            "-DCMAKE_BUILD_TYPE=Release", "-DBUILD_SHARED_LIBS=OFF", "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
+            "-DBUILD_TESTS=OFF", "-DBUILD_EXAMPLES=OFF", "-DINSTALL_DEV=ON", "-DINSTALL_LIB=ON",
+            "-DCMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP=ON",
+            f"-DUSE_MSVC_STATIC_RUNTIME={'ON' if system == 'Windows' else 'OFF'}", env=env)
+        run("cmake", "--build", vpl_build, "--parallel", str(args.jobs), env=env)
+        run("cmake", "--install", vpl_build, env=env)
+        if system == "Windows":
+            # Upstream's MSVC pkg-config file omits static Win32 dependencies.
+            # The dispatcher uses registry APIs, StringFromGUID2 and device GUIDs.
+            pc = prefix / "lib/pkgconfig/vpl.pc"
+            content = pc.read_text()
+            content = content.replace("Libs: ", "Libs: -ladvapi32 -lole32 -luuid ", 1)
+            pc.write_text(content)
     configure = [
         f"--prefix={posix(prefix)}", "--build-suffix=-serein", "--disable-autodetect", "--disable-everything",
         "--disable-programs", "--disable-doc", "--disable-network", "--disable-static", "--enable-shared",
         "--disable-gpl", "--disable-nonfree", "--disable-version3", "--disable-avdevice", "--disable-avformat",
         "--disable-avfilter", "--disable-swscale", "--disable-swresample", "--disable-postproc",
-        "--disable-vaapi", "--disable-mediafoundation", "--disable-vdpau", "--disable-vulkan",
-        "--disable-d3d11va", "--disable-dxva2", "--disable-cuvid", "--disable-nvdec", "--disable-cuda-llvm",
+        "--disable-vdpau", "--disable-cuvid", "--disable-nvdec", "--disable-cuda-llvm",
         "--enable-avcodec", "--enable-avutil", "--enable-libopenh264", "--enable-encoder=libopenh264",
         f"--extra-cflags=-I{posix(prefix / 'include')}", f"--extra-ldflags=-L{posix(prefix / 'lib')}",
     ]
-    if nvenc:
-        configure += ["--enable-ffnvcodec", "--enable-nvenc", "--enable-encoder=h264_nvenc"]
-    else:
-        configure += ["--disable-ffnvcodec", "--disable-nvenc"]
-    if system == "Darwin":
-        configure += ["--enable-videotoolbox", "--enable-encoder=h264_videotoolbox", "--install-name-dir=@rpath"]
-    else:
-        configure += ["--disable-videotoolbox"]
+    configure += hardware_options(system, backends)
     configure += toolchain_options(system, arm64)
     if system == "Windows":
-        configure = [arg for arg in configure if not arg.startswith("--extra-ldflags=")]
-        configure += [f"--extra-ldflags=-libpath:{(prefix / 'lib').as_posix()}"]
+        configure = [arg for arg in configure if not arg.startswith(("--extra-ldflags=", "--extra-cflags="))]
+        # Match OpenH264's -MT and oneVPL's internal allocation/free ownership;
+        # no additional Visual C++ redistributable is needed for these DLLs.
+        configure += [f"--extra-cflags=-I{posix(prefix / 'include')} -MT",
+                      f"--extra-ldflags=-libpath:{(prefix / 'lib').as_posix()}"]
     run("bash", "configure", *configure, cwd=trees["ffmpeg"], env=env)
     configuration = (trees["ffmpeg"] / "config.h").read_text()
     if "#define CONFIG_GPL 0" not in configuration or "#define CONFIG_NONFREE 0" not in configuration:
         raise ValueError("FFmpeg build must remain LGPL without GPL/nonfree components")
+    component_config = (trees["ffmpeg"] / "config_components.h").read_text()
+    expected = {"LIBOPENH264"}
+    expected.update(name.upper() for name, enabled in backends.items() if enabled)
+    # Encoder names use H264_*, unlike dependency/backend configuration names.
+    expected = {"LIBOPENH264"} | {"H264_" + name for name in expected if name != "LIBOPENH264"}
+    actual = {line.split()[1].removeprefix("CONFIG_").removesuffix("_ENCODER")
+              for line in component_config.splitlines() if line.startswith("#define CONFIG_")
+              and "_ENCODER 1" in line}
+    if actual != expected:
+        raise ValueError(f"Unexpected FFmpeg encoder allowlist: {sorted(actual)}, expected {sorted(expected)}")
     run("make", f"-j{args.jobs}", cwd=trees["ffmpeg"], env=env)
     run("make", "install", cwd=trees["ffmpeg"], env=env)
     if system == "Windows":
@@ -215,15 +365,20 @@ def build(args):
     notices = stamp.parent
     (notices / "source").mkdir(parents=True)
     # The LGPL corresponding FFmpeg source travels with every official binary.
-    shutil.copyfile(archives["ffmpeg"], notices / "source" / SOURCES["ffmpeg"]["file"])
+    for name, archive in archives.items():
+        shutil.copyfile(archive, notices / "source" / SOURCES[name]["file"])
     shutil.copyfile(Path(__file__), notices / "build-ffmpeg.py")
     (notices / "configure.json").write_text(json.dumps(configure, indent=2) + "\n")
-    (notices / "serein-ffmpeg.patch").write_text("".join(version_patch))
+    (notices / "serein-ffmpeg.patch").write_text(source_patch)
     shutil.copyfile(trees["ffmpeg"] / "COPYING.LGPLv2.1", notices / "COPYING.LGPLv2.1")
-    shutil.copyfile(trees["openh264"] / "LICENSE", notices / "OpenH264-LICENSE")
+    shutil.copyfile(trees["openh264-source"] / "LICENSE", notices / "OpenH264-LICENSE")
     if nvenc:
         shutil.copyfile(trees["nv-codec-headers"] / "README", notices / "nv-codec-headers-README")
-        shutil.copyfile(archives["nv-codec-headers"], notices / "source" / SOURCES["nv-codec-headers"]["file"])
+    if backends["amf"]:
+        shutil.copyfile(trees["amf-headers"] / "LICENSE.txt", notices / "AMF-LICENSE")
+    if backends["qsv"]:
+        shutil.copyfile(trees["onevpl"] / "LICENSE", notices / "oneVPL-LICENSE")
+        shutil.copyfile(trees["onevpl"] / "third-party-programs.txt", notices / "oneVPL-third-party-programs.txt")
     stamp.write_text(json.dumps(recipe, indent=2) + "\n")
     print(f"FFMPEG_DIR={prefix}")
     return prefix

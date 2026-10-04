@@ -1,5 +1,5 @@
 //! Single-worker FFmpeg H.264 encoding for camera and screen sharing.
-//! Only NVENC, VideoToolbox and the LGPL build's OpenH264 encoder are admitted.
+//! NVENC, AMD AMF, Intel QSV, VideoToolbox and LGPL OpenH264 are admitted.
 #![allow(unsafe_code)] // Small, checked ABI to the owned libavcodec context in the C shim.
 
 use std::{ffi::c_void, marker::PhantomData, ptr::NonNull, rc::Rc};
@@ -47,6 +47,44 @@ enum Backend {
 	Nvenc = 1,
 	#[cfg(target_os = "macos")]
 	VideoToolbox = 2,
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	Amf = 3,
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	Qsv = 4,
+}
+
+const BACKENDS: &[Backend] = &[
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	Backend::Nvenc,
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	Backend::Amf,
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	Backend::Qsv,
+	#[cfg(target_os = "macos")]
+	Backend::VideoToolbox,
+	Backend::Software,
+];
+
+/// Keep failed GPUs out of this stream's remaining attempts, including after
+/// a backend opens successfully but rejects its first actual picture.
+fn try_backends<T>(
+	after: Option<Backend>,
+	mut open: impl FnMut(Backend) -> Result<T, &'static str>,
+) -> Result<T, &'static str> {
+	let start = after.map_or(0, |backend| {
+		BACKENDS
+			.iter()
+			.position(|candidate| *candidate == backend)
+			.map_or(BACKENDS.len(), |index| index + 1)
+	});
+	let mut error = "FFmpeg H.264 encoder is unavailable";
+	for backend in &BACKENDS[start..] {
+		match open(*backend) {
+			Ok(encoder) => return Ok(encoder),
+			Err(failure) => error = failure,
+		}
+	}
+	Err(error)
 }
 
 unsafe extern "C" {
@@ -87,24 +125,31 @@ pub(crate) struct Encoder {
 	backend: Backend,
 	output: Vec<u8>,
 	in_flight: u8,
+	produced_output: bool,
 }
 
 impl Encoder {
 	pub(crate) fn new(config: Config) -> Result<Self, &'static str> {
 		config.picture_bytes()?;
-		#[cfg(any(target_os = "linux", target_os = "windows"))]
-		if let Ok(encoder) = Self::open(config, Backend::Nvenc) {
-			return Ok(encoder);
-		}
-		#[cfg(target_os = "macos")]
-		if let Ok(encoder) = Self::open(config, Backend::VideoToolbox) {
-			return Ok(encoder);
-		}
-		Self::software(config)
+		try_backends(None, |backend| Self::open(config, backend))
 	}
 
+	#[cfg(test)]
 	pub(crate) fn software(config: Config) -> Result<Self, &'static str> {
 		Self::open(config, Backend::Software)
+	}
+
+	/// Restart at the active backend when bitrate changes. Earlier failed GPUs
+	/// stay excluded; a software fallback stays software until the stream stops.
+	pub(crate) fn reconfigure(&mut self, config: Config) -> Result<(), &'static str> {
+		config.picture_bytes()?;
+		let active = self.backend;
+		self.native = None;
+		self.backend = Backend::Software;
+		self.config = config;
+		*self = Self::open(config, active)
+			.or_else(|_| try_backends(Some(active), |backend| Self::open(config, backend)))?;
+		Ok(())
 	}
 
 	fn open(config: Config, backend: Backend) -> Result<Self, &'static str> {
@@ -129,6 +174,7 @@ impl Encoder {
 			backend,
 			output: vec![0; config.max_bytes],
 			in_flight: 0,
+			produced_output: false,
 		})
 	}
 
@@ -141,13 +187,17 @@ impl Encoder {
 			Backend::Software => "H.264 · FFmpeg software encoding",
 			#[cfg(any(target_os = "linux", target_os = "windows"))]
 			Backend::Nvenc => "H.264 · FFmpeg NVENC hardware encoding",
+			#[cfg(any(target_os = "linux", target_os = "windows"))]
+			Backend::Amf => "H.264 · FFmpeg AMD AMF hardware encoding",
+			#[cfg(any(target_os = "linux", target_os = "windows"))]
+			Backend::Qsv => "H.264 · FFmpeg Intel QSV hardware encoding",
 			#[cfg(target_os = "macos")]
 			Backend::VideoToolbox => "H.264 · FFmpeg VideoToolbox hardware encoding",
 		}
 	}
 
-	/// Encodes tightly packed I420. A rejected hardware frame switches permanently to
-	/// FFmpeg software encoding and begins a fresh independently decodable sequence.
+	/// Encodes tightly packed I420. A rejected GPU advances through the remaining
+	/// hardware backends, then permanently uses software for this stream.
 	pub(crate) fn encode(
 		&mut self,
 		picture: &[u8],
@@ -156,15 +206,40 @@ impl Encoder {
 		if picture.len() != self.config.picture_bytes()? {
 			return Err("Invalid FFmpeg video encoder picture");
 		}
-		match self.encode_native(picture, force) {
-			Ok(frame) => Ok(frame),
-			Err(error) if self.hardware() => {
-				// Release scarce hardware resources before opening the replacement.
-				self.native = None;
-				*self = Self::open(self.config, Backend::Software).map_err(|_| error)?;
-				self.encode_native(picture, true)
+		// FFmpeg 7.1's AMF wrapper does not forward forced picture types. A fresh
+		// Main session produces an IDR with parameter sets on explicit requests.
+		// Camera GOP 1 already guarantees this without restarting every picture.
+		#[cfg(any(target_os = "linux", target_os = "windows"))]
+		if force
+			&& self.produced_output
+			&& self.backend == Backend::Amf
+			&& self.config.profile == Profile::Main
+		{
+			self.native = None;
+			match Self::open(self.config, Backend::Amf) {
+				Ok(replacement) => *self = replacement,
+				Err(_) => {
+					self.backend = Backend::Software;
+					*self = try_backends(Some(Backend::Amf), |backend| {
+						Self::open(self.config, backend)
+					})?;
+				}
 			}
-			Err(error) => Err(error),
+		}
+		let mut force = force;
+		loop {
+			match self.encode_native(picture, force) {
+				Ok(frame) => return Ok(frame),
+				Err(error) if self.hardware() => {
+					let failed = self.backend;
+					self.native = None;
+					self.backend = Backend::Software;
+					*self = try_backends(Some(failed), |backend| Self::open(self.config, backend))
+						.map_err(|_| error)?;
+					force = true;
+				}
+				Err(error) => return Err(error),
+			}
 		}
 	}
 
@@ -201,11 +276,12 @@ impl Encoder {
 		let data = &self.output[..length];
 		crate::video::validate_source(data).map_err(|_| "FFmpeg returned invalid H.264")?;
 		let keyframe = keyframe != 0 && crate::video_receive::is_keyframe(data);
-		if self.config.profile == Profile::Baseline
+		if (self.config.profile == Profile::Baseline || !self.produced_output)
 			&& (!keyframe || !crate::video_receive::has_parameter_sets(data))
 		{
-			return Err("FFmpeg camera frame was not independently decodable");
+			return Err("FFmpeg initial or camera frame was not independently decodable");
 		}
+		self.produced_output = true;
 		Ok((data.to_vec(), keyframe))
 	}
 }
@@ -221,6 +297,89 @@ mod tests {
 		max_bytes: 128 * 1024,
 		profile: Profile::Baseline,
 	};
+	#[test]
+	fn failed_backends_advance_once_without_revisiting_a_gpu() {
+		let mut attempts = Vec::new();
+		let selected = try_backends(None, |backend| {
+			attempts.push(backend);
+			if backend == Backend::Software {
+				Ok(backend)
+			} else {
+				Err("unavailable GPU")
+			}
+		})
+		.unwrap();
+		assert!(selected == Backend::Software);
+		assert!(attempts == BACKENDS);
+		for (index, failed) in BACKENDS.iter().enumerate() {
+			attempts.clear();
+			let result: Result<(), _> = try_backends(Some(*failed), |backend| {
+				attempts.push(backend);
+				Err("failed to open")
+			});
+			assert!(result.is_err());
+			assert!(attempts == BACKENDS[index + 1..]);
+		}
+	}
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	#[test]
+	fn hybrid_gpu_selection_continues_to_intel_after_amd_frame_failure() {
+		let mut attempts = Vec::new();
+		let amd = try_backends(None, |backend| {
+			attempts.push(backend);
+			if backend == Backend::Amf {
+				Ok(backend)
+			} else {
+				Err("GPU unavailable")
+			}
+		})
+		.unwrap();
+		assert!(amd == Backend::Amf && attempts == [Backend::Nvenc, Backend::Amf]);
+		attempts.clear();
+		let intel = try_backends(Some(amd), |backend| {
+			attempts.push(backend);
+			Ok(backend)
+		})
+		.unwrap();
+		assert!(intel == Backend::Qsv && attempts == [Backend::Qsv]);
+		let software = try_backends(Some(intel), Ok).unwrap();
+		assert!(software == Backend::Software);
+		assert!(try_backends(Some(software), Ok).is_err());
+	}
+	#[test]
+	fn malformed_picture_keeps_existing_native_context_and_backend() {
+		let mut encoder = Encoder::software(CAMERA).unwrap();
+		let pointer = encoder.native.as_ref().unwrap().0;
+		// Simulate each selected GPU using a real software allocation. Rejected
+		// input must never reach native encoding or trigger device selection.
+		for backend in BACKENDS {
+			encoder.backend = *backend;
+			assert!(encoder.encode(&[0; 3], true).is_err());
+			assert!(encoder.backend == *backend);
+			assert!(encoder.native.as_ref().unwrap().0 == pointer);
+			assert!(!encoder.produced_output && encoder.in_flight == 0);
+		}
+		encoder.backend = Backend::Software;
+		let (packet, keyframe) = encoder
+			.encode(&vec![128; CAMERA.picture_bytes().unwrap()], true)
+			.unwrap();
+		assert!(keyframe && !packet.is_empty());
+	}
+	#[test]
+	fn bitrate_restart_keeps_software_fallback_and_starts_with_an_idr() {
+		let mut encoder = Encoder::software(CAMERA).unwrap();
+		let picture = vec![128; CAMERA.picture_bytes().unwrap()];
+		assert!(encoder.encode(&picture, true).unwrap().1);
+		encoder
+			.reconfigure(Config {
+				bit_rate: 450_000,
+				..CAMERA
+			})
+			.unwrap();
+		assert!(encoder.backend == Backend::Software && !encoder.produced_output);
+		let (packet, keyframe) = encoder.encode(&picture, false).unwrap();
+		assert!(keyframe && crate::video_receive::has_parameter_sets(&packet));
+	}
 	#[test]
 	fn ffmpeg_software_camera_is_bounded_and_independently_decodable() {
 		use openh264::formats::YUVSource;

@@ -179,13 +179,23 @@ Native screen capture uses **screencapturekit 10.0.3** (MIT OR Apache-2.0) on ma
 
 Camera and screen sharing use **FFmpeg 7.1.5** libavcodec/libavutil,
 source-built **Cisco OpenH264 2.6.0**, and **nv-codec-headers 12.2.72.0** on
-supported NVIDIA platforms. The bundled FFmpeg build is **LGPL-2.1-or-later**;
-GPL, nonfree, Media Foundation and VA-API encoding are disabled. NVIDIA headers
+supported NVIDIA platforms. AMD AMF uses **AMF 1.4.36** MIT-licensed public headers;
+the unchanged AMD license includes its standards/patent notice. Intel Quick Sync
+uses the **oneVPL 2.14.0** MIT-licensed dispatcher, compiled as a PIC static library
+into FFmpeg; its license and third-party-programs notice are retained. GPU
+runtime drivers are supplied by the OS/vendor, not bundled. Linux QSV uses
+distribution-provided libva/libdrm for its driver device interface.
+The bundled FFmpeg build is **LGPL-2.1-or-later**;
+GPL, nonfree, Media Foundation and the `h264_vaapi` encoder are disabled. NVIDIA headers
 retain their MIT notices; VideoToolbox is an OS framework. FFmpeg is dynamically
 linked through replaceable shared libraries. Packages retain its complete
-corresponding source archive, exact checksum/source URLs, configure arguments, namespace patch,
+corresponding source archive, exact checksum/source URLs, configure arguments, source patch,
 LGPL text and build recipe under `ffmpeg-source` (Linux:
-`share/doc/serein/ffmpeg-source`). See `packaging/ffmpeg/README.md` and
+`share/doc/serein/ffmpeg-source`). The OpenH264 source subset omits only upstream
+root `res/` test media, preserving all source/build files and nested Android
+resources; its original and subset hashes are recorded separately. oneVPL source and the exact
+AMF public-header subset accompany the recipe for offline rebuilds; the AMF
+subset is identified separately from its original SDK archive. See `packaging/ffmpeg/README.md` and
 `assets/licenses/voice/PROVENANCE.md`. Serein's application code remains
 MIT OR Apache-2.0. No separately installed GPL FFmpeg library is linked into
 official packages.

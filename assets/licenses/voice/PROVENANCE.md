@@ -168,3 +168,54 @@ no PulseAudio server is bundled.
 | enum-primitive-derive-0.3.0-LICENSE | [registry source](https://docs.rs/crate/enum-primitive-derive/0.3.0/source/LICENSE) | `819e0555b295079201b0670bb3302855303bdbbcc739f3819b13e1b3d2ec03bb` |
 | futures-0.3.34-LICENSE-MIT | [registry source](https://docs.rs/crate/futures/0.3.34/source/LICENSE-MIT) | `6652c868f35dfe5e8ef636810a4e576b9d663f3a17fb0f5613ad73583e1b88fd` |
 | futures-0.3.34-LICENSE-APACHE | [registry source](https://docs.rs/crate/futures/0.3.34/source/LICENSE-APACHE) | `275c491d6d1160553c32fd6127061d7f9606c3ea25abfad6ca3f6ed088785427` |
+
+## FFmpeg vendor encoders — October 5, 2026
+
+Outgoing OpenH264 uses the checked 2.6.0 archive
+`https://codeload.github.com/cisco/openh264/tar.gz/refs/tags/v2.6.0`
+(SHA-256 `558544ad358283a7ab2930d69a9ceddf913f4a51ee9bf1bfb9e377322af81a69`).
+The build and package use `openh264-2.6.0-source.tar.bz2`, a deterministic
+source subset that omits only root `openh264-2.6.0/res/` test media. All other
+source/build/test/docs entries, license text, executable file modes and nested
+Android resources remain unchanged. Its 858 USTAR entries have fixed ownership
+and timestamps and use bzip2 compression level 9. Size is 1,198,914 bytes;
+SHA-256 `783c8cdede353f0b0c77784a505438a32454917e9a95338b3b8d30a01f8ce0e5`.
+The shared-library build requires no omitted test media. Tests relying on those
+fixtures require the original upstream archive; the package's codec rebuild
+does not. Incoming Rust OpenH264 provenance remains recorded separately above.
+
+AMF uses the public headers of AMD AMF 1.4.36 from the checked upstream archive
+`https://codeload.github.com/GPUOpen-LibrariesAndSDKs/AMF/tar.gz/refs/tags/v1.4.36`
+(SHA-256 `240a42033babc7920e5476506d5ac0c5628f67908833168e746406808d0ef146`).
+The unchanged `AMF-1.4.36/LICENSE.txt` is retained as
+`AMF-1.4.36-LICENSE.txt` (SHA-256
+`eb297397aaa455b5668ab67d216b83828466152dab123fa92384c6ec16b74170`).
+It is MIT with AMD's standards/patent notice. No AMD GPU driver is bundled.
+The installed recipe ships only this license and all 57 regular files from
+`AMF-1.4.36/amf/public/include/`, renamed under `AMF-1.4.36-headers/AMF/`.
+The deterministic uncompressed USTAR archive is 634,880 bytes with SHA-256
+`eb1a8cf31da12bcc4613f188809e7cc74d2582387f1c3346c0f541fb0e1dd21e`.
+The complete 171 MiB SDK archive is pinned for initial source acquisition but
+is not part of the redistributed subset or required for its offline rebuild.
+
+Intel oneVPL 2.14.0 is pinned at
+`https://codeload.github.com/intel/libvpl/tar.gz/refs/tags/v2.14.0`
+(SHA-256 `7c6bff1c1708d910032c2e6c44998ffff3f5fdbf06b00972bc48bf2dd9e5ac06`).
+Its dispatcher is built as PIC static code and linked into the replaceable
+FFmpeg shared libraries. The complete unchanged source archive is shipped with
+those libraries; compatible Intel GPU runtime drivers remain system-provided.
+Unchanged license texts are:
+
+| File | Exact archive path | SHA-256 |
+|---|---|---|
+| oneVPL-2.14.0-LICENSE.txt | `libvpl-2.14.0/LICENSE` | `bf1cfac2e2792b6e1e995ce103d70796aecaf2ec7e4c5fe5474f7acec7b4a677` |
+| oneVPL-2.14.0-third-party-programs.txt | `libvpl-2.14.0/third-party-programs.txt` | `8c4e3adbbe715ef6160983cd862a4052bf8285a3ef925f957070606ed5a9003e` |
+
+Tests/examples are disabled and CMake's automatic MSVC-runtime copying is
+skipped. The Windows dispatcher uses its static CRT option to match OpenH264's
+`-MT` and FFmpeg's explicit `-MT`; the SDK's matching release APIs retain
+ownership of dispatcher/driver allocations. Native Windows DLL import-table
+validation remains a CI check, not local Linux evidence. Linux QSV's libva/libdrm libraries come from the distribution or Flatpak
+runtime; their licenses and GPU-driver packaging terms still apply. The exact
+FFmpeg source patch also routes QSV packet requests through the capped native
+allocation callback; its unmodified source archive and applied patch ship together.

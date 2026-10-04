@@ -1,6 +1,6 @@
 /* Bounded FFmpeg H.264 encoding, shared by the camera and screen workers.
- * This translation unit uses only libavcodec/libavutil: it opens no devices,
- * containers, capture sessions or network transports. Its three explicit
+ * This translation unit uses only libavcodec/libavutil: it opens encoder GPU
+ * devices, never capture sessions, containers or network transports. Its explicit
  * encoder names cannot select Media Foundation, VA-API or a GPL encoder.
  */
 #include "video_encode_ffmpeg.h"
@@ -12,6 +12,7 @@
 #include <libavcodec/avcodec.h>
 #include <libavutil/error.h>
 #include <libavutil/frame.h>
+#include <libavutil/hwcontext.h>
 #include <libavutil/mem.h>
 #include <libavutil/opt.h>
 
@@ -74,10 +75,74 @@ static int configure_backend(SereinAvc *encoder, int backend)
                set_option(codec, "surfaces", "4") &&
                set_option(codec, "delay", "0");
     }
+    if (backend == 3) {
+        return set_option(codec, "profile", encoder->baseline ? "constrained_baseline" : "main") &&
+               set_option(codec, "usage", "ultralowlatency") &&
+               set_option(codec, "quality", "speed") &&
+               set_option(codec, "rc", "cbr") &&
+               set_option(codec, "latency", "1") &&
+               set_option(codec, "preanalysis", "0") &&
+               set_option(codec, "preencode", "0") &&
+               set_option(codec, "frame_skipping", "0") &&
+               set_option(codec, "bf", "0") &&
+               set_option(codec, "max_b_frames", "0") &&
+               set_option(codec, "header_spacing", "1") &&
+               av_opt_set_int(codec->priv_data, "max_au_size", (int64_t)encoder->max_bytes * 8, 0) >= 0;
+    }
+    if (backend == 4) {
+        /* Intel accepts NV12 system-memory frames with an explicit hardware
+         * session. No software implementation or implicit session is allowed. */
+        return set_option(codec, "profile", encoder->baseline ? "baseline" : "main") &&
+               set_option(codec, "preset", "veryfast") &&
+               set_option(codec, "async_depth", "1") &&
+               set_option(codec, "look_ahead", "0") &&
+               set_option(codec, "look_ahead_depth", "0") &&
+               set_option(codec, "forced_idr", "1") &&
+               set_option(codec, "idr_interval", "0") &&
+               set_option(codec, "repeat_pps", "1") &&
+               set_option(codec, "cavlc", encoder->baseline ? "1" : "0") &&
+               av_opt_set_int(codec->priv_data, "max_frame_size", (int64_t)encoder->max_bytes, 0) >= 0;
+    }
     return set_option(codec, "profile", encoder->baseline ? "baseline" : "main") &&
            set_option(codec, "realtime", "1") &&
            set_option(codec, "allow_sw", "0") &&
            set_option(codec, "max_ref_frames", "1");
+}
+
+static int initialize_device(AVCodecContext *codec, int backend)
+{
+    AVDictionary *options = NULL;
+    enum AVHWDeviceType type = AV_HWDEVICE_TYPE_NONE;
+    const char *implementation = NULL;
+    int status = 0;
+    if (backend == 4) {
+        type = AV_HWDEVICE_TYPE_QSV;
+        implementation = "hw_any";
+#if defined(_WIN32)
+        status = av_dict_set(&options, "child_device_type", "d3d11va", 0);
+#elif defined(__linux__)
+        status = av_dict_set(&options, "child_device_type", "vaapi", 0);
+#else
+        return 0;
+#endif
+    }
+#if defined(_WIN32)
+    if (backend == 3) {
+        /* An Intel/NVIDIA display adapter must not mask a second AMD GPU. */
+        type = AV_HWDEVICE_TYPE_D3D11VA;
+        status = av_dict_set(&options, "vendor_id", "0x1002", 0);
+    }
+#endif
+    if (type == AV_HWDEVICE_TYPE_NONE)
+        return 1;
+    /* AVHWDeviceContext has no public logging offset. Its driver-init errors
+     * may reach stderr; never modify a process-wide logger to suppress them.
+     * Each backend is tried once per stream, keeping failure attempts bounded. */
+    if (status >= 0)
+        status = av_hwdevice_ctx_create(&codec->hw_device_ctx, type,
+                                        implementation, options, 0);
+    av_dict_free(&options);
+    return status >= 0;
 }
 
 void serein_avc_close(void *opaque)
@@ -98,7 +163,7 @@ void *serein_avc_open(int width, int height, int fps, int bitrate, int baseline,
                      int backend, size_t max_bytes)
 {
     static const char *const names[] = {
-        "libopenh264", "h264_nvenc", "h264_videotoolbox"
+        "libopenh264", "h264_nvenc", "h264_videotoolbox", "h264_amf", "h264_qsv"
     };
     const AVCodec *implementation;
     SereinAvc *encoder;
@@ -107,7 +172,7 @@ void *serein_avc_open(int width, int height, int fps, int bitrate, int baseline,
     if (width <= 0 || height <= 0 || width > 1920 || height > 1080 ||
         (width & 1) || (height & 1) || fps <= 0 || fps > 60 ||
         bitrate <= 0 || bitrate > 100000000 ||
-        (baseline != 0 && baseline != 1) || backend < 0 || backend > 2 ||
+        (baseline != 0 && baseline != 1) || backend < 0 || backend > 4 ||
         max_bytes == 0 || max_bytes > SEREIN_MAX_PACKET_BYTES)
         return NULL;
 
@@ -138,7 +203,7 @@ void *serein_avc_open(int width, int height, int fps, int bitrate, int baseline,
     codec->get_encode_buffer = bounded_encode_buffer;
     codec->width = width;
     codec->height = height;
-    codec->pix_fmt = AV_PIX_FMT_YUV420P;
+    codec->pix_fmt = backend == 4 ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P;
     /* Both RGB/BGRA converters pack limited-range BT.601 samples, including
      * at HD resolutions. Signal that matrix instead of allowing a decoder or
      * hardware encoder to infer BT.709 from picture size. Matrix conversion
@@ -154,19 +219,23 @@ void *serein_avc_open(int width, int height, int fps, int bitrate, int baseline,
     codec->rc_min_rate = bitrate;
     codec->rc_max_rate = bitrate;
     codec->rc_buffer_size = bitrate;
-    codec->rc_initial_buffer_occupancy = bitrate / 2;
+    if (backend == 4 && (size_t)bitrate > max_bytes * 8)
+        codec->rc_buffer_size = (int)(max_bytes * 8);
+    codec->rc_initial_buffer_occupancy = codec->rc_buffer_size / 2;
     codec->gop_size = baseline ? 1 : fps * 2;
     codec->max_b_frames = 0;
     codec->thread_count = width * height <= 640 * 480 ? 2 : 4;
     codec->refs = 1;
     codec->profile = baseline ? AV_PROFILE_H264_BASELINE : AV_PROFILE_H264_MAIN;
-    codec->flags |= AV_CODEC_FLAG_LOW_DELAY;
-    /* All three pinned FFmpeg encoders repeat parameter sets on IDRs without
+    codec->flags = (int)((unsigned int)codec->flags |
+                        AV_CODEC_FLAG_LOW_DELAY | AV_CODEC_FLAG_CLOSED_GOP);
+    /* The pinned FFmpeg encoders repeat parameter sets on IDRs without
      * GLOBAL_HEADER. VideoToolbox's wrapper converts native AVCC to Annex B
      * and prepends its CMSampleBuffer's current SPS/PPS, so no out-of-band or
      * untrusted extradata parser is needed here. Verify the result below. */
     codec->flags &= ~AV_CODEC_FLAG_GLOBAL_HEADER;
-    if (!configure_backend(encoder, backend) || avcodec_open2(codec, implementation, NULL) < 0)
+    if (!configure_backend(encoder, backend) || !initialize_device(codec, backend) ||
+        avcodec_open2(codec, implementation, NULL) < 0)
         goto failed;
 
     encoder->frame->format = codec->pix_fmt;
@@ -241,6 +310,49 @@ static int inspect_annex_b(const uint8_t *bytes, size_t length, int baseline,
     return 1;
 }
 
+/* A native driver may report a packet length larger than its negotiated
+ * storage. Check actual refcounted capacity before reading any packet bytes.
+ * The selected encoders use the default padded packet allocator and no data
+ * offset. This does not protect against a driver overwriting its MaxLength. */
+static int packet_fits(const AVPacket *packet, size_t max_bytes, size_t capacity)
+{
+    if (!packet->buf || !packet->data || packet->size <= 0 ||
+        packet->data != packet->buf->data ||
+        packet->buf->size < AV_INPUT_BUFFER_PADDING_SIZE)
+        return 0;
+    return (size_t)packet->size <= max_bytes &&
+           (size_t)packet->size <= capacity &&
+           (size_t)packet->size <= packet->buf->size - AV_INPUT_BUFFER_PADDING_SIZE;
+}
+
+/* The validated I420 source is copied into owned planes. Intel's NV12 layout
+ * interleaves U/V directly into the allocated frame, with no extra scratch. */
+static void copy_picture(AVFrame *frame, const uint8_t *input)
+{
+    size_t offset = 0;
+    for (int plane = 0; plane < (frame->format == AV_PIX_FMT_NV12 ? 1 : 3); plane++) {
+        int width = frame->width >> (plane != 0);
+        int height = frame->height >> (plane != 0);
+        for (int row = 0; row < height; row++) {
+            memcpy(frame->data[plane] + (size_t)row * (size_t)frame->linesize[plane],
+                   input + offset, (size_t)width);
+            offset += (size_t)width;
+        }
+    }
+    if (frame->format == AV_PIX_FMT_NV12) {
+        size_t luma = (size_t)frame->width * (size_t)frame->height;
+        size_t chroma_width = (size_t)frame->width / 2;
+        for (size_t row = 0; row < (size_t)frame->height / 2; row++) {
+            uint8_t *destination = frame->data[1] + row * (size_t)frame->linesize[1];
+            for (size_t column = 0; column < chroma_width; column++) {
+                size_t source = row * chroma_width + column;
+                destination[column * 2] = input[luma + source];
+                destination[column * 2 + 1] = input[luma + luma / 4 + source];
+            }
+        }
+    }
+}
+
 int serein_avc_encode(void *opaque, const uint8_t *input, size_t length,
                       int force_keyframe, uint8_t *output,
                       size_t output_capacity, size_t *output_length,
@@ -248,7 +360,6 @@ int serein_avc_encode(void *opaque, const uint8_t *input, size_t length,
 {
     SereinAvc *encoder = opaque;
     int status, is_keyframe = 0;
-    size_t offset = 0;
 
     if (output_length)
         *output_length = 0;
@@ -261,17 +372,7 @@ int serein_avc_encode(void *opaque, const uint8_t *input, size_t length,
         goto failed;
     if (av_frame_make_writable(encoder->frame) < 0)
         goto failed;
-
-    for (int plane = 0; plane < 3; plane++) {
-        int width = encoder->codec->width >> (plane != 0);
-        int height = encoder->codec->height >> (plane != 0);
-        for (int row = 0; row < height; row++) {
-            memcpy(encoder->frame->data[plane] +
-                   (size_t)row * (size_t)encoder->frame->linesize[plane],
-                   input + offset, (size_t)width);
-            offset += (size_t)width;
-        }
-    }
+    copy_picture(encoder->frame, input);
     encoder->frame->pts = encoder->next_pts++;
     encoder->frame->duration = 1;
     encoder->frame->pict_type = (force_keyframe || encoder->baseline) ?
@@ -287,9 +388,7 @@ int serein_avc_encode(void *opaque, const uint8_t *input, size_t length,
     status = avcodec_receive_packet(encoder->codec, encoder->packet);
     if (status == AVERROR(EAGAIN))
         return 0;
-    if (status < 0 || !encoder->packet->data || encoder->packet->size <= 0 ||
-        (size_t)encoder->packet->size > encoder->max_bytes ||
-        (size_t)encoder->packet->size > output_capacity ||
+    if (status < 0 || !packet_fits(encoder->packet, encoder->max_bytes, output_capacity) ||
         !inspect_annex_b(encoder->packet->data, (size_t)encoder->packet->size,
                          encoder->baseline, &is_keyframe))
         goto failed;
