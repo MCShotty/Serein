@@ -38,8 +38,50 @@
     libXcursor,
     bubblewrap,
     xdg-dbus-proxy,
+    fetchurl,
+    python3,
+    nasm,
+    patchelf,
 }: let
     inherit (stdenv.hostPlatform) isLinux isDarwin;
+
+    ffmpegSources = [
+        (fetchurl {
+            url = "https://ffmpeg.org/releases/ffmpeg-7.1.5.tar.xz";
+            name = "ffmpeg-7.1.5.tar.xz";
+            sha256 = "de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f";
+        })
+        (fetchurl {
+            url = "https://codeload.github.com/cisco/openh264/tar.gz/refs/tags/v2.6.0";
+            name = "openh264-2.6.0.tar.gz";
+            sha256 = "558544ad358283a7ab2930d69a9ceddf913f4a51ee9bf1bfb9e377322af81a69";
+        })
+    ] ++ lib.optionals isLinux [
+        (fetchurl {
+            url = "https://codeload.github.com/FFmpeg/nv-codec-headers/tar.gz/refs/tags/n12.2.72.0";
+            name = "nv-codec-headers-12.2.72.0.tar.gz";
+            sha256 = "dbeaec433d93b850714760282f1d0992b1254fc3b5a6cb7d76fc1340a1e47563";
+        })
+    ];
+
+    # Reuse the same small, LGPL-only recipe as official native packages. Never
+    # link the default nixpkgs FFmpeg, which may enable GPL components.
+    sereinFfmpeg = stdenv.mkDerivation {
+        pname = "serein-ffmpeg";
+        version = "7.1.5";
+        dontUnpack = true;
+        nativeBuildInputs = [python3 pkg-config nasm] ++ lib.optionals isLinux [patchelf];
+        buildInputs = lib.optionals isDarwin [apple-sdk_15];
+        installPhase = ''
+            runHook preInstall
+            mkdir sources
+            ${lib.concatMapStringsSep "\n" (source: ''ln -s ${source} sources/${source.name}'') ffmpegSources}
+            python3 ${../scripts/build-ffmpeg.py} --prefix "$out" --work-dir build \
+              --cache-dir sources --jobs "$NIX_BUILD_CORES" --offline
+            runHook postInstall
+        '';
+        meta.license = [lib.licenses.lgpl21Plus lib.licenses.bsd2 lib.licenses.mit];
+    };
 
     # webKit stack
     toolkitDeps = [
@@ -108,6 +150,8 @@ in
             "serein"
         ];
 
+        FFMPEG_DIR = "${sereinFfmpeg}";
+
         nativeBuildInputs =
             [
                 pkg-config
@@ -130,7 +174,7 @@ in
             ++ lib.optionals isDarwin [
                 apple-sdk_15
                 swiftPackages.stdlib
-            ];
+            ] ++ [sereinFfmpeg];
 
         # winit loads these libraries dynamically; retain them in the runtime RPATH.
         runtimeDependencies = lib.optionals isLinux (graphicsDeps ++ windowingDeps);
@@ -176,6 +220,7 @@ in
                 cp assets/icons/LICENSE "$docs/licenses/Phosphor-Icons-MIT.txt"
                 cp assets/icons/LICENSE-SIMPLE-ICONS "$docs/licenses/Simple-Icons-CC0.txt"
                 cp -R vendor/hpke-rs "$docs/source/"
+                cp -R ${sereinFfmpeg}/share/serein-ffmpeg "$docs/ffmpeg-source"
             ''
             + lib.optionalString isLinux ''
                 install -Dm444 packaging/linux/serein.desktop \

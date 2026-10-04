@@ -4,6 +4,11 @@ Build on native Linux with Python 3.11+, Git, rustup and the repository's pinned
 Rust 1.98.1 toolchain installed. GNOME SDK/Platform 49 supplies GTK4/WebKit6 and
 native media/build libraries. The toolchain is copied into build-only sources;
 no moving Rust SDK extension or compiler is shipped in the application.
+The preceding FFmpeg module builds checksum-pinned LGPL-only avcodec/avutil and
+OpenH264 sources without network access; shared libraries, the build recipe and
+complete FFmpeg corresponding source ship with the application. NVENC requires
+accessible NVIDIA drivers; otherwise it falls back to OpenH264 under the existing
+sandbox permissions. See [the encoder recipe](../ffmpeg/README.md).
 
 ```sh
 flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo

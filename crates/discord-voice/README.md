@@ -103,8 +103,13 @@ Processing and state reset run on the audio worker, never render/audio callbacks
 ## Optional outgoing screen video
 
 `screen::Worker` owns native capture and encoding outside rendering. Linux uses the
-ScreenCast portal/PipeWire/GStreamer path with hardware H.264 attempts and OpenH264
-fallback. `run_stream` owns a separate Discord RTC connection, shares the parent
+ScreenCast portal/PipeWire/GStreamer raw capture path. Every platform uses the
+shared native FFmpeg encoder: NVENC on Windows/Linux, VideoToolbox on macOS, and
+FFmpeg OpenH264 software fallback. Media Foundation and VA-API remain capture or
+inbound-decoding APIs only. Build the pinned LGPL libraries using
+`python3 scripts/build-ffmpeg.py`, then set `FFMPEG_DIR` to `target/ffmpeg/prefix`
+before Cargo; see [platform requirements](../../docs/platform-support.md).
+`run_stream` owns a separate Discord RTC connection, shares the parent
 call's ephemeral `Identity`, and enables outgoing media only after DAVE is ready.
 `video` handles bounded Annex-B/FU-A RTP packetization after DAVE frame encryption.
 

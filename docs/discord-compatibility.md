@@ -576,10 +576,12 @@ The standard build adds macOS 14+ ScreenCaptureKit and Windows Graphics Capture 
 
 Linux extension (September 15, 2026): the existing H.264/DAVE sender now accepts
 portal-approved PipeWire screen/window capture. It uses the system picker, an ephemeral
-portal session and VA-API/NVENC with OpenH264 fallback. The pipeline has one source
+portal session. Outgoing camera/screen encoding now uses native FFmpeg with
+NVENC/VideoToolbox and FFmpeg OpenH264 fallback; Media Foundation and VA-API are
+excluded from encoding. The pipeline has one source
 queue (at most 7680×4320 / 132,710,400 bytes per buffer; PipeWire negotiates 2–4 buffers), one raw frame per encode/preview
-branch (at most 33,177,600 bytes each), one appsink frame per branch (encoded ≤2 MiB;
-software raw ≤33,177,600 bytes; preview ≤925,696 bytes including padding), and the existing
+branch (at most 33,177,600 bytes each), one raw appsink frame per branch
+(screen ≤33,177,600 bytes; preview ≤925,696 bytes including padding), and the existing
 three-frame / 6-MiB encoded transport queue. Each processing stage can additionally hold
 its current buffer. Driver, compositor and codec surface pools are separate native
 allocations. Raw queues discard old frames before encoding; encoded pressure blocks
@@ -588,8 +590,12 @@ failure flag. Portal responses are admitted at ≤64 KiB; signal queues hold one
 and the connection queue holds two, with zbus's separate 128-MiB wire-message ceiling.
 Cancellation is checked during portal waits every 50 ms and media waits within 100 ms;
 native driver startup/shutdown can still block, retaining the existing retirement barrier.
-Each of at most four encoder attempts gets a fresh PipeWire remote under the same
-approved session. No source, restore token, pixel buffer or stream is persisted.
+One PipeWire remote remains under the approved session across FFmpeg backend or
+bitrate changes. Raw BGRA CPU conversion/cropping/scaling precedes encoding;
+source buffers and each current conversion stage can additionally retain a
+132,710,400-byte source picture. The worker retains one latest validated raw
+picture for idle keyframe recovery; a security pause clears it. No source, restore
+token, pixel buffer or stream is persisted.
 Native X11 now offers an explicitly selected whole-desktop source through GStreamer
 `ximagesrc`, reusing the bounded encoder/preview pipeline without a portal. It requires
 GStreamer Good and never activates after portal cancellation or failure. Individual

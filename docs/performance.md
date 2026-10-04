@@ -4207,3 +4207,75 @@ three sources, 220/560/1260-point widths, light/dark themes and scales 1/2.
 The exact announcement failed on the baseline because the following text began
 at y=76 while its quote rail extended to y=216; explicit row boundaries pass.
 `cargo xtask check` and strict Clippy for the demo preview passed.
+
+## FFmpeg camera and screen encoding — October 4, 2026
+
+Baseline `6313e271e9c34b39069eb20787afb1476741b21c` is compared with the
+runtime source hashes in [the measurements](pr-evidence/ffmpeg-video-encoding/measurements.json).
+Debian 13 / Linux x86_64 container, Intel Xeon Platinum 8573C, five visible
+logical CPUs, 18,882,699,264 B RAM, GStreamer 1.26.2, pinned Rust 1.98.1 and
+locked dependencies. No build ran during measurement. All inputs are synthetic;
+no account, camera, microphone or native desktop capture was used.
+
+| Metric / method | Baseline | After | Delta |
+| --- | ---: | ---: | ---: |
+| 300 camera frames, median of five release runs | 1,271.643 ms | 1,061.770 ms | −209.873 ms / −16.50% |
+| Native preview CPU, mean of 40 one-second samples, one core | 371.618% | 384.722% | +13.105 percentage points |
+| Native preview sampled peak RSS, maximum over two launches | 204,468,224 B | 202,825,728 B | -1,642,496 B / -0.80% |
+| Native preview settled RSS, median over two launches | 204,244,992 B | 202,770,432 B | -1,474,560 B / -0.72% |
+| Standard voice-inclusive executable | 85,705,128 B | 85,702,192 B | −2,936 B / −0.0034% |
+| Installed regular files | 90,219,249 B | 104,848,408 B | +14,629,159 B / +16.22% |
+| Complete compressed DEB | 44,277,080 B | 56,252,124 B | +11,975,044 B / +27.05% |
+
+The camera fixture calls the actual `CameraEncoder` on a deterministic 640×480
+RGB gradient, including allocation, conversion and H.264 encoding. Both target
+600 kbit/s with independent IDRs and a 128-KiB packet cap. The same test-only
+function was added to the detached baseline after its production package was
+built. Each process warms 30 frames and times 300; one process warmup precedes
+five alternating measured pairs. Baseline elapsed range: 1,213.192–1,327.404 ms;
+after: 1,048.393–1,075.687 ms. Each emits 300 packets (5,952,600 vs 5,831,668 B).
+The old camera uses one OpenH264 thread; FFmpeg uses two and different wrapper
+defaults. This is a fixture result, not a quality-matched or hardware speed claim.
+Component-process RSS is also sampled every 10 ms in the raw evidence; those
+samples can miss brief peaks and do not describe whole-application memory.
+
+Native sampling uses the existing offline `profile_preview --demo --interactive
+--page=appearance` at 1120×760, scale 1, dark, isolated Xvfb/X11 with forced Mesa
+lavapipe Vulkan and its mapped driver verified. Both release examples use
+`--no-default-features --features demo` and final-example `-C lto=off`. After eight
+seconds, move the pointer to (1100,740), settle three seconds, then sample twenty
+one-second CPU/RSS intervals. Two fresh launches per revision reverse the order;
+settled RSS is each launch's last-five-sample median. No helper children appeared.
+
+The software renderer consumes several cores in this fixture. Per-launch mean
+CPU pairs are 356.130→385.475%, then 387.105→383.970%; the direction reverses.
+A thread sample found five `llvmpipe` workers doing most of the CPU work. These
+fixtures use no media adapters, and the UI implementation is unchanged. This
+small launch set does not isolate encoding-related idle cost or establish an
+application performance improvement. Small RSS differences also include driver
+and allocator variation. Startup/frame p95, GPU memory, active screen conversion,
+hardware encoding and live-call latency remain unmeasured.
+
+Both standard `cargo xtask package` DEBs pass smoke and shared-library closure
+checks. They use normal fat LTO, one codegen unit, stripped executables and no
+default/demo features. Installed bytes sum regular extracted files, excluding
+symlinks and allocation overhead. The increase includes three replaceable codec
+libraries, complete FFmpeg source, exact build recipe/namespace patch and notices;
+there are 225 baseline files and 239 after. The extracted new package resolves
+its private libraries under `usr/lib/serein` through relative RPATH before the
+development-prefix fallback.
+
+The measured Linux package retains its exact builder source/provenance. A final
+Windows ARM64-only assembler flag repair leaves Linux configure options and
+native outputs unchanged; it is verified by the six packaging tests. Metadata
+was not restamped. Future native builds use a fresh prefix for the new recipe.
+The [evidence README](pr-evidence/ffmpeg-video-encoding/README.md) records commands,
+checks and limitations. Full `cargo xtask check` passes (1,162 passing test
+executions, 26 ignored). ASan/UBSan ABI, independent H.264 decode, synthetic Linux
+screen/readiness/pressure and offline packaging regressions pass. NVENC,
+VideoToolbox and native Windows/macOS CI remain unverified locally.
+
+Outgoing encoding bounds remain 128 KiB per camera packet and 2 MiB per screen
+packet, with at most four pending native packets. The encoder uses two camera
+threads or four screen threads, no B-frames/lookahead and a bounded single latest
+raw screen frame. These are component limits, not an application-wide RAM cap.

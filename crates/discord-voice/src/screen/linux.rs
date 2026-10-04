@@ -1,8 +1,7 @@
 //! Linux ownership: one portal session and one bounded media pipeline, no recorder.
 use super::{
-	AudioChunk, EncodedFrame, MAX_ENCODED_BYTES, Settings, SourceId, audio_linux, encode_pixels,
-	encoder,
-	gstreamer::{self as capture, Capture, Mode},
+	AudioChunk, EncodedFrame, ScreenEncoder, Settings, SourceId, audio_linux,
+	gstreamer::{self as capture, Capture},
 	portal_linux::Portal,
 	preview_frame,
 };
@@ -56,7 +55,6 @@ fn note(event: &str, value: &str) {
 }
 
 use gst::prelude::*;
-use openh264::formats::YUVBuffer;
 use std::{
 	os::fd::AsRawFd,
 	sync::{
@@ -121,221 +119,202 @@ pub(super) fn run(
 					audio_linux::Worker::start(send, stop.clone(), ready.clone(), audio_epoch)
 				})
 				.transpose()?;
-			let mut mode_index = 0;
-			while let Some(&mode) = Mode::ALL.get(mode_index) {
-				mode_index += 1;
+			if stop.load(Ordering::Acquire) || send.is_closed() {
+				return Ok(());
+			}
+			if portal.as_mut().is_some_and(Portal::is_closed) {
+				return Err("The desktop stopped screen sharing");
+			}
+			// Keep the PipeWire descriptor alive until the raw capture pipeline is destroyed.
+			let (source, _remote) = if let Some(portal) = &mut portal {
+				let source = gst::ElementFactory::make("pipewiresrc")
+					.build()
+					.map_err(|_| "Install the GStreamer PipeWire plugin to share your screen")?;
+				let remote = portal.open_remote(&stop).await?;
+				source.set_property("fd", remote.as_raw_fd());
+				if let Some(serial) = portal
+					.pipewire_serial
+					.filter(|_| source.find_property("target-object").is_some())
+				{
+					source.set_property("target-object", serial.to_string());
+				} else {
+					source.set_property("path", portal.node_id.to_string());
+				}
+				source.set_property("do-timestamp", true);
+				if std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|desktop| niri_desktop(&desktop))
+				{
+					timestamp_niri_frames(&source)?;
+				}
+				// Damage-driven desktops still need a fresh IDR when a viewer joins an idle screen.
+				source.set_property("keepalive-time", 1000i32);
+				source.set_property("min-buffers", 2i32);
+				source.set_property("max-buffers", 4i32);
+				(source, Some(remote))
+			} else {
+				(x11_source(settings.cursor)?, None)
+			};
+			let capacity = send.clone();
+			keyframe.store(true, Ordering::Release);
+			let pipeline = Capture::new(
+				settings,
+				source,
+				stop.clone(),
+				ready.clone(),
+				keyframe.clone(),
+				move || capacity.capacity() > 0,
+			)?;
+			if let Ok(mut label) = status.lock() {
+				*label = "Starting screen capture…";
+			}
+			wake();
+			let mut encoding: Option<ScreenEncoder> = None;
+			// One bounded raw snapshot lets an idle desktop satisfy a new viewer's IDR
+			// without waiting for another compositor damage event.
+			let mut latest_frame = None;
+			let mut last_encoded: Option<Instant> = None;
+			let interval = Duration::from_secs_f64(1.0 / f64::from(settings.fps));
+			let mut next_frame = Instant::now();
+			let mut second = Instant::now();
+			let mut pictures_second = 0u32;
+			let mut withheld_second = 0u64;
+			let mut slow: Option<(Instant, u64)> = None;
+			let mut waiting_keyframe = true;
+			let mut first_frame = None;
+			let mut visible = true;
+			let mut first_preview = Some(Instant::now());
+			loop {
 				if stop.load(Ordering::Acquire) || send.is_closed() {
 					return Ok(());
 				}
 				if portal.as_mut().is_some_and(Portal::is_closed) {
 					return Err("The desktop stopped screen sharing");
 				}
-				let mut remote = None;
-				let source = if let Some(portal) = &mut portal {
-					let source = gst::ElementFactory::make("pipewiresrc").build().map_err(
-						|_| "Install the GStreamer PipeWire plugin to share your screen",
-					)?;
-					remote = Some(portal.open_remote(&stop).await?);
-					source.set_property(
-						"fd",
-						remote.as_ref().expect("portal remote opened").as_raw_fd(),
+				// Application audio is an extra, not the share itself. If its worker stops,
+				// keep sending video and say so, rather than ending the screen share.
+				if audio
+					.as_mut()
+					.is_some_and(|worker| worker.result().is_some())
+				{
+					audio = None;
+					audio_stopped = true;
+				}
+				if pipeline.failed() {
+					return Err(
+						"Screen capture stopped; check PipeWire, portal and GStreamer plugins",
 					);
-					if let Some(serial) = portal
-						.pipewire_serial
-						.filter(|_| source.find_property("target-object").is_some())
-					{
-						source.set_property("target-object", serial.to_string());
-					} else {
-						source.set_property("path", portal.node_id.to_string());
-					}
-					source.set_property("do-timestamp", true);
-					if std::env::var("XDG_CURRENT_DESKTOP")
-						.is_ok_and(|desktop| niri_desktop(&desktop))
-					{
-						timestamp_niri_frames(&source)?;
-					}
-					// Damage-driven desktops still need a fresh IDR when a viewer joins an idle screen.
-					source.set_property("keepalive-time", 1000i32);
-					source.set_property("min-buffers", 2i32);
-					source.set_property("max-buffers", 4i32);
-					source
-				} else {
-					x11_source(settings.cursor)?
-				};
-				let capacity = send.clone();
-				keyframe.store(true, Ordering::Release);
-				let mut active_bitrate = bitrate
+				}
+				let target = bitrate
 					.load(Ordering::Acquire)
 					.clamp(250_000, settings.bit_rate());
-				let Ok(pipeline) = Capture::new(
-					settings,
-					mode,
-					active_bitrate,
-					source,
-					stop.clone(),
-					ready.clone(),
-					keyframe.clone(),
-					move || capacity.capacity() > 0,
-				) else {
-					continue;
-				};
-				if let Ok(mut label) = status.lock() {
-					*label = "Starting screen capture…";
+				// A rate change replaces only the FFmpeg encoder, preserving the approved
+				// source, preview and audio. Do not restart while waiting for its first IDR.
+				if !waiting_keyframe
+					&& let Some(encoder) = encoding.as_mut()
+					&& encoder.set_bitrate(target)?
+				{
+					waiting_keyframe = true;
+					keyframe.store(true, Ordering::Release);
 				}
-				wake();
-				let mut software = None;
-				let mut encoder_diagnostics = None;
-				let mut second = Instant::now();
-				let mut pictures_second = 0u32;
-				let mut withheld_second = 0u64;
-				let mut slow: Option<(Instant, u64)> = None;
-				let mut waiting_keyframe = true;
-				let mut first_frame = None;
-				let mut visible = true;
-				let mut first_preview = Some(Instant::now());
-				loop {
-					if stop.load(Ordering::Acquire) || send.is_closed() {
-						return Ok(());
-					}
-					if portal.as_mut().is_some_and(Portal::is_closed) {
-						return Err("The desktop stopped screen sharing");
-					}
-					// Application audio is an extra, not the share itself. If its worker stops,
-					// keep sending video and say so, rather than ending the screen share.
-					if audio
-						.as_mut()
-						.is_some_and(|worker| worker.result().is_some())
-					{
-						audio = None;
-						audio_stopped = true;
-					}
-					if pipeline.failed() {
-						break;
-					}
-					let target = bitrate
-						.load(Ordering::Acquire)
-						.clamp(250_000, settings.bit_rate());
-					// Let startup/recovery reach its existing deadline: changing targets must
-					// not repeatedly restart a failing encoder before fallback can run.
-					if target != active_bitrate && !waiting_keyframe {
-						if mode != Mode::Software && pipeline.set_bitrate(target) {
-							active_bitrate = target;
-						} else if crate::screen::software_rate_change(active_bitrate, target) {
-							// Restarts cost an IDR, so only large moves apply. Older plugins
-							// cannot change rate while playing: reopen the same mode with a
-							// fresh PipeWire remote, keeping the approved portal.
-							if mode != Mode::Software {
-								mode_index -= 1;
-								break;
-							}
-							software = None;
-							waiting_keyframe = true;
-							keyframe.store(true, Ordering::Release);
-							active_bitrate = target;
-						}
-					}
-					// Counted per pass: whether a picture was taken, and whether one was left
-					// in the pipeline because the transport had not drained the last.
-					let mut pulled = false;
-					let mut withheld = 0;
-					let requested_visible = preview_visible.load(Ordering::Acquire);
-					if visible != requested_visible {
-						visible = requested_visible;
-						pipeline.set_preview_visible(visible);
-						if !visible {
-							first_preview = None;
-						}
-					}
-					if let Some(sample) = pipeline.preview.try_pull_sample(gst::ClockTime::ZERO) {
-						let image = preview_frame(&capture::raw(&sample)?)?;
-						if let Ok(mut slot) = preview.try_lock() {
-							*slot = Some(image);
-						}
+				// Counted per pass: whether a picture was taken, and whether one was left
+				// in the pipeline because the transport had not drained the last.
+				let mut pulled = false;
+				let mut withheld = 0;
+				let mut wait_for_frame = false;
+				let requested_visible = preview_visible.load(Ordering::Acquire);
+				if visible != requested_visible {
+					visible = requested_visible;
+					pipeline.set_preview_visible(visible);
+					if !visible {
 						first_preview = None;
+					}
+				}
+				if let Some(sample) = pipeline.preview.try_pull_sample(gst::ClockTime::ZERO) {
+					let image = preview_frame(&capture::raw(&sample)?)?;
+					if let Ok(mut slot) = preview.try_lock() {
+						*slot = Some(image);
+					}
+					first_preview = None;
+					wake();
+				}
+				if first_preview
+					.is_some_and(|start: Instant| start.elapsed() > Duration::from_secs(15))
+				{
+					return Err("Screen capture did not produce a preview");
+				}
+				if !ready.load(Ordering::Acquire) {
+					if let Ok(mut label) = status.lock()
+						&& *label != "Screen preview · waiting for others"
+					{
+						*label = "Screen preview · waiting for others";
 						wake();
 					}
-					if first_preview
-						.is_some_and(|start: Instant| start.elapsed() > Duration::from_secs(15))
-					{
-						break;
-					}
-					if !ready.load(Ordering::Acquire) {
-						if let Ok(mut label) = status.lock()
-							&& *label != "Screen preview · waiting for others"
-						{
-							*label = "Screen preview · waiting for others";
-							wake();
-						}
-						software = None;
-						encoder_diagnostics = None;
-						slow = None;
-						waiting_keyframe = true;
-						first_frame = None;
-						keyframe.store(true, Ordering::Release);
-						let _ = pipeline.frames.try_pull_sample(gst::ClockTime::ZERO);
-					} else {
-						let started = first_frame.get_or_insert_with(Instant::now);
-						// While the transport is behind, leave the picture in the appsink rather
-						// than pulling and discarding it. The sink then blocks upstream, so
-						// pressure reaches the encoder instead of breaking its reference chain,
-						// and this iteration still reaches the await below. Skipping the await
-						// here would spin the worker and starve the portal on this runtime.
-						let room = send.capacity() > 0;
-						withheld = u64::from(!room);
-						if room
-							&& let Some(sample) =
-								pipeline.frames.try_pull_sample(gst::ClockTime::ZERO)
-						{
+					encoding = None;
+					// The raw gate stops updating during a security pause. Discard its old
+					// snapshot so the resumed share starts from newly captured contents.
+					latest_frame = None;
+					slow = None;
+					waiting_keyframe = true;
+					first_frame = None;
+					last_encoded = None;
+					next_frame = Instant::now();
+					keyframe.store(true, Ordering::Release);
+					let _ = pipeline.frames.try_pull_sample(gst::ClockTime::ZERO);
+				} else {
+					let started = first_frame.get_or_insert_with(Instant::now);
+					// While the transport is behind, leave the picture in the appsink rather
+					// than pulling and discarding it. The sink then blocks upstream, so
+					// raw queues shed stale captures without advancing the encoder reference chain,
+					// and this iteration still reaches the await below. Skipping the await
+					// here would spin the worker and starve the portal on this runtime.
+					let room = send.capacity() > 0;
+					withheld = u64::from(!room);
+					let now = Instant::now();
+					let paced = now + Duration::from_millis(2) >= next_frame;
+					wait_for_frame = room && !paced;
+					if room && paced {
+						let pull = metrics.start();
+						let raw = pipeline
+							.frames
+							.try_pull_sample(gst::ClockTime::ZERO)
+							.map(|sample| capture::raw(&sample))
+							.transpose()?;
+						if let Some(raw) = &raw {
 							pulled = true;
-							let pull = metrics.start();
+							if raw.width != settings.width || raw.height != settings.height {
+								return Err("Screen frame dimensions changed unexpectedly");
+							}
 							metrics.finish(crate::diagnostics::Stage::Receive, pull);
-							let (data, is_keyframe) = if mode == Mode::Software {
-								let raw = capture::raw(&sample)?;
-								if raw.width != settings.width || raw.height != settings.height {
-									return Err("Screen frame dimensions changed unexpectedly");
-								}
-								if software.is_none() {
-									software = Some((
-										encoder(settings, active_bitrate)?,
-										YUVBuffer::new(
-											settings.width as usize,
-											settings.height as usize,
-										),
-									));
-								}
-								let (encoder, yuv) =
-									software.as_mut().expect("software encoder initialized");
-								let start = metrics.start();
-								let encoded = encode_pixels(
-									encoder,
-									yuv,
-									&raw.data,
-									(settings.width as usize, settings.height as usize),
-									keyframe.swap(false, Ordering::AcqRel) || waiting_keyframe,
-								)?;
-								metrics.finish(crate::diagnostics::Stage::Encode, start);
-								encoded
-							} else {
-								let buffer =
-									sample.buffer().ok_or("Screen encoder returned no buffer")?;
-								if buffer.size() > MAX_ENCODED_BYTES {
-									return Err("Encoded screen frame exceeds the sharing limit");
-								}
-								let map = buffer
-									.map_readable()
-									.map_err(|_| "Screen video could not be read")?;
-								crate::video::validate_source(&map)?;
-								(
-									map.to_vec(),
-									!buffer.flags().contains(gst::BufferFlags::DELTA_UNIT),
-								)
-							};
-							encoder_diagnostics.get_or_insert_with(|| {
-								crate::diagnostics::EncoderRegistration::new(
-									true,
-									mode != Mode::Software,
-								)
-							});
+						}
+						let requested_keyframe =
+							keyframe.load(Ordering::Acquire) || waiting_keyframe;
+						// Keep a static share alive at one picture per second, even if the
+						// source no longer emits its own PipeWire keepalive buffers.
+						let keepalive = last_encoded
+							.is_some_and(|last| last.elapsed() >= Duration::from_secs(1));
+						if super::retain_screen_frame(
+							&mut latest_frame,
+							raw,
+							ready.load(Ordering::Acquire),
+							requested_keyframe || keepalive,
+						)? {
+							if encoding.is_none() {
+								encoding = Some(ScreenEncoder::new(settings, target)?);
+							}
+							let encoder = encoding.as_mut().expect("screen encoder initialized");
+							let start = metrics.start();
+							let force_keyframe =
+								keyframe.swap(false, Ordering::AcqRel) || waiting_keyframe;
+							let (data, is_keyframe) = encoder.encode(
+								latest_frame.as_ref().expect("latest screen frame"),
+								force_keyframe,
+							)?;
+							// Advance from the schedule, with jitter tolerance and no catch-up burst.
+							next_frame = (next_frame + interval).max(now + interval / 2);
+							last_encoded = Some(now);
+							metrics.finish(crate::diagnostics::Stage::Encode, start);
+							if force_keyframe && (data.is_empty() || !is_keyframe) {
+								keyframe.store(true, Ordering::Release);
+							}
 							if !data.is_empty() && (!waiting_keyframe || is_keyframe) {
 								let frame = EncodedFrame {
 									data,
@@ -351,7 +330,7 @@ pub(super) fn run(
 									let active = if audio_stopped {
 										"Screen sharing · system audio stopped"
 									} else {
-										mode.label()
+										encoder.label()
 									};
 									if let Ok(mut label) = status.lock()
 										&& *label != active
@@ -365,48 +344,47 @@ pub(super) fn run(
 								}
 							}
 						}
-						// Only startup has a frame deadline: an unchanged desktop can stop producing frames.
-						if waiting_keyframe && started.elapsed() > Duration::from_secs(15) {
-							break;
-						}
 					}
-					metrics.poll(false, withheld, !pulled, 0);
-					pictures_second += u32::from(pulled);
-					withheld_second += withheld;
-					if second.elapsed() >= Duration::from_secs(1) {
-						if ready.load(Ordering::Acquire) && pictures_second <= SLOW_PICTURES {
-							let entry = slow.get_or_insert((second, 0));
-							entry.1 += withheld_second;
-						} else if let Some((since, withheld_total)) = slow.take() {
-							note(
-								"capture_slow_ms",
-								&format!(
-									"{} withheld={withheld_total}",
-									since.elapsed().as_millis()
-								),
-							);
-						}
-						second = Instant::now();
-						pictures_second = 0;
-						withheld_second = 0;
-					}
-					if withheld > 0 {
-						// Draining the transport does not notify the appsink. Wake on capacity,
-						// retaining changed()'s 100 ms bound for cancellation and portal checks.
-						tokio::select! {
-							_ = send.reserve() => {},
-							_ = pipeline.changed() => {},
-						}
-					} else {
-						pipeline.changed().await;
+					// Only startup has a frame deadline: an unchanged desktop can stop producing frames.
+					if waiting_keyframe && started.elapsed() > Duration::from_secs(15) {
+						return Err("Screen video encoder did not produce a keyframe");
 					}
 				}
-				// Failed encoders advance through the bounded alternatives; rate changes retry
-				// the current encoder. Always destroy the old pipeline before opening another.
-				drop(pipeline);
-				drop(remote);
+				metrics.poll(false, withheld, !pulled, 0);
+				pictures_second += u32::from(pulled);
+				withheld_second += withheld;
+				if second.elapsed() >= Duration::from_secs(1) {
+					if ready.load(Ordering::Acquire) && pictures_second <= SLOW_PICTURES {
+						let entry = slow.get_or_insert((second, 0));
+						entry.1 += withheld_second;
+					} else if let Some((since, withheld_total)) = slow.take() {
+						note(
+							"capture_slow_ms",
+							&format!("{} withheld={withheld_total}", since.elapsed().as_millis()),
+						);
+					}
+					second = Instant::now();
+					pictures_second = 0;
+					withheld_second = 0;
+				}
+				if withheld > 0 {
+					// Draining the transport does not notify the appsink. Wake on capacity,
+					// retaining changed()'s 100 ms bound for cancellation and portal checks.
+					tokio::select! {
+						_ = send.reserve() => {},
+						_ = pipeline.changed() => {},
+					}
+				} else if wait_for_frame {
+					// A full raw appsink cannot notify again until it is drained. Wake at
+					// the pacing deadline even when the preview branch is hidden.
+					tokio::select! {
+						_ = tokio::time::sleep_until(tokio::time::Instant::from_std(next_frame)) => {},
+						_ = pipeline.changed() => {},
+					}
+				} else {
+					pipeline.changed().await;
+				}
 			}
-			Err("No screen encoder could start; check PipeWire, portal and GStreamer plugins")
 		}
 		.await;
 		ready.store(false, Ordering::Release);

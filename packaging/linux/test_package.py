@@ -3,6 +3,7 @@
 from pathlib import Path
 import argparse
 import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -19,6 +20,28 @@ class NativePackageTest(unittest.TestCase):
             staged = root / "staged"
             staged.mkdir()
             shutil.copyfile("/bin/true", staged / "serein")
+            (staged / "lib").mkdir()
+            # Exercise the actual private SONAME closure without any media APIs.
+            for name, symbol in (("libavutil-serein.so.59", "synthetic_util"), ("libopenh264.so.8", "synthetic_h264")):
+                source = root / (symbol + ".c")
+                source.write_text(f"int {symbol}(void) {{ return 0; }}\n")
+                subprocess.run(["cc", "-shared", "-fPIC", "-Wl,-soname," + name,
+                                "-o", str(staged / "lib" / name), str(source)], check=True)
+            source = root / "codec.c"
+            source.write_text("int synthetic_util(void); int synthetic_h264(void);\n"
+                              "int synthetic_codec(void) { return synthetic_util() + synthetic_h264(); }\n")
+            subprocess.run(["cc", "-shared", "-fPIC", "-Wl,-soname,libavcodec-serein.so.61", "-Wl,-rpath,$ORIGIN",
+                            "-o", str(staged / "lib/libavcodec-serein.so.61"), str(source), "-L" + str(staged / "lib"),
+                            "-l:libavutil-serein.so.59", "-l:libopenh264.so.8"], check=True)
+            source = root / "main.c"
+            source.write_text("int synthetic_codec(void); int main(void) { return synthetic_codec(); }\n")
+            subprocess.run(["cc", "-o", str(staged / "serein"), str(source), "-L" + str(staged / "lib"),
+                            "-Wl,-rpath,$ORIGIN/lib:$ORIGIN/../lib/serein", "-Wl,-rpath-link," + str(staged / "lib"),
+                            "-l:libavcodec-serein.so.61"], check=True)
+            (staged / "ffmpeg-source/source").mkdir(parents=True)
+            for name in ("build.json", "configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE",
+                         "nv-codec-headers-README", "source/ffmpeg-7.1.5.tar.xz", "source/nv-codec-headers-12.2.72.0.tar.gz"):
+                (staged / "ffmpeg-source" / name).write_text("synthetic FFmpeg provenance\n")
             for name in ["README.md", "LICENSE-MIT", "LICENSE-APACHE", "THIRD_PARTY_NOTICES.md"]:
                 (staged / name).write_text("synthetic package fixture\n")
             (staged / "docs").mkdir()
@@ -82,6 +105,11 @@ class NativePackageTest(unittest.TestCase):
             self.assertNotIn("source/hpke-rs/", listing)
             self.assertIn("licenses/dependencies/PROVENANCE.md", listing)
             self.assertIn("licenses/voice/", listing)
+            self.assertIn("usr/lib/serein/libavcodec-serein.so.61", listing)
+            self.assertIn("ffmpeg-source/source/ffmpeg-7.1.5.tar.xz", listing)
+            depends = packaging.output("dpkg-deb", "--field", str(artifact), "Depends")
+            self.assertNotIn("libavcodec", depends)
+            self.assertNotIn("libopenh264", depends)
             # Preserve valid metadata while making the expected payload disagree.
             wrong_stage = root / "wrong-stage"
             wrong_stage.mkdir()

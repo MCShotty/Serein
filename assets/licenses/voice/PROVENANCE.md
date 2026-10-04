@@ -1,5 +1,43 @@
 # Voice dependency license provenance
 
+## FFmpeg outgoing video encoders — October 4, 2026
+
+`scripts/build-ffmpeg.py` builds shared FFmpeg 7.1.5 avcodec/avutil with GPL,
+nonfree, Media Foundation and VA-API disabled. It enables libopenh264 2.6.0,
+supported NVENC and macOS VideoToolbox only. OpenH264 2.6.0 matches the existing
+openh264-sys2 0.9.8 bundled codec version. The LGPL FFmpeg corresponding source
+archive, exact recipe/source metadata, namespace patch and configure arguments are staged from
+the built prefix into every package's `ffmpeg-source` directory. Nix uses the
+same source pins and recipe. No compiler or downloaded Cisco binary is bundled.
+
+| Source archive | URL | SHA-256 |
+|---|---|---|
+| FFmpeg 7.1.5 | https://ffmpeg.org/releases/ffmpeg-7.1.5.tar.xz | `de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f` |
+| OpenH264 2.6.0 | https://codeload.github.com/cisco/openh264/tar.gz/refs/tags/v2.6.0 | `558544ad358283a7ab2930d69a9ceddf913f4a51ee9bf1bfb9e377322af81a69` |
+| nv-codec-headers 12.2.72.0 | https://codeload.github.com/FFmpeg/nv-codec-headers/tar.gz/refs/tags/n12.2.72.0 | `dbeaec433d93b850714760282f1d0992b1254fc3b5a6cb7d76fc1340a1e47563` |
+
+`ffmpeg-COPYING.LGPLv2.1.txt` is copied unmodified from the FFmpeg archive's
+`COPYING.LGPLv2.1`; SHA-256
+`246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30`.
+`nv-codec-headers-LICENSE.txt` retains verbatim the MIT notice from
+`include/ffnvcodec/nvEncodeAPI.h`; SHA-256
+`72b60be67644d841bfd54a042875b5846294d357040dd7ac8e38bde20d9e8f97`.
+That notice applies to that header; the complete NVENC headers archive is also
+bundled on NVENC builds to retain every header's own notice and copyright.
+The two FFmpeg version scripts use Serein's private ELF symbol namespaces;
+the library names have a `-serein` suffix. The source changes are preserved in
+`ffmpeg-source/serein-ffmpeg.patch` beside the pristine source archive and are
+applied by the retained build recipe. They prevent collision with host FFmpeg
+libraries used by GStreamer's incoming decoding plugins.
+The existing `openh264-sys2-upstream-LICENSE` preserves the Cisco codec notice;
+the separately compiled shared library also carries its upstream LICENSE in
+`ffmpeg-source/OpenH264-LICENSE`.
+
+Shared libraries remain replaceable. The OpenH264 source build does not inherit
+the patent-license terms of separately downloaded Cisco binaries. This change
+does not change the application's MIT/Apache source license or claim to finish
+the repository's previously documented distribution review.
+
 September 15, 2026 stream-audio exclusion addition: `libpulse-sys 1.23.0`,
 registry archive SHA-256 `d74371848b22e989f829cc1621d2ebd74960711557d8b45cfe740f60d0a05e61`.
 `libpulse-sys-1.23.0-LICENSE-MIT` is copied unmodified from the release's

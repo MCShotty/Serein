@@ -443,14 +443,15 @@ Source discovery alone does not start streaming. Closing or minimizing a selecte
 
 Linux uses the desktop ScreenCast portal and PipeWire. Share Screen opens the system
 screen/window picker after the quality dialog; source discovery never opens that picker.
-The default is 720p30. The worker tries modern VA-API, legacy VA-API with CPU scaling,
-NVENC with GPU scaling, NVENC with CPU scaling, then the existing OpenH264 software
-encoder. The call stage identifies the active encoder and software fallback.
+The default is 720p30. GStreamer captures bounded raw BGRA pictures; the shared
+FFmpeg encoder tries NVENC, then FFmpeg OpenH264 software encoding. VA-API and
+Media Foundation are excluded from outgoing encoding. The call stage identifies
+the active FFmpeg encoder and software fallback.
 On Niri, portal frames receive pipeline running-time timestamps before frame-rate
 filtering. This handles Niri 26.04's constant presentation timestamps, which otherwise
 freeze the preview and prevent video from reaching a viewer who joins later. Detection
 uses the colon-separated `XDG_CURRENT_DESKTOP` list; other desktops retain their source
-timestamps and all existing hardware/software encoder choices remain available.
+timestamps. FFmpeg backend selection is independent of capture timestamp handling.
 Synthetic coverage reproduces the timestamp failure; native/live delivery still needs
 verification. Run the offline regression without capturing a desktop or joining a call:
 
@@ -460,8 +461,9 @@ target/debug/examples/linux_screen
 target/debug/examples/linux_screen --niri-timestamps
 ```
 
-GPU buffers stay native where driver/plugin
-negotiation permits; zero-copy is not guaranteed, especially across GPUs. Local preview
+Outgoing encoding uses CPU BGRA readback, bounded scaling and I420 conversion.
+NVENC uploads that I420 picture; this path does not provide GPU-only scaling or
+zero-copy capture. Capture/conversion cost requires native measurement. Local preview
 is capped at 640×360/10 fps and suspended when minimized or viewing another channel.
 The system picker requires a ScreenCast-capable portal backend. Native X11 sessions
 also offer an explicit “Entire X11 desktop · all monitors · no portal” source using
@@ -469,17 +471,6 @@ GStreamer's `ximagesrc` (Good plugins). This shares the whole desktop, not an in
 window; cancelling or failing the portal never selects it automatically. The existing
 7680×4320 source caps and bounded encoding/preview queues apply. Native X11 capture
 remains unverified. AV1/H.265 sending is not included.
-
-The legacy fallback requires an available `vaapih264enc` from GStreamer VAAPI;
-`vapostproc` alone does not supply it. It uploads CPU-scaled NV12 frames to the
-hardware encoder, so some CPU use remains expected. No legacy plugin or driver is
-installed automatically. Missing or failing encoders continue through the existing
-fallback sequence. Haswell/i965 encoding and live Discord delivery remain unverified.
-On a Linux machine with that encoder, run
-`cargo run --locked -p discord-voice --example linux_screen -- --legacy-vaapi`
-to check synthetic preview, readiness gating and a decodable H.264 keyframe with
-inline parameter sets, without joining a call or capturing a screen or microphone.
-The check fails if the legacy encoder cannot start; it does not silently use software.
 
 System audio defaults off on Linux and Windows. It shares other applications' playback,
 even when sharing one window, and excludes Serein's own audio, including call playback
@@ -517,7 +508,7 @@ It compiles the actual portal/pipeline/worker modules on Linux with GStreamer,
 checks pre-cancellation without D-Bus, and exercises synthetic preview, the secure-readiness
 gate, stereo audio, bounded slow-consumer behavior, oversized-buffer rejection and software
 H.264. It never captures a desktop or opens an audio device. Native Linux portal interaction,
-VA-API/NVENC, package installation, performance and Discord viewing remain unverified.
+NVENC, native performance and Discord viewing remain unverified.
 Windows process exclusion, Linux application selection and actual remote sound still
 require owner-controlled tests; synthetic samples do not establish those outcomes.
 Use two clients with headphones, enable audio on the sender, play another app and speak
@@ -528,21 +519,38 @@ The native demo (`cargo run --locked -p serein -- --demo --demo-voice`) exposes 
 
 ## Camera in calls (macOS, Windows and Linux)
 
-### Windows hardware encoder contracts
+### Shared FFmpeg encoding
 
-Camera and screen sharing use the same Media Foundation hardware encoder. Forced
-keyframes use an unsigned `VT_UI4` value, as required by
-[`CODECAPI_AVEncVideoForceKeyFrame`](https://learn.microsoft.com/en-us/windows/win32/medfound/codecapi-avencvideoforcekeyframe).
-An encoder that rejects a differently typed control causes software fallback.
+Camera and screen sharing use native FFmpeg 7.1.5 `libavcodec`/`libavutil` contexts
+on their media worker, without a CLI process. Windows/Linux try `h264_nvenc`;
+macOS tries `h264_videotoolbox` with hardware required. Initialization, frame,
+packet-limit or bounded output-delay failure releases hardware and switches to
+`libopenh264`. Windows ARM64 has software encoding only. A software fallback is
+retained across bitrate restarts. No Media Foundation, VA-API, x264 or automatic
+encoder selection is used. Incoming decoding and native capture APIs are separate.
 
-The MFT's [`cbSize`](https://learn.microsoft.com/en-us/windows/win32/api/mftransform/ns-mftransform-mft_output_stream_info)
-is its minimum output-buffer capacity, not the compressed sample length. Caller-owned
-output allocations may use up to the larger of one bounded 32-bit raw picture and
-the existing encoded-frame cap. The actual sample length is still checked against
-the original camera/screen-share encoded-frame limit before it is copied or sent.
-Encoders that provide their own samples do not require a caller-owned output allocation.
-Synthetic native-buffer tests cover these contracts without opening an encoder or
-capture device; hardware acceptance and live Discord delivery remain unverified.
+The pinned FFmpeg OpenH264 wrapper uses camera-realtime/low-complexity tuning
+for software fallback, including screen sharing; it exposes no screen-content
+usage option. Text quality and active screen throughput need native validation.
+
+Official builds use the pinned minimal LGPL recipe in
+[`scripts/build-ffmpeg.py`](../scripts/build-ffmpeg.py), with GPL/nonfree components,
+networking, CLI programs, demuxers and decoders disabled. The replaceable shared
+libraries, license and corresponding FFmpeg source/patch/recipe travel with each
+package. Private FFmpeg library names and ELF symbol versions allow Linux's system
+GStreamer decoder plugin to use its own full FFmpeg build.
+
+Frames remain bounded at 128 KiB for camera and 2 MiB for screen sharing. Each
+camera picture is Baseline IDR; screen sharing uses Main without B frames and
+periodic or requested IDRs. Every outgoing IDR must contain SPS/PPS before its
+slice. Rate changes retain the existing 15% reduction / 25% recovery thresholds,
+restart only the encoder and request a fresh IDR. Capture, portal selection and
+system audio continue through that restart. Secure readiness and transport
+capacity still gate outgoing encoding.
+
+Software synthetic checks validate fresh-decoder camera/forced-screen IDRs, screen
+delta frames, malformed input and packet bounds. Hardware drivers, physical capture
+and live Discord playback require owner-controlled validation on each platform.
 
 ### Camera capture and delivery
 
@@ -577,11 +585,9 @@ the same resolution. Linux probes each candidate with its effective
 V4L2 interval before ranking it and reapplies the selected interval after the final
 format change. Drivers without interval metadata rank last at the same resolution.
 Capture is converted to 640×480, capped at 15 encoded frames/second, encoded on a worker with a
-600 kbit/s target (not a measured bandwidth guarantee). The worker prefers the platform
-hardware H.264 encoder, the same VideoToolbox and Media Foundation encoders screen sharing
-uses, and VA-API or NVENC through a private GStreamer pipeline on Linux. OpenH264 remains
-the fallback when no hardware encoder is available and when one fails mid-capture, which
-switches the remaining capture to software rather than ending it. Every path requests the
+600 kbit/s target (not a measured bandwidth guarantee). The worker uses the shared
+FFmpeg NVENC/VideoToolbox encoder and FFmpeg OpenH264 fallback described above.
+A hardware failure switches the remaining capture to software. Every path requests the
 Baseline profile and codes each picture as an IDR, so the wire format is unchanged; a
 hardware encoder whose output is not independently decodable is rejected in favor of the
 software one. macOS retains one pending
@@ -776,7 +782,7 @@ means no attachment ever connects. Compare against
 `parec --monitor-stream=INDEX -d SINK.monitor`, which uses the same interface.
 
 Linux screen capture reports under `ScreenVideo`: `receive` counts pictures taken from the
-pipeline, `encode` times the software encoder, `drops` counts pictures left in the pipeline
+pipeline, `encode` times the active FFmpeg encoder, `drops` counts pictures left in the pipeline
 because the transport had not drained the previous one, and `stalls` counts passes where the
 pipeline offered nothing. A share that freezes with `stalls` high and `drops` at zero means
 the desktop stopped producing pictures; `drops` rising instead means the encoder or the

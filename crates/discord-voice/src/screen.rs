@@ -9,7 +9,6 @@ mod audio_windows;
 #[cfg(not(target_os = "linux"))]
 #[path = "screen/capture.rs"]
 mod capture;
-#[cfg(any(test, not(target_os = "linux")))]
 #[path = "screen/convert.rs"]
 mod convert;
 #[cfg(target_os = "linux")]
@@ -22,14 +21,6 @@ mod linux;
 #[path = "screen/portal_linux.rs"]
 mod portal_linux;
 
-use openh264::{
-	OpenH264API,
-	encoder::{
-		BitRate, Complexity, Encoder, EncoderConfig, FrameRate, FrameType, IntraFramePeriod,
-		RateControlMode, UsageType,
-	},
-	formats::{BgraSliceU8, YUVBuffer, YUVSource},
-};
 use std::sync::{
 	Arc, Mutex,
 	atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
@@ -389,23 +380,7 @@ fn encode_loop(
 		{
 			keyframe.store(true, Ordering::Release);
 		}
-		// Retain one current source snapshot, never encoded media, for a viewer's keyframe
-		// request on an unchanged desktop. VideoToolbox takes packed BGRA at the stream size
-		// (ScreenCaptureKit already scales); other encoders convert the source in one pass.
-		#[cfg(target_os = "macos")]
-		{
-			let pixels = fit_frame(
-				latest_frame.take().expect("latest screen frame"),
-				settings.width,
-				settings.height,
-			)?;
-			latest_frame = Some(RawFrame {
-				width: settings.width,
-				height: settings.height,
-				stride: settings.width as usize * 4,
-				data: pixels,
-			});
-		}
+		// Retain one source snapshot for keyframe requests on an unchanged desktop.
 		let force_keyframe = keyframe.swap(false, Ordering::AcqRel);
 		let (data, is_keyframe) = encoding.as_mut().expect("secure screen encoder").encode(
 			latest_frame.as_ref().expect("latest screen frame"),
@@ -433,8 +408,7 @@ fn encode_loop(
 	Ok(())
 }
 
-#[cfg(any(test, not(target_os = "linux")))]
-fn retain_screen_frame(
+pub(super) fn retain_screen_frame(
 	latest: &mut Option<RawFrame>,
 	frame: Option<RawFrame>,
 	ready: bool,
@@ -448,226 +422,95 @@ fn retain_screen_frame(
 	Ok(ready && latest.is_some() && (fresh || keyframe))
 }
 
-/// Screen encoder preferring the platform hardware H.264 encoder (Media Foundation on
-/// Windows, VideoToolbox on macOS) and falling back to openh264 when it is unavailable or
-/// fails mid-stream.
-#[cfg(not(target_os = "linux"))]
-struct ScreenEncoder {
+/// FFmpeg encoder shared by every platform; native capture remains independent.
+pub(super) struct ScreenEncoder {
 	diagnostics: crate::diagnostics::EncoderRegistration,
-	software: Option<Encoder>,
-	/// Reused I420 picture for openh264.
+	encoder: Option<crate::video_encode::Encoder>,
 	i420: Vec<u8>,
-	hardware: Option<crate::video_encode::hardware::Encoder>,
 	settings: Settings,
 	bitrate: u32,
 }
 
-#[cfg(not(target_os = "linux"))]
 impl ScreenEncoder {
-	fn new(settings: Settings, bitrate: u32) -> Result<Self, &'static str> {
-		let config = crate::video_encode::Config {
-			width: settings.width,
-			height: settings.height,
-			fps: settings.fps,
-			bit_rate: bitrate,
-			max_bytes: MAX_ENCODED_BYTES,
-			profile: crate::video_encode::Profile::Main,
-		};
-		#[cfg(target_os = "macos")]
-		let hardware = crate::video_encode::hardware::Encoder::new(
-			config,
-			crate::video_encode::SourceFormat::Bgra,
-		)
-		.ok();
-		#[cfg(target_os = "windows")]
-		let hardware = crate::video_encode::hardware::Encoder::new(config).ok();
-		let software = if hardware.is_none() {
-			Some(encoder(settings, bitrate)?)
-		} else {
-			None
-		};
+	pub(super) fn new(settings: Settings, bitrate: u32) -> Result<Self, &'static str> {
+		if !settings.valid() {
+			return Err("Invalid screen encoder settings");
+		}
+		let encoder = crate::video_encode::Encoder::new(Self::config(settings, bitrate))?;
 		Ok(Self {
-			diagnostics: crate::diagnostics::EncoderRegistration::new(true, hardware.is_some()),
-			software,
+			diagnostics: crate::diagnostics::EncoderRegistration::new(true, encoder.hardware()),
+			encoder: Some(encoder),
 			i420: Vec::new(),
-			hardware,
 			settings,
 			bitrate,
 		})
 	}
 
-	fn set_bitrate(&mut self, bitrate: u32) -> Result<bool, &'static str> {
-		if self.bitrate == bitrate {
+	fn config(settings: Settings, bitrate: u32) -> crate::video_encode::Config {
+		crate::video_encode::Config {
+			width: settings.width,
+			height: settings.height,
+			fps: settings.fps,
+			bit_rate: bitrate.clamp(250_000, settings.bit_rate()),
+			max_bytes: MAX_ENCODED_BYTES,
+			profile: crate::video_encode::Profile::Main,
+		}
+	}
+
+	#[cfg(target_os = "linux")]
+	pub(super) fn label(&self) -> &'static str {
+		self.encoder
+			.as_ref()
+			.map_or("FFmpeg encoder stopped", |encoder| encoder.label())
+	}
+
+	pub(super) fn set_bitrate(&mut self, bitrate: u32) -> Result<bool, &'static str> {
+		let bitrate = bitrate.clamp(250_000, self.settings.bit_rate());
+		// Rate changes restart at an IDR. Bound restart frequency with the sender's
+		// existing 15% reduction / 25% recovery thresholds.
+		if !software_rate_change(self.bitrate, bitrate) {
 			return Ok(false);
 		}
-		if self
-			.hardware
-			.as_mut()
-			.is_some_and(|encoder| encoder.set_bitrate(bitrate).is_ok())
-		{
-			self.bitrate = bitrate;
-			return Ok(false);
-		}
-		if self.hardware.is_none() {
-			// OpenH264 exposes no safe runtime bitrate setter, and a restart costs an IDR:
-			// follow only large moves so gradual recovery cannot cause a keyframe per second.
-			if !software_rate_change(self.bitrate, bitrate) {
-				return Ok(false);
-			}
-			self.software = Some(encoder(self.settings, bitrate)?);
-			self.bitrate = bitrate;
+		let hardware = self
+			.encoder
+			.as_ref()
+			.is_some_and(|encoder| encoder.hardware());
+		self.encoder = None;
+		self.diagnostics.set(None);
+		let config = Self::config(self.settings, bitrate);
+		let encoder = if hardware {
+			crate::video_encode::Encoder::new(config)?
 		} else {
-			// Reopen native encoders that refuse a live rate change at the target rate.
-			// Release scarce hardware sessions before requesting their replacement.
-			self.hardware = None;
-			*self = Self::new(self.settings, bitrate)?;
-		}
+			crate::video_encode::Encoder::software(config)?
+		};
+		self.diagnostics.set(Some(encoder.hardware()));
+		self.encoder = Some(encoder);
+		self.bitrate = bitrate;
 		Ok(true)
 	}
 
-	fn encode(
+	pub(super) fn encode(
 		&mut self,
 		frame: &RawFrame,
-		force_keyframe: bool,
+		force: bool,
 	) -> Result<(Vec<u8>, bool), &'static str> {
 		let (width, height) = (self.settings.width as usize, self.settings.height as usize);
-		let mut software_force = force_keyframe;
-		if let Some(hardware) = self.hardware.as_mut() {
-			#[cfg(target_os = "macos")]
-			let encoded = hardware.encode(&frame.data, (width, height), force_keyframe);
-			#[cfg(target_os = "windows")]
-			let encoded = hardware.encode_with(width * height * 3 / 2, force_keyframe, |picture| {
-				convert::bgra_to_yuv420(frame, width, height, convert::Chroma::Interleaved, picture)
-			});
-			if let Ok(encoded) = encoded {
-				return Ok(encoded);
-			}
-			// The viewer must restart from a keyframe once the software encoder takes over.
-			self.hardware = None;
-			self.diagnostics.set(None);
-			self.software = Some(encoder(self.settings, self.bitrate)?);
-			self.diagnostics.set(Some(false));
-			software_force = true;
-		}
 		self.i420.resize(width * height * 3 / 2, 0);
-		convert::bgra_to_yuv420(
-			frame,
-			width,
-			height,
-			convert::Chroma::Planar,
-			&mut self.i420,
-		)?;
-		let (y, chroma) = self.i420.split_at(width * height);
-		let (u, v) = chroma.split_at(width * height / 4);
-		encode_yuv(
-			self.software.as_mut().expect("software screen encoder"),
-			&openh264::formats::YUVSlices::new(
-				(y, u, v),
-				(width, height),
-				(width, width / 2, width / 2),
-			),
-			software_force,
-		)
+		convert::bgra_to_i420(frame, width, height, &mut self.i420)?;
+		let encoder = self
+			.encoder
+			.as_mut()
+			.ok_or("FFmpeg screen encoder stopped")?;
+		let result = encoder.encode(&self.i420, force)?;
+		self.diagnostics.set(Some(encoder.hardware()));
+		Ok(result)
 	}
 }
 
-/// Whether a software encoder should restart for a new transport target.
-#[cfg_attr(target_os = "linux", allow(dead_code))]
+/// Significant bitrate moves apply without restarting on every feedback tick.
 pub(crate) fn software_rate_change(current: u32, target: u32) -> bool {
-	// Always honor congestion cuts of at least 15%; grow in 25% steps.
 	u64::from(target) * 100 <= u64::from(current) * 85
 		|| u64::from(target) * 100 >= u64::from(current) * 125
-}
-
-#[cfg(any(target_os = "windows", test))]
-pub(crate) fn i420_to_nv12(
-	y: &[u8],
-	u: &[u8],
-	v: &[u8],
-	output: &mut [u8],
-) -> Result<(), &'static str> {
-	if u.len() != v.len() || y.len() != u.len() * 4 || output.len() != y.len() + u.len() + v.len() {
-		return Err("Invalid screen encoder color planes");
-	}
-	output[..y.len()].copy_from_slice(y);
-	for (pair, (&u, &v)) in output[y.len()..]
-		.as_chunks_mut::<2>()
-		.0
-		.iter_mut()
-		.zip(u.iter().zip(v))
-	{
-		pair.copy_from_slice(&[u, v]);
-	}
-	Ok(())
-}
-
-pub(super) fn encoder(settings: Settings, bitrate: u32) -> Result<Encoder, &'static str> {
-	let config = EncoderConfig::new()
-		.bitrate(BitRate::from_bps(
-			bitrate.clamp(250_000, settings.bit_rate()),
-		))
-		.max_frame_rate(FrameRate::from_hz(settings.fps as f32))
-		.usage_type(UsageType::ScreenContentRealTime)
-		.rate_control_mode(RateControlMode::Bitrate)
-		.complexity(if cfg!(target_os = "windows") {
-			Complexity::Low
-		} else {
-			Complexity::Medium
-		})
-		.num_threads(encoder_threads())
-		.intra_frame_period(IntraFramePeriod::from_num_frames(settings.fps * 2));
-	Encoder::with_api_config(OpenH264API::from_source(), config)
-		.map_err(|_| "Screen video encoder is unavailable")
-}
-
-fn encoder_threads() -> u16 {
-	std::thread::available_parallelism().map_or(2, |count| count.get().clamp(2, 8) as u16)
-}
-
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub(super) fn encode_pixels(
-	encoder: &mut Encoder,
-	yuv: &mut YUVBuffer,
-	pixels: &[u8],
-	dimensions: (usize, usize),
-	force_keyframe: bool,
-) -> Result<(Vec<u8>, bool), &'static str> {
-	yuv.read_bgra8(BgraSliceU8::new(pixels, dimensions));
-	encode_yuv(encoder, yuv, force_keyframe)
-}
-
-fn encode_yuv(
-	encoder: &mut Encoder,
-	yuv: &impl YUVSource,
-	force_keyframe: bool,
-) -> Result<(Vec<u8>, bool), &'static str> {
-	if force_keyframe {
-		encoder.force_intra_frame();
-	}
-	let encoded = encoder
-		.encode(yuv)
-		.map_err(|_| "Screen video encoding failed")?;
-	let is_keyframe = matches!(encoded.frame_type(), FrameType::IDR);
-	let mut encoded_len = 0usize;
-	for layer_index in 0..encoded.num_layers() {
-		let layer = encoded
-			.layer(layer_index)
-			.ok_or("Screen video encoder returned an invalid layer")?;
-		for nal_index in 0..layer.nal_count() {
-			encoded_len = encoded_len
-				.checked_add(
-					layer
-						.nal_unit(nal_index)
-						.ok_or("Screen video encoder returned an invalid NAL")?
-						.len(),
-				)
-				.filter(|length| *length <= MAX_ENCODED_BYTES)
-				.ok_or("Encoded screen frame exceeds the sharing limit; choose a lower quality")?;
-		}
-	}
-	let mut data = Vec::with_capacity(encoded_len);
-	encoded.write_vec(&mut data);
-	Ok((data, is_keyframe))
 }
 
 fn validate_frame(frame: &RawFrame) -> Result<(usize, usize), &'static str> {
@@ -711,47 +554,6 @@ pub(super) fn preview_frame(frame: &RawFrame) -> Result<image::RgbaImage, &'stat
 			255,
 		])
 	}))
-}
-
-#[cfg(any(test, target_os = "macos"))]
-fn fit_frame(frame: RawFrame, width: u32, height: u32) -> Result<Vec<u8>, &'static str> {
-	let (row_bytes, required) = validate_frame(&frame)?;
-
-	let mut packed = if frame.stride == row_bytes {
-		frame.data
-	} else {
-		let mut packed = Vec::with_capacity(row_bytes * frame.height as usize);
-		for row in frame.data[..required].chunks_exact(frame.stride) {
-			packed.extend_from_slice(&row[..row_bytes]);
-		}
-		packed
-	};
-	packed.truncate(row_bytes * frame.height as usize);
-	if frame.width == width && frame.height == height {
-		return Ok(packed);
-	}
-	let image = image::RgbaImage::from_raw(frame.width, frame.height, packed)
-		.ok_or("Invalid screen frame")?;
-	let scale = (f64::from(width) / f64::from(frame.width))
-		.min(f64::from(height) / f64::from(frame.height));
-	let (scaled_width, scaled_height) = (
-		(f64::from(frame.width) * scale).round().max(1.0) as u32,
-		(f64::from(frame.height) * scale).round().max(1.0) as u32,
-	);
-	let scaled = image::imageops::resize(
-		&image,
-		scaled_width,
-		scaled_height,
-		image::imageops::FilterType::Triangle,
-	);
-	let mut output = image::RgbaImage::new(width, height);
-	image::imageops::replace(
-		&mut output,
-		&scaled,
-		i64::from((width - scaled_width) / 2),
-		i64::from((height - scaled_height) / 2),
-	);
-	Ok(output.into_raw())
 }
 
 #[cfg(test)]
@@ -837,8 +639,9 @@ mod tests {
 			stride: 12,
 			data: vec![255; 24],
 		};
-		let pixels = fit_frame(frame, 1280, 720).unwrap();
-		assert_eq!(pixels.len(), 1280 * 720 * 4);
+		let mut pixels = vec![0; 1280 * 720 * 3 / 2];
+		convert::bgra_to_i420(&frame, 1280, 720, &mut pixels).unwrap();
+		assert_eq!(pixels.len(), 1280 * 720 * 3 / 2);
 
 		let settings = Settings {
 			source: SourceId::Display(1),
@@ -848,17 +651,37 @@ mod tests {
 			cursor: true,
 			audio: false,
 		};
-		let mut encoder = encoder(settings, settings.bit_rate()).unwrap();
-		let mut yuv = YUVBuffer::new(1280, 720);
-		let (encoded, keyframe) =
-			encode_pixels(&mut encoder, &mut yuv, &pixels, (1280, 720), true).unwrap();
+		let encoder = crate::video_encode::Encoder::software(ScreenEncoder::config(
+			settings,
+			settings.bit_rate(),
+		))
+		.unwrap();
+		let mut encoder = ScreenEncoder {
+			diagnostics: crate::diagnostics::EncoderRegistration::new(true, false),
+			encoder: Some(encoder),
+			i420: Vec::new(),
+			settings,
+			bitrate: settings.bit_rate(),
+		};
+		let raw = frame;
+		let (encoded, keyframe) = encoder.encode(&raw, true).unwrap();
 		assert!(keyframe);
 		assert!(!encoded.is_empty() && encoded.len() <= MAX_ENCODED_BYTES);
-		assert!(encoded.windows(5).any(|nal| nal == [0, 0, 0, 1, 0x65]));
+		assert!(crate::video_receive::is_keyframe(&encoded));
+		assert!(crate::video_receive::has_parameter_sets(&encoded));
+		use openh264::formats::YUVSource;
+		let mut decoder = openh264::decoder::Decoder::new().unwrap();
+		assert_eq!(
+			decoder.decode(&encoded).unwrap().unwrap().dimensions(),
+			(1280, 720)
+		);
+		assert!(encoder.set_bitrate(settings.bit_rate() / 2).unwrap());
+		let (encoded, keyframe) = encoder.encode(&raw, true).unwrap();
+		assert!(keyframe && crate::video_receive::has_parameter_sets(&encoded));
 
 		assert!(
-			fit_frame(
-				RawFrame {
+			convert::bgra_to_i420(
+				&RawFrame {
 					width: 2,
 					height: 2,
 					stride: 4,
@@ -866,16 +689,9 @@ mod tests {
 				},
 				1280,
 				720,
+				&mut pixels,
 			)
 			.is_err()
 		);
-	}
-
-	#[test]
-	fn interleaves_i420_chroma_for_windows_nv12() {
-		let mut nv12 = [0; 12];
-		i420_to_nv12(&[1, 2, 3, 4, 5, 6, 7, 8], &[9, 10], &[11, 12], &mut nv12).unwrap();
-		assert_eq!(nv12, [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 10, 12]);
-		assert!(i420_to_nv12(&[0; 4], &[0; 2], &[0; 2], &mut [0; 8]).is_err());
 	}
 }
