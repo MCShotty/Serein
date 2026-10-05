@@ -186,7 +186,8 @@ def main():
             wait_for(lambda: not uninstaller.exists())
             assert unrelated.read_text() == "Owner data must survive install, upgrade and uninstall"
             assert unrelated_nested.read_text() == "Unrelated nested owner data"
-            assert sorted(path.relative_to(installed).as_posix() for path in installed.rglob("*") if path.is_file()) == ["owner-data/keep.txt", "unrelated.txt"]
+            remaining = sorted(path.relative_to(installed).as_posix() for path in installed.rglob("*") if path.is_file())
+            assert remaining == ["owner-data/keep.txt", "unrelated.txt"], remaining
             assert not shortcut.exists()
             try:
                 with winreg.OpenKey(winreg.HKEY_CURRENT_USER, uninstall_key, 0,

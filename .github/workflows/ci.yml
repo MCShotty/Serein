@@ -64,6 +64,15 @@ jobs:
           msystem: MSYS
           path-type: inherit
           install: make pkgconf nasm diffutils
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: rustfmt, clippy
+      # Cache restoration cleans target paths, including a freshly built FFmpeg
+      # prefix. Restore Cargo artifacts before generating the native libraries.
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build LGPL-only FFmpeg encoders
         if: runner.os != 'Windows'
         run: python3 scripts/build-ffmpeg.py
@@ -83,13 +92,6 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: '"$env:FFMPEG_DIR/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append'
-      - uses: dtolnay/rust-toolchain@1.98.1
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2.9.2
-        with:
-          cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Check production build without development fixtures
         run: cargo check --locked -p serein --bin serein --no-default-features
       - run: cargo xtask check
