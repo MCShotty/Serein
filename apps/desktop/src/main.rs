@@ -57,6 +57,7 @@ mod tray_window;
 mod updater;
 mod uploads;
 mod video;
+mod video_capabilities;
 mod voice;
 mod watch;
 use client_core::{
@@ -77,6 +78,9 @@ const SIGN_IN_HEADER_HEIGHT: f32 = if cfg!(target_os = "windows") {
 
 /// Run explicit offline checks before native startup, or launch the configured desktop client.
 fn main() -> eframe::Result {
+	if let Some(status) = video_capabilities::probe_command() {
+		std::process::exit(status);
+	}
 	#[cfg(all(debug_assertions, feature = "demo"))]
 	if std::env::args().any(|arg| arg == "--demo")
 		&& std::env::args().any(|arg| arg == "--demo-check-window-geometry")

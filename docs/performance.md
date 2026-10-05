@@ -4638,3 +4638,35 @@ performance and standard release executable/installed/compressed package deltas
 were not measured for this linkage fix. The current `cargo xtask check` attempt
 still fails at missing `glib-2.0.pc`; native development prerequisites and full
 application packaging remain CI requirements.
+
+
+## Hardware codec detection — October 5, 2026
+
+Base `a08d5a7b6fef26959166708b690378bfd1e3da6c`; raw current samples and limits in
+[hardware capability evidence](pr-evidence/video-hardware-capabilities/README.md).
+Debian 13 x86_64, kernel 6.18.44, five CPUs, 18,882,699,264 bytes RAM, Rust 1.98.1,
+Xvfb/Mesa with WGPU GL. The isolated native UI uses synthetic --demo data,
+1120×760 dark at 100%, six-second warmup and 15 one-second RSS samples after the
+same settings scroll interaction. One pair only; opt-level 1/debug 0 previews,
+baseline incremental defaults and after incremental disabled. These are auxiliary
+observations; standard release/package comparisons remain blocked by missing
+`glib-2.0.pc`, and no performance improvement is claimed.
+
+| Metric / method | Baseline | After | Delta |
+| --- | ---: | ---: | ---: |
+| Auxiliary preview settled/peak RSS | 148.043 MiB | 146.668 MiB | −1.375 MiB (no improvement claim)|
+| Auxiliary preview idle CPU, one core | 0.000% | 0.067% | +0.067 percentage points (single short sample)|
+| Auxiliary preview executable | 83,183,560 bytes | 84,268,632 bytes | +1,085,072 bytes; not the desktop package|
+| Full release executable / installed / compressed package |Unavailable|Unavailable|Missing native development metadata|
+
+A headless harness of the actual detector and real FFmpeg path ran one warmup
+and five measured scans with synthetic pictures, without capture or a network
+session. This host has no usable GPU devices: all nine backend/codec pairs were
+unavailable. Median elapsed was 264.909 ms. Polling parent/child RSS every 1 ms gave
+median sampled peaks 8.047 MiB parent and 4.957 MiB helper; short allocations may be
+missed. There was at most one simultaneous helper, nine observed per scan and
+none left after completion. UI previews had no children. This does not predict
+positive GPU-driver session startup, encode throughput or GPU memory usage.
+Full-desktop idle CPU/RSS, release/package deltas and frame/startup latency remain
+unmeasured. Each backend/codec check has a 10-second subprocess deadline; a complete
+Linux/Windows scan has at most nine sequential checks and a fixed 13-entry queue.
