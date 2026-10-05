@@ -35,12 +35,6 @@ jobs:
       matrix:
         os: [macos-latest, windows-latest, windows-11-arm, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    env:
-      # Cargo cache restoration prunes native headers/build trees under target.
-      # Use fresh job-owned paths for every part of the FFmpeg build instead.
-      FFMPEG_DIR: ${{ runner.temp }}/serein-ffmpeg/prefix
-      FFMPEG_WORK: ${{ runner.temp }}/serein-ffmpeg/build
-      FFMPEG_CACHE: ${{ runner.temp }}/serein-ffmpeg/sources
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Mac signing regression (offline)
@@ -77,6 +71,15 @@ jobs:
         with:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Prepare native build paths
+        shell: bash
+        run: |
+          # Cargo cache restoration prunes native headers/build trees under target.
+          # Keep the native build entirely in fresh job-owned scratch paths.
+          ffmpeg_root="${{ runner.temp }}/serein-ffmpeg"
+          echo "FFMPEG_DIR=$ffmpeg_root/prefix" >> "$GITHUB_ENV"
+          echo "FFMPEG_WORK=$ffmpeg_root/build" >> "$GITHUB_ENV"
+          echo "FFMPEG_CACHE=$ffmpeg_root/sources" >> "$GITHUB_ENV"
       - name: Build LGPL-only FFmpeg encoders
         if: runner.os != 'Windows'
         run: python3 scripts/build-ffmpeg.py --prefix "$FFMPEG_DIR" --work-dir "$FFMPEG_WORK" --cache-dir "$FFMPEG_CACHE"
