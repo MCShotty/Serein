@@ -12,6 +12,7 @@ mod stream_playout;
 mod timer;
 mod transport;
 mod video;
+mod video_backend;
 mod video_encode;
 mod video_receive;
 mod video_sps;
@@ -28,6 +29,8 @@ pub struct Controls {
 	pub activity_threshold_db: i16,
 	/// Zero means off; a new value invalidates frames from the previous camera instance.
 	pub camera: u64,
+	/// Immutable outgoing camera settings negotiated when the call starts.
+	pub video: model::voice_settings::VideoSettings,
 	pub deafened: bool,
 	/// Session-only playback percentages (0–200); zero user IDs are unused.
 	pub user_volumes: [(u64, u16); 64],
@@ -40,6 +43,7 @@ impl Default for Controls {
 			muted: false,
 			activity_threshold_db: -45,
 			camera: 0,
+			video: Default::default(),
 			deafened: false,
 			user_volumes: [(0, 100); 64],
 			stream_volume: 100,

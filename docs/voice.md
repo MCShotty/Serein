@@ -297,7 +297,8 @@ and call video decoding; `StreamReceive` reports its own video decoding. Values 
 `hardware`, `software`, `mixed` for simultaneously active backends, or `unknown`
 when no backend is active. A fallback replaces the hardware indication with software.
 On macOS, live VideoToolbox sessions require hardware acceleration; failures use
-the software fallback after keyframe recovery.
+the H.264 software fallback after keyframe recovery; H.265/AV1 have no bundled
+software fallback.
 For example, launch an already-built macOS app from a terminal:
 
 ```sh
@@ -443,11 +444,9 @@ Source discovery alone does not start streaming. Closing or minimizing a selecte
 
 Linux uses the desktop ScreenCast portal and PipeWire. Share Screen opens the system
 screen/window picker after the quality dialog; source discovery never opens that picker.
-The default is 720p30. GStreamer captures bounded raw BGRA pictures; the shared
-FFmpeg encoder tries NVENC, AMD AMF and Intel Quick Sync, then FFmpeg OpenH264
-software encoding. The VA-API and Media Foundation encoders are excluded; Intel
-Quick Sync uses the Linux VA driver interface underneath its own encoder. The call stage identifies
-the active FFmpeg encoder and software fallback.
+The default is 720p30. GStreamer captures bounded raw BGRA pictures. Stable uses
+GStreamer VA/NV encoding with OpenH264 fallback; Experimental uses FFmpeg as
+described below. The call stage identifies the active encoder and software fallback.
 On Niri, portal frames receive pipeline running-time timestamps before frame-rate
 filtering. This handles Niri 26.04's constant presentation timestamps, which otherwise
 freeze the preview and prevent video from reaching a viewer who joins later. Detection
@@ -472,7 +471,8 @@ also offer an explicit “Entire X11 desktop · all monitors · no portal” sou
 GStreamer's `ximagesrc` (Good plugins). This shares the whole desktop, not an individual
 window; cancelling or failing the portal never selects it automatically. The existing
 7680×4320 source caps and bounded encoding/preview queues apply. Native X11 capture
-remains unverified. AV1/H.265 sending is not included.
+remains unverified. H.265/AV1 sending requires the Experimental backend, compatible hardware and
+explicit codec negotiation; Stable supports H.264.
 
 System audio defaults off on Linux and Windows. It shares other applications' playback,
 even when sharing one window, and excludes Serein's own audio, including call playback
@@ -521,57 +521,67 @@ The native demo (`cargo run --locked -p serein -- --demo --demo-voice`) exposes 
 
 ## Camera in calls (macOS, Windows and Linux)
 
-### Shared FFmpeg encoding
+### Video backend and codec settings
 
-Camera and screen sharing use native FFmpeg 7.1.5 `libavcodec`/`libavutil` contexts
-on their media worker, without a CLI process. Windows/Linux try `h264_nvenc`,
-`h264_amf` (AMD) and `h264_qsv` (Intel Quick Sync), in that order, before
-`libopenh264`. macOS tries `h264_videotoolbox` with hardware required.
-Initialization, frame, packet-limit or bounded output-delay failure releases the
-failed backend before trying the next. Bitrate restarts retain the active backend
-and do not retry earlier failed GPUs; software fallback stays software.
-Windows ARM64 uses software encoding. No Media Foundation, `h264_vaapi`, x264 or
-automatic encoder selection is used. Incoming decoding and native capture APIs
-are separate.
+Voice & Video → Video encoding saves a device-local backend and codec. Stable is the
+new-install and migration default, using the original Media Foundation (Windows),
+VideoToolbox (macOS), or GStreamer VA/NV encoders (Linux), with direct OpenH264
+software fallback. Stable supports H.264. Experimental selects the shared FFmpeg
+backend and offers H.264, H.265 and AV1. Camera settings are snapshotted when a call
+starts; a local camera preview uses the current settings and stops when they change.
+Screen sharing snapshots the settings at the explicit Share gesture. Changes do not
+alter an already negotiated stream. Existing incoming playback remains H.264-only.
 
-AMF needs the installed AMD runtime: D3D11 on Windows, Vulkan through AMF on
-Linux. Quick Sync uses the statically linked oneVPL dispatcher and an installed
-Intel GPU runtime, with an Intel-selected D3D11 device on Windows or an iHD VA
-driver device on Linux. Linux VA-API is enabled only as that Quick Sync device
-interface; its encoder remains disabled. Packages do not install or redistribute
-GPU drivers. Flatpak needs the matching runtime inside its sandbox; host driver
-installation alone does not establish availability. Missing runtimes/devices fall
-through to another backend or software. Actual hardware remains unverified locally.
+Experimental uses native FFmpeg 7.1.5 `libavcodec`/`libavutil` contexts on the media
+worker without a CLI process. Windows/Linux try NVENC, AMD AMF and Intel Quick Sync
+in that order for the selected codec. H.264 then falls back to `libopenh264`.
+H.265 and AV1 require compatible hardware and fail visibly if no encoder succeeds;
+there is no automatic change of codec. macOS supports H.264/H.265 VideoToolbox
+hardware with H.264 software fallback; AV1 has no compatible backend in this recipe.
+Windows ARM64 supports H.264 software encoding. Experimental excludes Media
+Foundation and VA-API encoders; the Linux VA interface remains enabled for Quick
+Sync's device. Incoming decoding and native capture APIs are independent.
 
-Quick Sync receives NV12 from the same bounded I420 input. FFmpeg 7.1's AMF
-wrapper does not forward forced picture types, so Main-profile screen encoding
-reopens AMF after an explicit IDR request once output has been produced. Pending
-startup output is allowed to drain; camera GOP 1 does not reopen per frame.
-This reset cost needs native-device measurement. Native SDK startup, polling and
-retirement can still block; the packet queue limit is not a driver-call deadline.
+AMF needs the installed AMD runtime: D3D11 on Windows, Vulkan through AMF on Linux.
+Quick Sync uses the static oneVPL dispatcher and an installed Intel GPU runtime,
+with an Intel-selected D3D11 device on Windows or an iHD VA driver device on Linux.
+Packages do not install or redistribute GPU drivers. Flatpak needs matching runtimes
+inside its sandbox. Initialization, frame, packet-limit or bounded output-delay
+failure retires the failed backend before trying the next compatible encoder.
+Bitrate restarts retain the active backend and do not retry earlier failed GPUs;
+H.264 software fallback stays software. Native SDK calls and teardown may block;
+the bounded queue is not a driver-call deadline. Hardware remains unverified here.
 
-The pinned FFmpeg OpenH264 wrapper uses camera-realtime/low-complexity tuning
-for software fallback, including screen sharing; it exposes no screen-content
-usage option. Text quality and active screen throughput need native validation.
+Quick Sync receives NV12 from bounded I420 input. AMF restarts its context for
+requested screen keyframes after producing output because FFmpeg 7.1 does not
+forward forced picture types; camera GOP 1 does not restart per frame. The pinned
+FFmpeg OpenH264 wrapper uses camera-realtime/low-complexity tuning for H.264 software
+fallback, including screens; active desktop text quality and throughput need native
+validation. Stable retains OpenH264's original screen-content tuning.
 
 Official builds use the pinned minimal LGPL recipe in
 [`scripts/build-ffmpeg.py`](../scripts/build-ffmpeg.py), with GPL/nonfree components,
-networking, CLI programs, demuxers and decoders disabled. The replaceable shared
-libraries, license and corresponding FFmpeg source/patch/recipe travel with each
-package. Private FFmpeg library names and ELF symbol versions allow Linux's system
-GStreamer decoder plugin to use its own full FFmpeg build.
+networking, CLI programs, demuxers and decoders disabled. Replaceable shared
+libraries, license and corresponding source/patch/recipe travel with each package.
+Private library names and ELF symbol versions keep the system GStreamer FFmpeg
+plugin independent. The source patch also supplies HEVC QSV's missing internal SEI
+helper dependency; no decoder is registered in the outgoing library.
 
-Frames remain bounded at 128 KiB for camera and 2 MiB for screen sharing. Each
-camera picture is Baseline IDR; screen sharing uses Main without B frames and
-periodic or requested IDRs. Every outgoing IDR must contain SPS/PPS before its
-slice. Rate changes retain the existing 15% reduction / 25% recovery thresholds,
-restart only the encoder and request a fresh IDR. Capture, portal selection and
-system audio continue through that restart. Secure readiness and transport
-capacity still gate outgoing encoding.
+Camera output is bounded at 128 KiB and screen output at 2 MiB. Camera pictures
+must be independently decodable; screen encoders use no B frames and periodic or
+requested keyframes. H.264 keyframes repeat SPS/PPS; H.265 repeats VPS/SPS/PPS;
+AV1 repeats a sequence header. Rate changes retain the existing 15% reduction /
+25% recovery thresholds and restart only the encoder. Capture, portal selection,
+audio, secure-readiness gates and queue bounds continue through those restarts.
 
-Software synthetic checks validate fresh-decoder camera/forced-screen IDRs, screen
-delta frames, malformed input and packet bounds. Hardware drivers, physical capture
-and live Discord playback require owner-controlled validation on each platform.
+The sender offers the selected codec, checks the explicit server choice, and uses
+matching DAVE encryption and RTP packetization: H.264 RFC 6184, H.265 RFC 7798,
+and AV1 OBU fragmentation. Mismatches disable camera while preserving audio, or
+reject screen sharing. H.264 incoming decode is advertised separately. Synthetic
+fixtures cover codec signaling, encryption, reconstruction, MTU/count bounds,
+malformed inputs and software H.264 decoding. Physical GPUs, capture and live
+Discord compatibility remain unverified. AV1's handling of DAVE's final OBU size
+field also needs official-client interoperability validation.
 
 ### Camera capture and delivery
 
@@ -606,24 +616,20 @@ the same resolution. Linux probes each candidate with its effective
 V4L2 interval before ranking it and reapplies the selected interval after the final
 format change. Drivers without interval metadata rank last at the same resolution.
 Capture is converted to 640×480, capped at 15 encoded frames/second, encoded on a worker with a
-600 kbit/s target (not a measured bandwidth guarantee). The worker uses the shared
-FFmpeg NVENC/AMF/Quick Sync/VideoToolbox encoder and FFmpeg OpenH264 fallback
-described above.
-A hardware failure advances through the remaining hardware backends, then software.
-Every path requests the
-Baseline profile and codes each picture as an IDR, so the wire format is unchanged.
-Output that is not independently decodable advances to the remaining backends,
-ending with software. macOS retains one pending
+600 kbit/s target (not a measured bandwidth guarantee). The worker uses the backend/codec snapshot described above. H.264 requests
+Baseline; H.265/AV1 use their Main profile with an independently decodable picture
+every frame. Invalid output advances through compatible backends; only H.264 has
+software fallback. macOS retains one pending
 BGRA frame (1,228,800 bytes). Windows validates each native buffer against a 3,194,880-byte
 ceiling (including row padding), requests one source buffer and queues at most one
 921,600-byte RGB frame. Linux requests two mapped buffers, accepts at most four of
 4 MiB each, and decodes YUYV or MJPEG on the worker with a 4 MiB JPEG allocation limit.
 One RGB preview, one encoded frame (128 KiB), and up to 256 RTP
 packets from one bounded frame are retained. Frames are independently decodable to tolerate
-drops. DAVE H264 frame encryption precedes RTP fragmentation and the existing authenticated
+drops. Codec-specific DAVE frame encryption precedes RTP fragmentation and the existing authenticated
 UDP transport. No camera recording or cache is created; the codec is included on supported platforms.
 
-Video SSRC assignment, H264 selection and opcode 12 announcements follow the
+Video SSRC assignment, codec selection and opcode 12 announcements follow the
 [public interoperability implementation](https://github.com/dank074/Discord-video-stream/blob/master/src/client/voice/BaseMediaConnection.ts)
 (checked September 11, 2026); these normal-user video extensions remain unofficial and
 live-unverified. This initial sender has no adaptive
@@ -690,7 +696,7 @@ and `StreamReceive` summaries. `StreamSend` encode calls count captured 20 ms au
 frames encoded, encrypted and sent. `StreamReceive` receive calls count accepted
 DAVE audio packets; mix calls count decoded frames offered to the parent call's output.
 StreamReceive drops count audio/video DAVE decryption failures or a full playback/
-decoder handoff queue. `video_send` counts complete encrypted H.264 frames sent;
+decoder handoff queue. `video_send` counts complete encrypted video frames sent;
 `video_receive` counts decrypted frames accepted by the decoder queue, not displayed frames.
 Each stream report also counts ticks with the transport key, DAVE ready, group ready,
 pending transition, waiting, announced, capture ready and audio enabled flags set,
@@ -805,7 +811,7 @@ means no attachment ever connects. Compare against
 `parec --monitor-stream=INDEX -d SINK.monitor`, which uses the same interface.
 
 Linux screen capture reports under `ScreenVideo`: `receive` counts pictures taken from the
-pipeline, `encode` times the active FFmpeg encoder, `drops` counts pictures left in the pipeline
+pipeline, `encode` times the active video encoder, `drops` counts pictures left in the pipeline
 because the transport had not drained the previous one, and `stalls` counts passes where the
 pipeline offered nothing. A share that freezes with `stalls` high and `drops` at zero means
 the desktop stopped producing pictures; `drops` rising instead means the encoder or the

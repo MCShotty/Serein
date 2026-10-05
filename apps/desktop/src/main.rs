@@ -3326,7 +3326,9 @@ impl Desktop {
 				..
 			} = control
 			{
-				let result = self.voice.begin(&self.state, *ring);
+				let result = self
+					.voice
+					.begin(&self.state, *ring, self.messaging.video_settings);
 				if let Err(message) = result {
 					self.state.apply_voice(client_core::voice::Event::Failed {
 						channel: *channel,

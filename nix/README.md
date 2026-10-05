@@ -21,8 +21,12 @@ that documentation directory. `nix develop` sets `FFMPEG_DIR` to this build.
 No system GPL FFmpeg is linked into this package.
 Linux x64 includes pinned AMF headers and a static oneVPL dispatcher. libva/libdrm
 are Nix dependencies for Quick Sync device setup, while compatible Intel/AMD/NVIDIA
-GPU runtimes remain system-provided. The `h264_vaapi` encoder is excluded; device
-initialization failures select OpenH264. The package retains exact vendor source
+GPU runtimes remain system-provided. Experimental FFmpeg's H264/HEVC/AV1 VA-API
+encoders are excluded; H264 has OpenH264 software fallback, while HEVC/AV1 need
+compatible hardware. Stable retains its original GStreamer VA-API/NVENC H264
+path from the existing Base/Good/Bad plugin dependencies, with Rust OpenH264
+fallback. Vendor factories depend on nixpkgs' plugin build and installed drivers.
+The package retains exact vendor source
 and notices for the same offline rebuild recipe as native distributions.
 
 The package version is the Cargo workspace version, as with `cargo build`. Nix

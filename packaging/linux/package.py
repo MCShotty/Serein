@@ -266,7 +266,7 @@ def rpm_package(temporary, stage, application_version, distro):
             "gstreamer1-plugins-good" if distro == "fedora" else "gstreamer-plugins-good",
             "gstreamer1-plugins-base" if distro == "fedora" else "gstreamer-plugins-base",
             "pipewire-gstreamer" if distro == "fedora" else "gstreamer-plugin-pipewire"]
-    plugins = "gstreamer1-plugins-base" if distro == "fedora" else "gstreamer-plugins-base"
+    hardware_plugins = "gstreamer1-plugins-bad-free" if distro == "fedora" else "gstreamer-plugins-bad"
     spec = temporary / "serein.spec"
     spec.write_text(
         "%global debug_package %{nil}\n%global __os_install_post %{nil}\n"
@@ -277,7 +277,7 @@ def rpm_package(temporary, stage, application_version, distro):
         "Summary: Unofficial native Discord client\nLicense: (MIT OR Apache-2.0) AND LGPL-2.1-or-later AND BSD-2-Clause\n"
         "URL: https://github.com/ViceVerse-cz/Serein\n"
         + "\n".join(f"Requires: {item}" for item in requires)
-        + f"\nRecommends: gnome-keyring, {plugins}\n"
+        + f"\nRecommends: gnome-keyring, {hardware_plugins}\n"
         "\n%description\nNative Rust client for existing Discord accounts, including voice.\n"
         "Unofficial, experimental, and not endorsed by Discord.\n"
         "\n%install\nmkdir -p %{buildroot}\ncp -a %{_serein_payload}/. %{buildroot}/\n"
@@ -344,7 +344,8 @@ def arch_package(temporary, stage, application_version, libraries):
         "license=('MIT' 'Apache-2.0')\noptions=('!strip' '!debug' '!lto')\n"
         + "depends=(" + " ".join(f"'{item}'" for item in sorted(depends)) + ")\n"
         "optdepends=('gnome-keyring: Secret Service credential provider' "
-        "'gst-plugins-bad: hardware screen encoding' 'gst-libav: inline video')\n"
+        "'gst-plugins-bad-libs: Stable H264 parser and NVENC plugin' "
+        "'gst-plugin-va: Stable VA-API H264 hardware encoder' 'gst-libav: inline video')\n"
         "package() { cp -a \"$startdir/payload/.\" \"$pkgdir/\"; }\n", encoding="utf-8")
     checked("makepkg", "--nodeps", "--noconfirm", cwd=temporary)
     artifact, = temporary.glob("serein-*.pkg.tar.*")

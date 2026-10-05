@@ -4363,3 +4363,70 @@ requests reopen the context only after output has started; pending startup
 output can drain and camera GOP 1 avoids a per-frame restart. SDK startup,
 polling and shutdown can still block; bounded queues do not bound native call
 time or remove the worker retirement barrier.
+
+
+## Video backend and codec settings — October 5, 2026
+
+Compare the verified local starting commit `65811f20a7dea160ba4c78459c63dd339a794a5a`
+(the AMD/Intel FFmpeg stage) with Stable/Experimental and codec selection. Remote
+base remains `6313e27`; this comparison measures the latest settings/codec stage,
+not the entire branch against original main. Baseline package, native preview and
+camera test executable were preserved before any new Cargo build. All work is
+synthetic/offline, with no physical media or account session. Raw samples and
+identities are in [video settings evidence](pr-evidence/video-backend-settings/README.md)
+and its [measurements.json](pr-evidence/video-backend-settings/measurements.json).
+
+| Metric / method | Baseline | After | Delta |
+| --- | ---: | ---: | ---: |
+| Standard executable, bytes | 85,704,880 | 85,746,216 | 41,336 / +0.05% |
+| Installed regular files, bytes | 120,678,267 | 120,976,132 | 297,865 / +0.25% |
+| Compressed DEB, bytes | 70,674,624 | 70,795,724 | 121,100 / +0.17% |
+| FFmpeg software, 300 camera frames | 993.070 ms | 1,024.365 ms | 31.295 ms / +3.15% |
+| Default: FFmpeg → Stable software, 300 frames | 1,070.348 ms | 961.377 ms | -108.971 ms / -10.18% |
+| FFmpeg camera sampled peak RSS, median | 19.855 MiB | 20.391 MiB | 0.535 MiB / +2.70% |
+| Default camera sampled peak RSS, median | 19.957 MiB | 22.145 MiB | 2.188 MiB / +10.96% |
+| Voice & Video idle mean CPU, one core | 0.000% | 0.000% | 0.000 percentage points; below sampling resolution |
+| Idle sampled peak RSS | 194.012 MiB | 193.664 MiB | -0.348 MiB / -0.18% |
+| Idle settled RSS | 193.578 MiB | 193.082 MiB | -0.496 MiB / -0.26% |
+
+Debian 13.7, Linux 6.18.44, Intel Xeon Platinum 8573C, five visible logical CPUs,
+18,882,699,264 bytes RAM, Rust 1.98.1 and locked dependencies. Standard voice-enabled
+`cargo xtask package` uses fat LTO, one codegen unit and stripping; the 248-file DEB
+smoke and source/library/notice identity checks passed. Installed bytes sum regular
+files, excluding symlink/allocation overhead. The native prefix and shipped recipe
+match SHA-256 `3e6f390ecf333833313c7aaee760cd53ade18d741f535b17bdc32ee1d7538c59`.
+
+Camera uses unchanged deterministic 640×480 RGB data, 30 warmup frames and
+300 timed conversion/allocation/encoding calls. Each comparison has one process
+warmup and five alternating baseline/after pairs; RSS is sampled every 10 ms.
+The FFmpeg pair ranges overlap (981.882..1120.076 → 1000.103..1079.431 ms); its
+median is 3.15% higher, while all runs produce 300 packets/5,831,668 bytes. The
+restored Stable default is measured separately: 978.513..1289.284 →
+948.913..988.283 ms, 300 packets/5,830,468 after bytes. Its median is 10.18% lower
+in that set but sampled peak test-process RSS is 2.188 MiB higher. Backend/thread
+settings differ, visual quality is unmeasured, and baseline medians drifted
+between sets; these observations do not establish general performance gains.
+An initial camera set overlapped the synthetic Linux check and was excluded;
+reported sets ran after all compilation and checks stopped.
+
+Idle uses the release native preview (`--no-default-features --features demo`,
+example link `-C lto=off`) at 1120×760, dark, scale 1, Xvfb :88 and verified Mesa
+lavapipe Vulkan. Each launch warms eight seconds on Appearance, clicks Voice &
+Video, moves the pointer outside controls, settles three seconds, then records
+twenty one-second CPU/RSS samples. Two fresh pairs reverse launch order. CPU is
+percent of one core and every value was below the sampling resolution; settled
+RSS is the last five samples' median, aggregated across launches. Baseline peak
+RSS runs are 194.012/193.145 MiB versus 192.500/193.664 after. The small aggregate
+RSS difference is within variation; no idle improvement is claimed and no
+children were observed. Startup/frame p95, GPU memory and active screen quality
+are unmeasured.
+
+`cargo xtask check` passed formatting, strict workspace/all-target Clippy, 1,183
+passing test executions (27 ignored), no-default-features and policy. Native
+strict C11/ASan/UBSan/buffer bounds, 18 codec hardware-option combinations without
+devices, exact encoder-only bundle registry, both synthetic Linux screen variants
+and package preparation checks passed. Hardware H.265/AV1 requires Experimental
+and explicit codec negotiation; only H.264 has bundled software fallback and
+incoming decoding remains H.264. Physical GPUs/capture, official-client live
+compatibility (including AV1 DAVE framing), Windows/macOS, actual Nix/Flatpak
+packages, dedicated license CI and remote checks remain unverified.

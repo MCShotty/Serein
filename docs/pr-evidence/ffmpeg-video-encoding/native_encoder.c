@@ -32,7 +32,7 @@ static int sps_profile(const unsigned char *packet, size_t length)
 static void exercise_stream(int baseline, int width, int height, int fps,
                             int bitrate, size_t limit, const char *path)
 {
-    void *encoder = serein_avc_open(width, height, fps, bitrate, baseline, 0, limit);
+    void *encoder = serein_avc_open(width, height, fps, bitrate, baseline, 0, 0, limit);
     size_t input_bytes = (size_t)width * (size_t)height * 3 / 2;
     unsigned char *picture = malloc(input_bytes);
     unsigned char *output = malloc(limit + 32);
@@ -101,9 +101,14 @@ static void exercise_rejected_configuration(void)
     for (size_t i = 0; i < sizeof(invalid) / sizeof(*invalid); i++) {
         const int *item = invalid[i];
         assert(serein_avc_open(item[0], item[1], item[2], item[3], item[4],
-                               item[5], (size_t)item[6]) == NULL);
+                               item[5], 0, (size_t)item[6]) == NULL);
     }
-    assert(serein_avc_open(640, 480, 30, 1500000, 1, 0, SIZE_MAX) == NULL);
+    assert(serein_avc_open(640, 480, 30, 1500000, 1, 0, 0, SIZE_MAX) == NULL);
+    /* An unavailable HEVC/AV1 software selection must never open OpenH264. */
+    assert(serein_avc_open(640, 480, 30, 1500000, 1, 0, 1, CAMERA_LIMIT) == NULL);
+    assert(serein_avc_open(640, 480, 30, 1500000, 1, 0, 2, CAMERA_LIMIT) == NULL);
+    assert(serein_avc_open(640, 480, 30, 1500000, 1, 1, -1, CAMERA_LIMIT) == NULL);
+    assert(serein_avc_open(640, 480, 30, 1500000, 1, 1, 3, CAMERA_LIMIT) == NULL);
     size_t produced = 99;
     int keyframe = 99;
     unsigned char bytes[32] = {0};
@@ -111,7 +116,7 @@ static void exercise_rejected_configuration(void)
                              &produced, &keyframe) == -1);
     assert(produced == 0 && keyframe == 0);
     serein_avc_close(NULL);
-    puts("configuration/null checks: 17 rejected requests; outputs reset");
+    puts("configuration/null checks: 21 rejected requests; outputs reset; no codec substitution");
 }
 
 static void exercise_packet_caps(void)
@@ -122,7 +127,7 @@ static void exercise_packet_caps(void)
     assert(picture);
     fill_i420(picture, 640, 480, 0);
     for (int tiny_native_limit = 0; tiny_native_limit < 2; tiny_native_limit++) {
-        void *encoder = serein_avc_open(640, 480, 30, 1500000, 1, 0,
+        void *encoder = serein_avc_open(640, 480, 30, 1500000, 1, 0, 0,
                                         tiny_native_limit ? 1 : CAMERA_LIMIT);
         size_t produced = 99;
         int keyframe = 99;

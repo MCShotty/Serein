@@ -11,10 +11,15 @@ uses pinned AMF public headers and a static oneVPL dispatcher for x64 Quick Sync
 GNOME SDK 49 must provide CMake and the libva/libva-drm/libdrm development files;
 the module checks the latter before its offline build. Target-specific oneVPL
 source downloads remain restricted to x86_64 in the prepared manifest.
-Hardware encoding requires accessible compatible NVIDIA/AMD/Intel GPU runtimes;
-failed device setup falls back to OpenH264 under the existing sandbox permissions.
+Experimental hardware encoding requires accessible compatible NVIDIA/AMD/Intel
+GPU runtimes. H264 software uses OpenH264; HEVC/AV1 require suitable hardware.
 Quick Sync uses VA-API only for Intel's low-level driver device interface; the
-`h264_vaapi` encoder stays disabled. See [the encoder recipe](../ffmpeg/README.md).
+H264/HEVC/AV1 VA-API encoders stay disabled in FFmpeg. Stable uses the runtime's
+original GStreamer VA-API/NVENC H264 path when its vendor elements are present,
+with source-built Rust OpenH264 fallback. The GNOME runtime's Base/Good/Bad
+plugins are not additional source modules; vendor availability depends on the
+runtime build, compatible GPU driver extensions and existing device permissions.
+See [the encoder recipe](../ffmpeg/README.md).
 
 ```sh
 flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo

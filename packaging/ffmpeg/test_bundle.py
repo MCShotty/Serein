@@ -22,6 +22,16 @@ builder = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(builder)
 
 
+def native_codec(prefix, system, mode=ctypes.DEFAULT_MODE):
+    directory = prefix / ("bin" if system == "Windows" else "lib")
+    # Loading the absolute dependencies also resolves @rpath IDs when macOS
+    # Python itself has no LC_RPATH for a developer's private native prefix.
+    dependencies = [ctypes.CDLL(str(directory / name), mode=mode) for name in reversed(bundle.LIBRARIES[system][1:])]
+    codec = ctypes.CDLL(str(directory / bundle.LIBRARIES[system][0]), mode=mode)
+    codec._serein_dependencies = dependencies
+    return codec
+
+
 class BundleTest(unittest.TestCase):
     def test_openh264_subset_preserves_build_scripts_and_android_resources(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -53,13 +63,39 @@ class BundleTest(unittest.TestCase):
                 with self.subTest(system=system, arm64=arm64):
                     backends = builder.encoder_backends(system, arm64)
                     options = builder.hardware_options(system, backends)
-                    self.assertIn("--disable-encoder=h264_vaapi", options)
+                    self.assertIn("--disable-encoder=h264_vaapi,hevc_vaapi,av1_vaapi", options)
                     self.assertIn("--disable-mediafoundation", options)
-                    self.assertEqual("--enable-encoder=h264_amf" in options, system == "Linux" or (system == "Windows" and not arm64))
-                    self.assertEqual("--enable-encoder=h264_qsv" in options, system in {"Linux", "Windows"} and not arm64)
+                    enabled = {name for option in options if option.startswith("--enable-encoder=")
+                               for name in option.split("=", 1)[1].split(",")}
+                    for codec in ("h264", "hevc", "av1"):
+                        self.assertEqual(f"{codec}_amf" in enabled, system == "Linux" or (system == "Windows" and not arm64))
+                        self.assertEqual(f"{codec}_qsv" in enabled, system in {"Linux", "Windows"} and not arm64)
+                        self.assertEqual(f"{codec}_nvenc" in enabled, system in {"Linux", "Windows"} and not (system == "Windows" and arm64))
+                    self.assertEqual("hevc_videotoolbox" in enabled, system == "Darwin")
+                    self.assertNotIn("av1_videotoolbox", enabled)
                     self.assertEqual("--enable-vaapi" in options, system == "Linux" and not arm64)
                     self.assertEqual("--enable-d3d11va" in options, system == "Windows" and not arm64)
                     self.assertNotIn("--enable-libmfx", options)
+
+    @unittest.skipUnless(os.environ.get("FFMPEG_DIR") and bundle.platform.system() in bundle.LIBRARIES,
+                         "Requires a native FFmpeg build; no media is opened")
+    def test_native_codec_registry_is_exact_and_contains_no_decoders(self):
+        prefix = Path(os.environ["FFMPEG_DIR"])
+        system = bundle.platform.system()
+        codec = native_codec(prefix, system)
+        codec.av_codec_iterate.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+        codec.av_codec_iterate.restype = ctypes.c_void_p
+        codec.av_codec_is_encoder.argtypes = [ctypes.c_void_p]
+        codec.av_codec_is_encoder.restype = ctypes.c_int
+        state = ctypes.c_void_p()
+        registered = set()
+        while value := codec.av_codec_iterate(ctypes.byref(state)):
+            self.assertTrue(codec.av_codec_is_encoder(value))
+            # AVCodec's first member is const char *name in pinned FFmpeg 7.
+            registered.add(ctypes.cast(value, ctypes.POINTER(ctypes.c_char_p)).contents.value.decode())
+        recipe = json.loads((prefix / "share/serein-ffmpeg/build.json").read_text())
+        self.assertEqual(registered, set(recipe["encoders"]))
+        self.assertEqual(registered, builder.encoder_names({name: recipe[name] for name in ("nvenc", "amf", "qsv", "videotoolbox")}))
 
     def test_amf_offline_rebuild_uses_shipped_headers_without_sdk(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(builder.urllib.request, "urlopen") as download:
@@ -81,6 +117,7 @@ class BundleTest(unittest.TestCase):
             (root / "libavcodec/libavcodec.v").write_text("LIBAVCODEC_MAJOR { local: *; };\n")
             (root / "libavutil/libavutil.v").write_text("LIBAVUTIL_MAJOR { local: *; };\n")
             (root / "libavcodec/qsvenc.c").write_text("ret = av_new_packet(&pkt.pkt, q->packet_size);\n")
+            (root / "configure").write_text('hevc_qsv_encoder_select="hevcparse qsvenc"\n')
             source_patch = builder.patch_ffmpeg(root)
             self.assertIn("+ret = ff_get_encode_buffer(avctx, &pkt.pkt, q->packet_size, 0);", source_patch)
             with self.assertRaisesRegex(ValueError, "exactly one"):
@@ -108,16 +145,14 @@ class BundleTest(unittest.TestCase):
                          "Requires the native Linux FFmpeg build; no media is opened")
     def test_host_decoder_plugin_does_not_bind_to_encoder_only_ffmpeg(self):
         prefix = Path(os.environ["FFMPEG_DIR"])
-        codec = ctypes.CDLL(str(prefix / "lib/libavcodec-serein.so.61"), mode=ctypes.RTLD_GLOBAL)
+        codec = native_codec(prefix, "Linux", mode=ctypes.RTLD_GLOBAL)
         codec.avcodec_find_encoder_by_name.argtypes = [ctypes.c_char_p]
         codec.avcodec_find_encoder_by_name.restype = ctypes.c_void_p
         codec.avcodec_find_decoder_by_name.argtypes = [ctypes.c_char_p]
         codec.avcodec_find_decoder_by_name.restype = ctypes.c_void_p
         self.assertTrue(codec.avcodec_find_encoder_by_name(b"libopenh264"))
-        recipe = json.loads((prefix / "share/serein-ffmpeg/build.json").read_text())
-        for name in ("nvenc", "amf", "qsv"):
-            self.assertEqual(bool(codec.avcodec_find_encoder_by_name(("h264_" + name).encode())), recipe.get(name, False))
-        self.assertFalse(codec.avcodec_find_encoder_by_name(b"h264_vaapi"))
+        for name in ("h264_vaapi", "hevc_vaapi", "av1_vaapi"):
+            self.assertFalse(codec.avcodec_find_encoder_by_name(name.encode()))
         self.assertFalse(codec.avcodec_find_decoder_by_name(b"h264"))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

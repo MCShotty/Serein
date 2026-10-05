@@ -68,6 +68,7 @@ fn device_wait(
 }
 
 struct Pending {
+	video_settings: model::voice_settings::VideoSettings,
 	generation: u64,
 	channel: Id,
 	request: u64,
@@ -171,6 +172,7 @@ struct Live {
 	device_deadline: Option<Instant>,
 	camera_frames: mpsc::SyncSender<discord_voice::camera_video::Frame>,
 	camera_negotiated: bool,
+	video_settings: model::voice_settings::VideoSettings,
 	camera_clock: Instant,
 	/// Latest decoded camera picture per remote user, replaced (never queued) by the decoder.
 	remote_video: Arc<std::sync::Mutex<RemotePictures>>,
@@ -293,6 +295,7 @@ struct MicPreview {
 }
 
 struct CameraTest {
+	video_settings: model::voice_settings::VideoSettings,
 	camera: discord_voice::camera::Camera,
 	device: Option<String>,
 	picture: Arc<std::sync::Mutex<CameraPicture>>,
@@ -355,7 +358,15 @@ impl Voice {
 			self.retiring = None;
 		}
 	}
-	pub fn begin(&mut self, state: &State, ring: bool) -> Result<(), &'static str> {
+	pub fn begin(
+		&mut self,
+		state: &State,
+		ring: bool,
+		video_settings: model::voice_settings::VideoSettings,
+	) -> Result<(), &'static str> {
+		if !video_settings.is_valid() {
+			return Err("Stable video encoding supports H.264 only");
+		}
 		self.camera_test = None;
 		self.mic_preview = None;
 		self.reap();
@@ -383,6 +394,7 @@ impl Voice {
 			return Err("The DM recipient is unavailable");
 		}
 		self.pending = Some(Pending {
+			video_settings,
 			generation: state.generation,
 			channel: call.channel,
 			request: call.request,
@@ -1134,9 +1146,12 @@ impl Voice {
 			ui.camera_test_status = "";
 		}
 		if let Some(preview) = &self.camera_test {
-			if preview.device != ui.voice_camera_device {
+			if preview.device != ui.voice_camera_device
+				|| preview.video_settings != ui.video_settings
+			{
 				ui.camera_test_requested = false;
-				ui.camera_test_status = "Camera changed. Click Preview camera to use it.";
+				ui.camera_test_status =
+					"Camera or video settings changed. Click Preview camera to use them.";
 			} else if let Some(error) = preview.camera.error() {
 				ui.camera_test_requested = false;
 				ui.camera_test_status = error;
@@ -1162,11 +1177,13 @@ impl Voice {
 			let wake = ctx.clone();
 			match discord_voice::camera::Camera::start(
 				ui.voice_camera_device.clone(),
+				ui.video_settings,
 				on_frame,
 				Arc::new(move || wake.request_repaint()),
 			) {
 				Ok(camera) => {
 					self.camera_test = Some(CameraTest {
+						video_settings: ui.video_settings,
 						camera,
 						device: ui.voice_camera_device.clone(),
 						picture,
@@ -1274,8 +1291,8 @@ impl Voice {
 			self.stop_camera();
 			ui.voice_camera_preview = None;
 			if requested {
-				ui.voice_camera_status =
-					error.unwrap_or("Camera stopped; reconnect securely before turning it on");
+				ui.voice_camera_status = error
+					.unwrap_or("Camera stopped; reconnect securely using a supported video codec");
 				return state.set_call_camera(false);
 			}
 			return None;
@@ -1294,12 +1311,13 @@ impl Voice {
 			let start = live.camera_clock;
 			let wake = ctx.clone();
 			let on_frame = std::sync::Arc::new(move |frame: discord_voice::camera::Frame| {
-				let data = frame.h264;
+				let data = frame.data;
 				if data.len() > discord_voice::camera_video::MAX_FRAME_BYTES {
 					return;
 				}
 				let _ = send.try_send(discord_voice::camera_video::Frame {
 					generation,
+					codec: frame.codec,
 					timestamp: (start.elapsed().as_micros() * 90 / 1000) as u32,
 					data,
 				});
@@ -1312,6 +1330,7 @@ impl Voice {
 			let wake = ctx.clone();
 			match discord_voice::camera::Camera::start(
 				ui.voice_camera_device.clone(),
+				live.video_settings,
 				on_frame,
 				std::sync::Arc::new(move || wake.request_repaint()),
 			) {
@@ -1397,6 +1416,7 @@ impl Voice {
 				.unwrap_or(-70),
 			muted: listen_only || ui.voice_push_to_talk,
 			camera: 0,
+			video: pending.video_settings,
 			deafened: false,
 			user_volumes: ui.voice_user_volumes(),
 			stream_volume: ui.voice_stream_volume(),
@@ -1518,6 +1538,7 @@ impl Voice {
 			device_deadline: None,
 			camera_frames,
 			camera_negotiated: false,
+			video_settings: pending.video_settings,
 			camera_clock: Instant::now(),
 			remote_video,
 			stream_audio,
@@ -1948,7 +1969,7 @@ mod tests {
 			}
 			state.start_call(Id(22), true).unwrap();
 			let mut manager = Voice::default();
-			manager.begin(&state, true).unwrap();
+			manager.begin(&state, true, Default::default()).unwrap();
 			let pending = manager.pending.as_ref().unwrap();
 			assert_eq!(pending.guild, None);
 			assert_eq!(pending.peer, (kind == 1).then_some(peer));
@@ -1956,6 +1977,35 @@ mod tests {
 			assert!(manager.live.is_none());
 		}
 	}
+	#[test]
+	fn call_request_snapshots_video_preferences_without_opening_media() {
+		use model::voice_settings::{VideoBackend, VideoCodec, VideoSettings};
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		state.start_call(Id(22), true).unwrap();
+		let selected = VideoSettings {
+			backend: VideoBackend::Experimental,
+			codec: VideoCodec::Av1,
+		};
+		let mut manager = Voice::default();
+		assert!(
+			manager
+				.begin(
+					&state,
+					true,
+					VideoSettings {
+						backend: VideoBackend::Stable,
+						..selected
+					}
+				)
+				.is_err()
+		);
+		assert!(manager.pending.is_none());
+		manager.begin(&state, true, selected).unwrap();
+		assert_eq!(manager.pending.as_ref().unwrap().video_settings, selected);
+		assert!(manager.live.is_none() && manager.camera.is_none());
+	}
+
 	#[test]
 	fn guild_negotiation_has_no_dm_peer_or_ringing_and_opens_no_devices() {
 		let mut state = test_support::demo_state();
@@ -1966,7 +2016,7 @@ mod tests {
 			Command::Voice(voice::Command::Join { ring: false, .. })
 		));
 		let mut manager = Voice::default();
-		manager.begin(&state, true).unwrap();
+		manager.begin(&state, true, Default::default()).unwrap();
 		let pending = manager.pending.as_ref().unwrap();
 		assert_eq!(pending.guild, Some(Id(10)));
 		assert_eq!(pending.peer, None);
@@ -1986,7 +2036,7 @@ mod tests {
 		state.demo = false;
 		state.start_call(Id(25), false).unwrap();
 		let mut manager = Voice::default();
-		manager.begin(&state, false).unwrap();
+		manager.begin(&state, false, Default::default()).unwrap();
 		state.disconnect_voice("Discord gateway connection lost; rejoin after reconnecting");
 		let mut ui = ui::MessagingUi::default();
 		let context = egui::Context::default();
@@ -2000,7 +2050,7 @@ mod tests {
 		assert!(manager.pending.is_none());
 		state.leave_call();
 		state.start_call(Id(25), false).unwrap();
-		manager.begin(&state, false).unwrap();
+		manager.begin(&state, false, Default::default()).unwrap();
 		state.generation += 1;
 		assert!(
 			manager
@@ -2036,7 +2086,7 @@ mod tests {
 		state.start_call(Id(22), false).unwrap();
 		let request = state.voice.active.as_ref().unwrap().request;
 		let mut manager = Voice::default();
-		manager.begin(&state, false).unwrap();
+		manager.begin(&state, false, Default::default()).unwrap();
 		let mut stale = Event::Voice(voice::Event::TakenOver {
 			channel: Id(22),
 			request: request + 1,
@@ -2061,7 +2111,7 @@ mod tests {
 				.is_none()
 		);
 		assert!(state.start_call(Id(22), false).is_some());
-		assert!(manager.begin(&state, false).is_ok());
+		assert!(manager.begin(&state, false, Default::default()).is_ok());
 	}
 	#[test]
 	fn confirmation_failure_abandons_only_the_current_unconfirmed_candidate() {
@@ -2071,7 +2121,7 @@ mod tests {
 		state.start_call(Id(22), false).unwrap();
 		let request = state.voice.active.as_ref().unwrap().request;
 		let mut manager = Voice::default();
-		manager.begin(&state, false).unwrap();
+		manager.begin(&state, false, Default::default()).unwrap();
 		let pending = manager.pending.as_mut().unwrap();
 		pending.session = Some(Secret::new("synthetic-session".into()).unwrap());
 		pending.server = Some((
@@ -2186,7 +2236,7 @@ mod tests {
 		let request = state.voice.active.as_ref().unwrap().request;
 		let auth = state.auth;
 		let mut manager = Voice::default();
-		manager.begin(&state, false).unwrap();
+		manager.begin(&state, false, Default::default()).unwrap();
 		let mut pending = manager.pending.take().unwrap();
 		pending.session = Some(Secret::new("synthetic-session".into()).unwrap());
 		pending.server = Some((
@@ -2253,6 +2303,7 @@ mod tests {
 			device_deadline: None,
 			camera_frames,
 			camera_negotiated: false,
+			video_settings: Default::default(),
 			camera_clock: Instant::now(),
 			remote_video: Arc::new(std::sync::Mutex::new(Vec::new())),
 			stream_audio,
@@ -2304,7 +2355,7 @@ mod tests {
 			state.start_call(Id(22), true).unwrap();
 			let request = state.voice.active.as_ref().unwrap().request;
 			let mut manager = Voice::default();
-			manager.begin(&state, true).unwrap();
+			manager.begin(&state, true, Default::default()).unwrap();
 			let started = manager.pending.as_ref().unwrap().started;
 			let session = |id: &str, revision| {
 				Event::Voice(voice::Event::State {
@@ -2444,7 +2495,7 @@ mod tests {
 		state.start_call(Id(22), false).unwrap();
 		let request = state.voice.active.as_ref().unwrap().request;
 		let mut manager = Voice::default();
-		manager.begin(&state, false).unwrap();
+		manager.begin(&state, false, Default::default()).unwrap();
 		assert!(
 			matches!(manager.fail(&mut state, "Synthetic startup failure"), Some(Command::Voice(voice::Command::AbandonSession { channel:Id(22), request:r })) if r == request)
 		);
@@ -2460,7 +2511,7 @@ mod tests {
 		state.start_call(Id(22), true).unwrap();
 		let request = state.voice.active.as_ref().unwrap().request;
 		let mut manager = Voice::default();
-		manager.begin(&state, true).unwrap();
+		manager.begin(&state, true, Default::default()).unwrap();
 		let mut stale = Event::Voice(voice::Event::Server {
 			channel: Id(22),
 			request: request + 1,

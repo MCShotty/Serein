@@ -38,12 +38,23 @@ these are native package dependencies (`gstreamer1.0-pipewire` on Debian/Ubuntu,
 `pipewire-gstreamer` on Fedora, `gstreamer-plugin-pipewire` on openSUSE and
 `gst-plugin-pipewire` on Arch). Use a ScreenCast-capable portal backend matching your
 desktop; the GTK fallback alone does not provide screen capture.
-Camera and screen encoders use bundled
-FFmpeg with NVENC, AMF, Quick Sync and OpenH264 fallback. Compatible NVIDIA/AMD/Intel
-GPU runtimes must be installed for hardware encoding. Linux x64 Quick Sync links
+Stable camera and screen encoders use system GStreamer `vah264enc` or `nvh264enc`
+and `h264parse`, with source-built OpenH264 fallback. The hardware path needs
+optional Bad plugins: `gstreamer1.0-plugins-bad` on Ubuntu,
+`gstreamer1-plugins-bad-free` on Fedora, `gstreamer-plugins-bad` on openSUSE, and
+`gst-plugins-bad-libs` (parser/NVENC) plus the separately packaged `gst-plugin-va`
+on Arch for VA-API.
+DEB/RPM recommend these packages; Arch lists them as
+optional. Distribution builds may omit a vendor encoder, and compatible GPU
+drivers/device access are still required. Base/Good remain required for raw
+capture and media playback. Software fallback works without hardware plugins.
+
+Experimental camera and screen encoders use bundled FFmpeg with NVENC, AMF,
+Quick Sync and software OpenH264/H264. Compatible hardware can supply HEVC/AV1;
+those codecs have no bundled software encoder. Linux x64 Quick Sync links
 libva/libva-drm/libdrm for device setup; native package tools derive these runtime
-dependencies from the private FFmpeg libraries. The `h264_vaapi` encoder remains
-disabled. See [the pinned encoder recipe](../ffmpeg/README.md).
+dependencies from the private FFmpeg libraries. FFmpeg's H264/HEVC/AV1 VA-API
+encoders and Media Foundation remain disabled. See [the pinned encoder recipe](../ffmpeg/README.md).
 Stream audio additionally links the system `libpulse` client library and uses individual
 application monitors on PulseAudio or PipeWire-Pulse. Serein's playback is excluded;
 no virtual device or output rerouting is required. Native package tools derive the

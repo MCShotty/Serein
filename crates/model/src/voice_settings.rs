@@ -1,5 +1,32 @@
-//! Device-local microphone processing. Profiles leave the user's custom settings intact.
+//! Device-local voice and video settings. Profiles preserve custom microphone settings.
 use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VideoBackend {
+	#[default]
+	Stable,
+	Experimental,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VideoCodec {
+	#[default]
+	H264,
+	H265,
+	Av1,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VideoSettings {
+	pub backend: VideoBackend,
+	pub codec: VideoCodec,
+}
+impl VideoSettings {
+	pub fn is_valid(self) -> bool {
+		self.backend == VideoBackend::Experimental || self.codec == VideoCodec::H264
+	}
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InputProfile {

@@ -72,6 +72,8 @@ class NativePackageTest(unittest.TestCase):
                     artifact, = staged.glob("*.pkg.tar.*")
                     metadata = packaging.output("bsdtar", "-xOf", str(artifact), ".PKGINFO")
                     self.assertIn("depend = gst-plugins-good", metadata.splitlines())
+                    self.assertTrue(any(line.startswith("optdepend = gst-plugin-va:") for line in metadata.splitlines()))
+                    self.assertTrue(any(line.startswith("optdepend = gst-plugins-bad-libs:") for line in metadata.splitlines()))
                     version = next(line.removeprefix("pkgver = ") for line in metadata.splitlines()
                                    if line.startswith("pkgver = "))
                     self.assertEqual(packaging.output("vercmp", version, "0.1.0-1"), "-1")
@@ -80,6 +82,8 @@ class NativePackageTest(unittest.TestCase):
                     distro = packaging.platform.freedesktop_os_release()["ID"]
                     plugin = "gstreamer1-plugins-good" if distro == "fedora" else "gstreamer-plugins-good"
                     self.assertIn(plugin, packaging.output("rpm", "-qp", "--requires", str(artifact)).splitlines())
+                    hardware_plugin = "gstreamer1-plugins-bad-free" if distro == "fedora" else "gstreamer-plugins-bad"
+                    self.assertIn(hardware_plugin, packaging.output("rpm", "-qp", "--recommends", str(artifact)).splitlines())
                 if ARTIFACTS and FORMAT != "dir":
                     ARTIFACTS.mkdir(parents=True, exist_ok=True)
                     for artifact in staged.glob("*.rpm" if FORMAT == "rpm" else "*.pkg.tar.*"):
@@ -102,6 +106,10 @@ class NativePackageTest(unittest.TestCase):
             self.assertEqual(packaging.output("dpkg-deb", "--field", str(artifact), "Package"), "serein")
             self.assertIn("gstreamer1.0-plugins-good", packaging.output(
                 "dpkg-deb", "--field", str(artifact), "Depends").split(", "))
+            self.assertIn("gstreamer1.0-plugins-base", packaging.output(
+                "dpkg-deb", "--field", str(artifact), "Depends").split(", "))
+            self.assertIn("gstreamer1.0-plugins-bad", packaging.output(
+                "dpkg-deb", "--field", str(artifact), "Recommends").split(", "))
             listing = packaging.output("dpkg-deb", "--contents", str(artifact))
             for excluded in ["debug.log", "stale.log", "stale.deb", "previous.deb", "stale-nested.log"]:
                 self.assertNotIn(excluded, listing)

@@ -1,5 +1,6 @@
-//! Explicitly selected, memory-only screen capture and H.264 encoding.
+//! Explicitly selected, memory-only screen capture and video encoding.
 pub use client_core::screen::{Settings, Source, SourceId};
+use model::voice_settings::{VideoCodec, VideoSettings};
 #[cfg(target_os = "linux")]
 #[path = "screen/audio_linux.rs"]
 mod audio_linux;
@@ -41,6 +42,7 @@ pub struct RawFrame {
 }
 
 pub struct EncodedFrame {
+	pub codec: VideoCodec,
 	pub data: Vec<u8>,
 	pub timestamp: u32,
 	pub keyframe: bool,
@@ -57,6 +59,7 @@ pub struct AudioChunk {
 }
 
 pub struct Video {
+	pub video_settings: VideoSettings,
 	pub settings: Settings,
 	pub frames: tokio::sync::mpsc::Receiver<EncodedFrame>,
 	pub ready: Arc<AtomicBool>,
@@ -114,9 +117,10 @@ pub struct Worker {
 impl Worker {
 	pub fn start(
 		settings: Settings,
+		video_settings: VideoSettings,
 		wake: impl Fn() + Send + 'static,
 	) -> Result<(Self, Video), &'static str> {
-		if !settings.valid() || !supported() {
+		if !settings.valid() || !video_settings.is_valid() || !supported() {
 			return Err("Screen sharing is unavailable for these settings or this platform");
 		}
 		let stop = Arc::new(AtomicBool::new(false));
@@ -154,6 +158,7 @@ impl Worker {
 				#[cfg(target_os = "linux")]
 				let result = linux::run(
 					settings,
+					video_settings,
 					worker_stop,
 					worker_ready,
 					worker_keyframe,
@@ -169,6 +174,7 @@ impl Worker {
 				#[cfg(not(target_os = "linux"))]
 				let result = encode_loop(
 					settings,
+					video_settings,
 					worker_stop,
 					worker_ready,
 					worker_keyframe,
@@ -204,6 +210,7 @@ impl Worker {
 				preview_visible,
 			},
 			Video {
+				video_settings,
 				settings,
 				frames,
 				ready,
@@ -252,6 +259,7 @@ impl Drop for Worker {
 #[allow(clippy::too_many_arguments)] // Media outputs of one explicitly started capture.
 fn encode_loop(
 	settings: Settings,
+	video_settings: VideoSettings,
 	stop: Arc<AtomicBool>,
 	ready: Arc<AtomicBool>,
 	keyframe: Arc<AtomicBool>,
@@ -371,7 +379,7 @@ fn encode_loop(
 			.load(Ordering::Acquire)
 			.clamp(250_000, settings.bit_rate());
 		if encoding.is_none() {
-			encoding = Some(ScreenEncoder::new(settings, target)?);
+			encoding = Some(ScreenEncoder::new(settings, target, video_settings)?);
 		}
 		if encoding
 			.as_mut()
@@ -396,6 +404,7 @@ fn encode_loop(
 			continue;
 		}
 		let frame = EncodedFrame {
+			codec: video_settings.codec,
 			data,
 			timestamp: (origin.elapsed().as_micros() * 90 / 1000) as u32,
 			keyframe: is_keyframe,
@@ -422,31 +431,40 @@ pub(super) fn retain_screen_frame(
 	Ok(ready && latest.is_some() && (fresh || keyframe))
 }
 
-/// FFmpeg encoder shared by every platform; native capture remains independent.
+/// Selected encoder shared by every platform; native capture remains independent.
 pub(super) struct ScreenEncoder {
 	diagnostics: crate::diagnostics::EncoderRegistration,
-	encoder: Option<crate::video_encode::Encoder>,
+	encoder: Option<crate::video_backend::Encoder>,
+	video_settings: VideoSettings,
 	i420: Vec<u8>,
 	settings: Settings,
 	bitrate: u32,
 }
 
 impl ScreenEncoder {
-	pub(super) fn new(settings: Settings, bitrate: u32) -> Result<Self, &'static str> {
-		if !settings.valid() {
+	pub(super) fn new(
+		settings: Settings,
+		bitrate: u32,
+		video_settings: VideoSettings,
+	) -> Result<Self, &'static str> {
+		if !settings.valid() || !video_settings.is_valid() {
 			return Err("Invalid screen encoder settings");
 		}
-		let encoder = crate::video_encode::Encoder::new(Self::config(settings, bitrate))?;
+		let encoder = crate::video_backend::Encoder::new(
+			Self::config(settings, bitrate, video_settings.codec),
+			video_settings.backend,
+		)?;
 		Ok(Self {
 			diagnostics: crate::diagnostics::EncoderRegistration::new(true, encoder.hardware()),
 			encoder: Some(encoder),
+			video_settings,
 			i420: Vec::new(),
 			settings,
 			bitrate,
 		})
 	}
 
-	fn config(settings: Settings, bitrate: u32) -> crate::video_encode::Config {
+	fn config(settings: Settings, bitrate: u32, codec: VideoCodec) -> crate::video_encode::Config {
 		crate::video_encode::Config {
 			width: settings.width,
 			height: settings.height,
@@ -454,6 +472,7 @@ impl ScreenEncoder {
 			bit_rate: bitrate.clamp(250_000, settings.bit_rate()),
 			max_bytes: MAX_ENCODED_BYTES,
 			profile: crate::video_encode::Profile::Main,
+			codec,
 		}
 	}
 
@@ -472,7 +491,7 @@ impl ScreenEncoder {
 			return Ok(false);
 		}
 		self.diagnostics.set(None);
-		let config = Self::config(self.settings, bitrate);
+		let config = Self::config(self.settings, bitrate, self.video_settings.codec);
 		let encoder = self.encoder.as_mut().ok_or("Screen encoder stopped")?;
 		encoder.reconfigure(config)?;
 		self.diagnostics.set(Some(encoder.hardware()));
@@ -642,14 +661,17 @@ mod tests {
 			cursor: true,
 			audio: false,
 		};
-		let encoder = crate::video_encode::Encoder::software(ScreenEncoder::config(
+		let video_settings = VideoSettings::default();
+		let encoder = crate::video_backend::Encoder::software(ScreenEncoder::config(
 			settings,
 			settings.bit_rate(),
+			video_settings.codec,
 		))
 		.unwrap();
 		let mut encoder = ScreenEncoder {
 			diagnostics: crate::diagnostics::EncoderRegistration::new(true, false),
 			encoder: Some(encoder),
+			video_settings,
 			i420: Vec::new(),
 			settings,
 			bitrate: settings.bit_rate(),

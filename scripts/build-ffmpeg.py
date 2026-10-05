@@ -193,17 +193,27 @@ def encoder_backends(system, arm64):
     }
 
 
+def encoder_names(backends):
+    names = {"libopenh264"}
+    for backend, enabled in backends.items():
+        if enabled:
+            codecs = ("h264", "hevc") if backend == "videotoolbox" else ("h264", "hevc", "av1")
+            names.update(f"{codec}_{backend}" for codec in codecs)
+    return names
+
+
 def hardware_options(system, backends):
-    options = ["--disable-mediafoundation", "--disable-encoder=h264_vaapi", "--disable-vulkan", "--disable-dxva2"]
+    options = ["--disable-mediafoundation", "--disable-encoder=h264_vaapi,hevc_vaapi,av1_vaapi", "--disable-vulkan", "--disable-dxva2"]
     options += (["--enable-vaapi", "--enable-libdrm"] if system == "Linux" and backends["qsv"] else
                 ["--disable-vaapi", "--disable-libdrm"])
     options += ["--enable-d3d11va" if system == "Windows" and (backends["qsv"] or backends["amf"]) else "--disable-d3d11va"]
-    options += (["--enable-ffnvcodec", "--enable-nvenc", "--enable-encoder=h264_nvenc"] if backends["nvenc"] else
+    options += (["--enable-ffnvcodec", "--enable-nvenc"] if backends["nvenc"] else
                 ["--disable-ffnvcodec", "--disable-nvenc"])
-    options += (["--enable-amf", "--enable-encoder=h264_amf"] if backends["amf"] else ["--disable-amf"])
-    options += (["--enable-libvpl", "--enable-encoder=h264_qsv"] if backends["qsv"] else ["--disable-libvpl"])
-    options += (["--enable-videotoolbox", "--enable-encoder=h264_videotoolbox", "--install-name-dir=@rpath"] if backends["videotoolbox"] else
+    options += (["--enable-amf"] if backends["amf"] else ["--disable-amf"])
+    options += (["--enable-libvpl"] if backends["qsv"] else ["--disable-libvpl"])
+    options += (["--enable-videotoolbox", "--install-name-dir=@rpath"] if backends["videotoolbox"] else
                 ["--disable-videotoolbox"])
+    options += ["--enable-encoder=" + ",".join(sorted(encoder_names(backends) - {"libopenh264"}))] if any(backends.values()) else []
     return options
 
 
@@ -212,7 +222,9 @@ def patch_ffmpeg(tree):
     replacements = [("libavcodec/libavcodec.v", "LIBAVCODEC_MAJOR", "SEREIN_LIBAVCODEC_MAJOR"),
                     ("libavutil/libavutil.v", "LIBAVUTIL_MAJOR", "SEREIN_LIBAVUTIL_MAJOR"),
                     ("libavcodec/qsvenc.c", "ret = av_new_packet(&pkt.pkt, q->packet_size);",
-                     "ret = ff_get_encode_buffer(avctx, &pkt.pkt, q->packet_size, 0);")]
+                     "ret = ff_get_encode_buffer(avctx, &pkt.pkt, q->packet_size, 0);"),
+                    ("configure", 'hevc_qsv_encoder_select="hevcparse qsvenc"',
+                     'hevc_qsv_encoder_select="hevcparse hevc_sei qsvenc"')]
     for relative, old, new in replacements:
         path = tree / relative
         before = path.read_text()
@@ -242,7 +254,7 @@ def build(args):
     work = args.work_dir.resolve()
     cache.mkdir(parents=True, exist_ok=True)
     recipe = {"sources": SOURCES, "system": system, "architecture": architecture,
-              **backends, "recipe_sha256":
+              **backends, "encoders": sorted(encoder_names(backends)), "recipe_sha256":
               hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     stamp = prefix / "share/serein-ffmpeg/build.json"
     if stamp.is_file() and json.loads(stamp.read_text()) == recipe:
@@ -305,7 +317,8 @@ def build(args):
         "--disable-avfilter", "--disable-swscale", "--disable-swresample", "--disable-postproc",
         "--disable-vdpau", "--disable-cuvid", "--disable-nvdec", "--disable-cuda-llvm",
         "--enable-avcodec", "--enable-avutil", "--enable-libopenh264", "--enable-encoder=libopenh264",
-        f"--extra-cflags=-I{posix(prefix / 'include')}", f"--extra-ldflags=-L{posix(prefix / 'lib')}",
+        f"--extra-cflags=-I{posix(prefix / 'include')}",
+        f"--extra-ldflags=-L{posix(prefix / 'lib')}" + (" -Wl,-z,defs" if system == "Linux" else ""),
     ]
     configure += hardware_options(system, backends)
     configure += toolchain_options(system, arm64)
@@ -320,15 +333,14 @@ def build(args):
     if "#define CONFIG_GPL 0" not in configuration or "#define CONFIG_NONFREE 0" not in configuration:
         raise ValueError("FFmpeg build must remain LGPL without GPL/nonfree components")
     component_config = (trees["ffmpeg"] / "config_components.h").read_text()
-    expected = {"LIBOPENH264"}
-    expected.update(name.upper() for name, enabled in backends.items() if enabled)
-    # Encoder names use H264_*, unlike dependency/backend configuration names.
-    expected = {"LIBOPENH264"} | {"H264_" + name for name in expected if name != "LIBOPENH264"}
+    expected = {name.upper() for name in encoder_names(backends)}
     actual = {line.split()[1].removeprefix("CONFIG_").removesuffix("_ENCODER")
               for line in component_config.splitlines() if line.startswith("#define CONFIG_")
               and "_ENCODER 1" in line}
     if actual != expected:
         raise ValueError(f"Unexpected FFmpeg encoder allowlist: {sorted(actual)}, expected {sorted(expected)}")
+    if any(line.startswith("#define CONFIG_") and "_DECODER 1" in line for line in component_config.splitlines()):
+        raise ValueError("FFmpeg outgoing encoder build must not include decoders")
     run("make", f"-j{args.jobs}", cwd=trees["ffmpeg"], env=env)
     run("make", "install", cwd=trees["ffmpeg"], env=env)
     if system == "Windows":

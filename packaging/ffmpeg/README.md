@@ -1,14 +1,31 @@
 # Shared FFmpeg video encoders
 
-Camera and screen-share sending link to a small FFmpeg 7.1.5 LGPL-2.1-or-later
-build of libavcodec/libavutil. It enables source-built OpenH264 2.6.0, NVIDIA
-NVENC and AMD AMF on Linux/Windows x64, Intel Quick Sync on Linux/Windows x64,
-and VideoToolbox on macOS. Linux ARM64 builds include NVENC/AMF; driver support
-determines whether they can open. Windows ARM64 uses OpenH264.
-The app chooses from these encoders only. Media Foundation and the `h264_vaapi` encoder,
+The Experimental camera/screen-share engine links to a small FFmpeg 7.1.5
+LGPL-2.1-or-later build of libavcodec/libavutil. Stable uses the original platform
+H264 encoders: Media Foundation on Windows, VideoToolbox on macOS and GStreamer
+VA-API/NVENC on Linux, with source-built Rust OpenH264 fallback.
+
+Experimental compiles this exact encoder set; hardware capabilities and runtime
+availability determine which can open:
+
+| Platform | H264 | H265/HEVC | AV1 |
+|---|---|---|---|
+| Linux/Windows x64 | OpenH264, NVENC, AMF, Quick Sync | NVENC, AMF, Quick Sync | NVENC, AMF, Quick Sync |
+| Linux ARM64 | OpenH264, NVENC, AMF | NVENC, AMF | NVENC, AMF |
+| macOS | OpenH264, VideoToolbox | VideoToolbox | Unavailable |
+| Windows ARM64 | OpenH264 | Unavailable | Unavailable |
+
+OpenH264 2.6.0 supplies Experimental's software H264 encoder. There are no
+software HEVC/AV1 encoders: these codecs require compatible hardware. Software
+fallback applies only to H264 selection/negotiation. An explicit HEVC/AV1 selection
+cannot send H264 bytes
+under that codec's transport metadata. FFmpeg Media Foundation and all three
+`h264_vaapi`/`hevc_vaapi`/`av1_vaapi` encoders,
 GPL/nonfree components, command-line programs, networking, demuxers, decoders,
 filters and scaling/resampling libraries are disabled in the bundled build.
 Native capture and incoming decoding have separate platform dependencies.
+`build.json` records the exact compiled encoder names; configure and native
+registry checks reject extra encoders and decoders.
 
 On Linux/macOS install Python 3.12+, make, pkg-config, a C/C++ compiler and nasm;
 Linux also needs CMake, patchelf, libva and libdrm development packages. Then,
@@ -41,10 +58,14 @@ requires the compiler/tool versions recorded by the distributor's build logs.
 Serein's MIT/Apache application sources remain available in the repository.
 The FFmpeg build uses the `-serein` library suffix and `SEREIN_LIBAVCODEC_61` /
 `SEREIN_LIBAVUTIL_59` ELF symbol versions so it can coexist with the host
-FFmpeg used by GStreamer's incoming-video plugins. The version-script changes
-and QSV allocation change are retained as `serein-ffmpeg.patch` with the original
-source archive. QSV requests packet allocation through the app's capped buffer
+FFmpeg used by GStreamer's incoming-video plugins. The version-script changes,
+QSV allocation change and HEVC-QSV dependency fix are retained as
+`serein-ffmpeg.patch` with the original source archive. QSV requests packet allocation through the app's capped buffer
 callback, so an excessive driver-advised packet size fails before allocation.
+The pinned HEVC-QSV encoder also selects its internal HEVC SEI helpers, which
+upstream 7.1.5 omits from that encoder's configure dependencies; no decoder is
+enabled. Linux shared-library linking uses `-z defs`, rejecting unresolved
+symbols before installation.
 
 Packages include FFmpeg, NVENC-header and oneVPL archives for the enabled
 platform, a deterministic 1,198,914-byte OpenH264 source archive, and a
@@ -85,7 +106,8 @@ runner. FFmpeg loads NVIDIA/AMD driver libraries only when attempting those
 encoders, and the oneVPL dispatcher loads a system-provided compatible Intel
 GPU runtime (`libmfx-gen.so.1.2` or
 `libmfxhw64.so.1` on Linux). Linux QSV uses libva/libva-drm/libdrm to create the
-Intel driver device; VA-API encoding remains disabled. Windows AMF/QSV use
+Intel driver device; VA-API encoders remain disabled in Experimental. Stable's
+Linux VA-API/NVENC path uses system GStreamer plugins independently. Windows AMF/QSV use
 D3D11 devices. AMF can create its own Vulkan context on Linux without enabling
 FFmpeg's Vulkan subsystem. Driver or sandbox access failures select OpenH264.
 No broader Flatpak permissions are added. Hardware availability and

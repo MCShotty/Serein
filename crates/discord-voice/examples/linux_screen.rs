@@ -31,11 +31,17 @@ mod portal_linux;
 mod video;
 // The shared screen module reaches the platform encoders' keyframe check through this path.
 #[cfg(target_os = "linux")]
+#[path = "../src/video_backend.rs"]
+mod video_backend;
+#[cfg(target_os = "linux")]
 #[path = "../src/video_encode.rs"]
 mod video_encode;
 #[cfg(target_os = "linux")]
 #[path = "../src/video_receive.rs"]
 mod video_receive;
+#[cfg(target_os = "linux")]
+#[path = "../src/video_sps.rs"]
+mod video_sps;
 // The application-audio worker reports its capture counters through the shared reporter.
 #[cfg(target_os = "linux")]
 #[path = "../src/diagnostics.rs"]
@@ -105,7 +111,7 @@ fn main() {
 		let deadline = Instant::now() + Duration::from_secs(5);
 		let mut encoded = 0;
 		let mut last_pts = None;
-		let mut encoder = ScreenEncoder::new(settings, settings.bit_rate()).unwrap();
+		let mut encoder = ScreenEncoder::new(settings, settings.bit_rate(), model::voice_settings::VideoSettings::default()).unwrap();
 		while Instant::now() < deadline && encoded < 5 {
 			assert!(!pipeline.failed());
 			if let Some(sample) = pipeline.frames.try_pull_sample(gst::ClockTime::ZERO) {
@@ -136,7 +142,7 @@ fn main() {
 			assert!(Instant::now() < deadline, "cancelled audio worker must retire without opening a device");
 			tokio::time::sleep(Duration::from_millis(10)).await;
 		}
-		println!("Linux screen pipeline: synthetic preview, secure-readiness gates, application audio exclusion/bounded stereo mixing, FFmpeg H.264 encoding and portal pre-cancellation passed. Native screen capture and Discord delivery remain unverified.");
+		println!("Linux screen pipeline: synthetic preview, secure-readiness gates, application audio exclusion/bounded stereo mixing, Stable H.264 encoding and portal pre-cancellation passed. Native screen capture and Discord delivery remain unverified.");
 	});
 }
 #[cfg(not(target_os = "linux"))]

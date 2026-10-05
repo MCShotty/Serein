@@ -1,5 +1,6 @@
 //! User-started, ephemeral camera capture. No capture stream starts before `start`.
 
+use model::voice_settings::{VideoCodec, VideoSettings};
 use openh264::formats::{RgbSliceU8, YUVBuffer, YUVSource};
 use std::sync::{
 	Arc, Mutex,
@@ -27,7 +28,8 @@ static RUNNING: AtomicBool = AtomicBool::new(false);
 
 pub struct Frame {
 	pub rgb: Vec<u8>,
-	pub h264: Vec<u8>,
+	pub data: Vec<u8>,
+	pub codec: VideoCodec,
 }
 
 #[derive(Default)]
@@ -69,9 +71,13 @@ impl Camera {
 	/// Call only after an explicit camera-on gesture in a call or settings preview.
 	pub fn start(
 		device: Option<String>,
+		video: VideoSettings,
 		on_frame: Arc<dyn Fn(Frame) + Send + Sync>,
 		wake: Arc<dyn Fn() + Send + Sync>,
 	) -> Result<Self, &'static str> {
+		if !video.is_valid() {
+			return Err("Stable video encoding supports H.264 only");
+		}
 		if !SUPPORTED {
 			return Err("Camera capture is unavailable on this platform");
 		}
@@ -96,12 +102,12 @@ impl Camera {
 					#[cfg(target_os = "macos")]
 					{
 						objc2::rc::autoreleasepool(|_| {
-							macos::run(&worker, device.as_deref(), &on_frame, &wake)
+							macos::run(&worker, device.as_deref(), video, &on_frame, &wake)
 						})
 					}
 					#[cfg(any(target_os = "windows", target_os = "linux"))]
 					{
-						run(&worker, device.as_deref(), &on_frame, &wake)
+						run(&worker, device.as_deref(), video, &on_frame, &wake)
 					}
 					#[cfg(not(any(
 						target_os = "macos",
@@ -148,27 +154,33 @@ impl Camera {
 	}
 }
 
-/// FFmpeg camera encoding; each picture is an IDR because transport keeps only the latest.
+/// Each camera picture is independently decodable because transport keeps only the latest.
 struct CameraEncoder {
 	diagnostics: crate::diagnostics::EncoderRegistration,
-	encoder: crate::video_encode::Encoder,
+	encoder: crate::video_backend::Encoder,
+	codec: VideoCodec,
 	yuv: YUVBuffer,
 	i420: Vec<u8>,
 }
 
 impl CameraEncoder {
-	fn new() -> Result<Self, &'static str> {
-		let encoder = crate::video_encode::Encoder::new(crate::video_encode::Config {
-			width: WIDTH as u32,
-			height: HEIGHT as u32,
-			fps: format::FPS,
-			bit_rate: 600_000,
-			max_bytes: MAX_ENCODED_BYTES,
-			profile: crate::video_encode::Profile::Baseline,
-		})?;
+	fn new(video: VideoSettings) -> Result<Self, &'static str> {
+		let encoder = crate::video_backend::Encoder::new(
+			crate::video_encode::Config {
+				width: WIDTH as u32,
+				height: HEIGHT as u32,
+				fps: format::FPS,
+				bit_rate: 600_000,
+				max_bytes: MAX_ENCODED_BYTES,
+				profile: crate::video_encode::Profile::Baseline,
+				codec: video.codec,
+			},
+			video.backend,
+		)?;
 		Ok(Self {
 			diagnostics: crate::diagnostics::EncoderRegistration::new(false, encoder.hardware()),
 			encoder,
+			codec: video.codec,
 			yuv: YUVBuffer::new(WIDTH, HEIGHT),
 			i420: Vec::with_capacity(WIDTH * HEIGHT * 3 / 2),
 		})
@@ -183,9 +195,13 @@ impl CameraEncoder {
 		self.i420.extend_from_slice(self.yuv.y());
 		self.i420.extend_from_slice(self.yuv.u());
 		self.i420.extend_from_slice(self.yuv.v());
-		let (h264, _) = self.encoder.encode(&self.i420, true)?;
+		let (data, _) = self.encoder.encode(&self.i420, true)?;
 		self.diagnostics.set(Some(self.encoder.hardware()));
-		Ok((!h264.is_empty()).then_some(Frame { rgb, h264 }))
+		Ok((!data.is_empty()).then_some(Frame {
+			rgb,
+			data,
+			codec: self.codec,
+		}))
 	}
 }
 
@@ -193,10 +209,11 @@ impl CameraEncoder {
 fn run(
 	shared: &Shared,
 	device: Option<&str>,
+	video: VideoSettings,
 	on_frame: &Arc<dyn Fn(Frame) + Send + Sync>,
 	wake: &Arc<dyn Fn() + Send + Sync>,
 ) -> Result<(), &'static str> {
-	let mut encoder = CameraEncoder::new()?;
+	let mut encoder = CameraEncoder::new(video)?;
 	let mut emit = |rgb| {
 		if !shared.stopped.load(Ordering::Acquire)
 			&& let Some(frame) = encoder.encode(rgb)?
@@ -450,6 +467,7 @@ mod macos {
 	pub(super) fn run(
 		shared: &Arc<Shared>,
 		selected: Option<&str>,
+		video: VideoSettings,
 		on_frame: &Arc<dyn Fn(Frame) + Send + Sync>,
 		wake: &Arc<dyn Fn() + Send + Sync>,
 	) -> Result<(), &'static str> {
@@ -457,7 +475,7 @@ mod macos {
 		if shared.stopped.load(Ordering::Acquire) {
 			return Ok(());
 		}
-		let mut encoder = CameraEncoder::new()?;
+		let mut encoder = CameraEncoder::new(video)?;
 		let (send, receive) = mpsc::sync_channel(1);
 		let queue = DispatchQueue::new("serein.camera.frames", None);
 		// SAFETY: Only this worker configures/owns the session. Delegate lives until
@@ -587,6 +605,7 @@ mod tests {
 		for id in ["x".repeat(4097), "dshow:bad\0id".into()] {
 			let error = Camera::start(
 				Some(id),
+				VideoSettings::default(),
 				Arc::new(|_| panic!("no capture")),
 				Arc::new(|| {}),
 			)
@@ -602,7 +621,11 @@ mod tests {
 
 	#[test]
 	fn camera_frames_are_bounded_independently_decodable_and_stop_is_immediate() {
-		let mut encoder = CameraEncoder::new().unwrap();
+		let mut encoder = CameraEncoder::new(VideoSettings {
+			backend: model::voice_settings::VideoBackend::Experimental,
+			codec: VideoCodec::H264,
+		})
+		.unwrap();
 		for length in [0, WIDTH * HEIGHT * 3 - 1, WIDTH * HEIGHT * 3 + 1] {
 			assert!(encoder.encode(vec![0; length]).is_err());
 		}
@@ -610,9 +633,9 @@ mod tests {
 		for value in [0, 127, 255].into_iter().cycle().take(8) {
 			if let Some(frame) = encoder.encode(vec![value; WIDTH * HEIGHT * 3]).unwrap() {
 				produced += 1;
-				assert!(frame.h264.len() <= MAX_ENCODED_BYTES);
+				assert!(frame.data.len() <= MAX_ENCODED_BYTES);
 				let mut decoder = openh264::decoder::Decoder::new().unwrap();
-				let decoded = decoder.decode(&frame.h264).unwrap().unwrap();
+				let decoded = decoder.decode(&frame.data).unwrap().unwrap();
 				assert_eq!(decoded.dimensions(), (WIDTH, HEIGHT));
 			}
 		}
@@ -631,7 +654,11 @@ mod tests {
 		assert!(camera.stopped());
 
 		{
-			let mut encoder = CameraEncoder::new().unwrap();
+			let mut encoder = CameraEncoder::new(VideoSettings {
+				backend: model::voice_settings::VideoBackend::Experimental,
+				codec: VideoCodec::H264,
+			})
+			.unwrap();
 			for length in [0, WIDTH * HEIGHT * 3 - 1, WIDTH * HEIGHT * 3 + 1] {
 				assert!(encoder.encode(vec![0; length]).is_err());
 			}
@@ -654,11 +681,11 @@ mod tests {
 				};
 				produced += 1;
 				assert_eq!(frame.rgb.len(), WIDTH * HEIGHT * 3);
-				assert!(frame.h264.len() <= MAX_ENCODED_BYTES);
+				assert!(frame.data.len() <= MAX_ENCODED_BYTES);
 				// The sender drops to the latest frame, so each picture must stand alone.
-				assert!(crate::video_receive::is_keyframe(&frame.h264));
-				assert!(crate::video_receive::has_parameter_sets(&frame.h264));
-				let decoded = decoder.decode(&frame.h264).unwrap().unwrap();
+				assert!(crate::video_receive::is_keyframe(&frame.data));
+				assert!(crate::video_receive::has_parameter_sets(&frame.data));
+				let decoded = decoder.decode(&frame.data).unwrap().unwrap();
 				assert_eq!(decoded.dimensions(), (WIDTH, HEIGHT));
 			}
 			assert!(produced > 0, "camera encoder must produce bounded output");
@@ -670,7 +697,22 @@ mod tests {
 #[test]
 #[ignore = "synthetic release workload; no capture devices or network"]
 fn synthetic_camera_encode_workload() {
-	let mut encoder = CameraEncoder::new().unwrap();
+	synthetic_camera_encode(VideoSettings {
+		backend: model::voice_settings::VideoBackend::Experimental,
+		codec: VideoCodec::H264,
+	});
+}
+
+#[cfg(test)]
+#[test]
+#[ignore = "synthetic release workload; no capture devices or network"]
+fn synthetic_stable_camera_encode_workload() {
+	synthetic_camera_encode(VideoSettings::default());
+}
+
+#[cfg(test)]
+fn synthetic_camera_encode(video: VideoSettings) {
+	let mut encoder = CameraEncoder::new(video).unwrap();
 	let mut rgb = vec![0; WIDTH * HEIGHT * 3];
 	for (index, pixel) in rgb.as_chunks_mut::<3>().0.iter_mut().enumerate() {
 		let (x, y) = (index % WIDTH, index / WIDTH);
@@ -684,7 +726,7 @@ fn synthetic_camera_encode_workload() {
 	for _ in 0..300 {
 		if let Some(frame) = encoder.encode(rgb.clone()).unwrap() {
 			packets += 1;
-			bytes += frame.h264.len();
+			bytes += frame.data.len();
 			std::hint::black_box(frame);
 		}
 	}

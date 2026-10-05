@@ -1,4 +1,4 @@
-/* Bounded FFmpeg H.264 encoding, shared by the camera and screen workers.
+/* Bounded FFmpeg H.264, HEVC and AV1 encoding, shared by the camera and screen workers.
  * This translation unit uses only libavcodec/libavutil: it opens encoder GPU
  * devices, never capture sessions, containers or network transports. Its explicit
  * encoder names cannot select Media Foundation, VA-API or a GPL encoder.
@@ -30,6 +30,9 @@ typedef struct SereinAvc {
     int in_flight;
     int baseline;
     int failed;
+    int kind;
+    int av1_reduced_still;
+    int has_output;
 } SereinAvc;
 
 /* This callback reads immutable state only, including if libavcodec invokes
@@ -54,58 +57,54 @@ static int set_option(AVCodecContext *codec, const char *name,
 static int configure_backend(SereinAvc *encoder, int backend)
 {
     AVCodecContext *codec = encoder->codec;
+    const int h264 = encoder->kind == 0;
+    const int av1 = encoder->kind == 2;
     if (backend == 0) {
-        /* OpenH264 2.6 defaults to CAMERA_VIDEO_REAL_TIME / LOW_COMPLEXITY.
-         * FFmpeg preserves these defaults. Avoid skipped frames so input and
-         * output accounting stays bounded and every camera picture is an IDR. */
-        return set_option(codec, "profile", encoder->baseline ?
-                          "constrained_baseline" : "main") &&
+        /* OpenH264 2.6 preserves real-time / low-complexity defaults. */
+        return h264 && set_option(codec, "profile", encoder->baseline ? "constrained_baseline" : "main") &&
                set_option(codec, "coder", encoder->baseline ? "cavlc" : "cabac") &&
-               set_option(codec, "rc_mode", "bitrate") &&
-               set_option(codec, "allow_skip_frames", "0");
+               set_option(codec, "rc_mode", "bitrate") && set_option(codec, "allow_skip_frames", "0");
     }
     if (backend == 1) {
-        return set_option(codec, "profile", encoder->baseline ? "baseline" : "main") &&
-               set_option(codec, "preset", "p4") &&
-               set_option(codec, "tune", "ull") &&
-               set_option(codec, "rc", "cbr") &&
-               set_option(codec, "rc-lookahead", "0") &&
-               set_option(codec, "zerolatency", "1") &&
-               set_option(codec, "forced-idr", "1") &&
-               set_option(codec, "surfaces", "4") &&
-               set_option(codec, "delay", "0");
+        /* AV1 NVENC has no private profile option; the context requests Main. */
+        return (av1 || set_option(codec, "profile", h264 && encoder->baseline ? "baseline" : "main")) &&
+               set_option(codec, "preset", "p4") && set_option(codec, "tune", "ull") &&
+               set_option(codec, "rc", "cbr") && set_option(codec, "rc-lookahead", "0") &&
+               set_option(codec, "zerolatency", "1") && set_option(codec, "forced-idr", "1") &&
+               set_option(codec, "surfaces", "4") && set_option(codec, "delay", "0");
     }
     if (backend == 3) {
-        return set_option(codec, "profile", encoder->baseline ? "constrained_baseline" : "main") &&
-               set_option(codec, "usage", "ultralowlatency") &&
-               set_option(codec, "quality", "speed") &&
-               set_option(codec, "rc", "cbr") &&
-               set_option(codec, "latency", "1") &&
-               set_option(codec, "preanalysis", "0") &&
-               set_option(codec, "preencode", "0") &&
-               set_option(codec, "frame_skipping", "0") &&
-               set_option(codec, "bf", "0") &&
-               set_option(codec, "max_b_frames", "0") &&
-               set_option(codec, "header_spacing", "1") &&
+        if (!set_option(codec, "profile", h264 && encoder->baseline ? "constrained_baseline" : "main") ||
+            !set_option(codec, "usage", "ultralowlatency") || !set_option(codec, "quality", "speed") ||
+            !set_option(codec, "rc", "cbr") || !set_option(codec, "preanalysis", "0") ||
+            !set_option(codec, "preencode", "0") ||
+            !set_option(codec, "latency", av1 ? "lowest_latency" : "1"))
+            return 0;
+        if (h264)
+            return set_option(codec, "frame_skipping", "0") && set_option(codec, "bf", "0") &&
+                   set_option(codec, "max_b_frames", "0") && set_option(codec, "header_spacing", "1") &&
+                   av_opt_set_int(codec->priv_data, "max_au_size", (int64_t)encoder->max_bytes * 8, 0) >= 0;
+        if (av1)
+            return set_option(codec, "skip_frame", "0") && set_option(codec, "header_insertion_mode", "frame");
+        return set_option(codec, "skip_frame", "0") && set_option(codec, "header_insertion_mode", "idr") &&
+               set_option(codec, "gops_per_idr", "1") &&
                av_opt_set_int(codec->priv_data, "max_au_size", (int64_t)encoder->max_bytes * 8, 0) >= 0;
     }
     if (backend == 4) {
-        /* Intel accepts NV12 system-memory frames with an explicit hardware
-         * session. No software implementation or implicit session is allowed. */
-        return set_option(codec, "profile", encoder->baseline ? "baseline" : "main") &&
-               set_option(codec, "preset", "veryfast") &&
-               set_option(codec, "async_depth", "1") &&
-               set_option(codec, "look_ahead", "0") &&
-               set_option(codec, "look_ahead_depth", "0") &&
-               set_option(codec, "forced_idr", "1") &&
-               set_option(codec, "idr_interval", "0") &&
-               set_option(codec, "repeat_pps", "1") &&
-               set_option(codec, "cavlc", encoder->baseline ? "1" : "0") &&
-               av_opt_set_int(codec->priv_data, "max_frame_size", (int64_t)encoder->max_bytes, 0) >= 0;
+        if (!set_option(codec, "profile", h264 && encoder->baseline ? "baseline" : "main") ||
+            !set_option(codec, "preset", "veryfast") || !set_option(codec, "async_depth", "1") ||
+            !set_option(codec, "look_ahead_depth", "0") || !set_option(codec, "forced_idr", "1") ||
+            av_opt_set_int(codec->priv_data, "max_frame_size", (int64_t)encoder->max_bytes, 0) < 0)
+            return 0;
+        if (av1)
+            return 1;
+        if (!set_option(codec, "idr_interval", "0"))
+            return 0;
+        return !h264 || (set_option(codec, "look_ahead", "0") && set_option(codec, "repeat_pps", "1") &&
+                          set_option(codec, "cavlc", encoder->baseline ? "1" : "0"));
     }
-    return set_option(codec, "profile", encoder->baseline ? "baseline" : "main") &&
-           set_option(codec, "realtime", "1") &&
-           set_option(codec, "allow_sw", "0") &&
+    return !av1 && set_option(codec, "profile", h264 && encoder->baseline ? "baseline" : "main") &&
+           set_option(codec, "realtime", "1") && set_option(codec, "allow_sw", "0") &&
            set_option(codec, "max_ref_frames", "1");
 }
 
@@ -160,11 +159,14 @@ void serein_avc_close(void *opaque)
 }
 
 void *serein_avc_open(int width, int height, int fps, int bitrate, int baseline,
-                     int backend, size_t max_bytes)
+                     int backend, int kind, size_t max_bytes)
 {
-    static const char *const names[] = {
-        "libopenh264", "h264_nvenc", "h264_videotoolbox", "h264_amf", "h264_qsv"
+    static const char *const names[][5] = {
+        {"libopenh264", "h264_nvenc", "h264_videotoolbox", "h264_amf", "h264_qsv"},
+        {NULL, "hevc_nvenc", "hevc_videotoolbox", "hevc_amf", "hevc_qsv"},
+        {NULL, "av1_nvenc", NULL, "av1_amf", "av1_qsv"}
     };
+    static const enum AVCodecID ids[] = {AV_CODEC_ID_H264, AV_CODEC_ID_HEVC, AV_CODEC_ID_AV1};
     const AVCodec *implementation;
     SereinAvc *encoder;
     AVCodecContext *codec;
@@ -172,12 +174,14 @@ void *serein_avc_open(int width, int height, int fps, int bitrate, int baseline,
     if (width <= 0 || height <= 0 || width > 1920 || height > 1080 ||
         (width & 1) || (height & 1) || fps <= 0 || fps > 60 ||
         bitrate <= 0 || bitrate > 100000000 ||
-        (baseline != 0 && baseline != 1) || backend < 0 || backend > 4 ||
+        (baseline != 0 && baseline != 1) || backend < 0 || backend > 4 || kind < 0 || kind > 2 ||
         max_bytes == 0 || max_bytes > SEREIN_MAX_PACKET_BYTES)
         return NULL;
 
-    implementation = avcodec_find_encoder_by_name(names[backend]);
-    if (!implementation || implementation->id != AV_CODEC_ID_H264)
+    if (!names[kind][backend])
+        return NULL;
+    implementation = avcodec_find_encoder_by_name(names[kind][backend]);
+    if (!implementation || implementation->id != ids[kind])
         return NULL;
 
     encoder = av_mallocz(sizeof(*encoder));
@@ -187,6 +191,7 @@ void *serein_avc_open(int width, int height, int fps, int bitrate, int baseline,
     encoder->input_bytes = (size_t)width * (size_t)height * 3 / 2;
     encoder->max_bytes = max_bytes;
     encoder->baseline = baseline;
+    encoder->kind = kind;
     encoder->codec = avcodec_alloc_context3(implementation);
     encoder->frame = av_frame_alloc();
     encoder->packet = av_packet_alloc();
@@ -226,7 +231,8 @@ void *serein_avc_open(int width, int height, int fps, int bitrate, int baseline,
     codec->max_b_frames = 0;
     codec->thread_count = width * height <= 640 * 480 ? 2 : 4;
     codec->refs = 1;
-    codec->profile = baseline ? AV_PROFILE_H264_BASELINE : AV_PROFILE_H264_MAIN;
+    codec->profile = kind == 0 ? (baseline ? AV_PROFILE_H264_BASELINE : AV_PROFILE_H264_MAIN) :
+                     kind == 1 ? AV_PROFILE_HEVC_MAIN : AV_PROFILE_AV1_MAIN;
     codec->flags = (int)((unsigned int)codec->flags |
                         AV_CODEC_FLAG_LOW_DELAY | AV_CODEC_FLAG_CLOSED_GOP);
     /* The pinned FFmpeg encoders repeat parameter sets on IDRs without
@@ -266,19 +272,25 @@ static size_t start_code_size(const uint8_t *bytes, size_t length, size_t at)
     return 0;
 }
 
-/* Inspect in place before copying. SPS/PPS must occur before every IDR, in
- * this same access unit. Native keyframe metadata alone does not establish
- * independent decodability. Rust additionally validates the packet before
- * encryption/packetization. No cached parameter sets or growable scratch. */
-static int inspect_annex_b(const uint8_t *bytes, size_t length, int baseline,
-                           int *keyframe)
+typedef struct PacketInfo {
+    int keyframe;
+    unsigned int parameters;
+    unsigned int key_parameters;
+    int picture;
+} PacketInfo;
+
+/* Inspect Annex B in place. HEVC uses two-byte headers and VPS/SPS/PPS;
+ * H.264 uses one-byte headers and SPS/PPS. Parameter availability is checked
+ * after optionally inspecting the codec's bounded raw extradata below. */
+static int inspect_annex_b(const uint8_t *bytes, size_t length, int kind, PacketInfo *info)
 {
     size_t at = 0;
-    int nals = 0, sps = 0, pps = 0, slice = 0, idr = 0;
+    int nals = 0;
+    *info = (PacketInfo){0};
     while (at < length) {
         size_t prefix = start_code_size(bytes, length, at);
         size_t payload, end;
-        int kind;
+        int type;
         if (!prefix || ++nals > SEREIN_MAX_NALS)
             return 0;
         payload = at + prefix;
@@ -289,25 +301,94 @@ static int inspect_annex_b(const uint8_t *bytes, size_t length, int baseline,
             end++;
         if (end == payload || (bytes[payload] & 0x80))
             return 0;
-        kind = bytes[payload] & 0x1f;
-        if (kind == 0 || kind >= 24)
-            return 0;
-        if (kind == 7)
-            sps = 1;
-        else if (kind == 8)
-            pps = 1;
-        else if (kind == 5) {
-            if (!sps || !pps)
+        if (kind == 0) {
+            type = bytes[payload] & 0x1f;
+            if (type == 0 || type >= 24)
                 return 0;
-            idr = slice = 1;
-        } else if (kind == 1)
-            slice = 1;
+            if (type == 7) info->parameters |= 1;
+            if (type == 8) info->parameters |= 2;
+            if (type == 5) {
+                if (!info->keyframe) info->key_parameters = info->parameters;
+                info->keyframe = 1;
+            }
+            if (type == 1 || type == 5) info->picture = 1;
+        } else {
+            if (end - payload < 2 || !(bytes[payload + 1] & 7))
+                return 0;
+            type = (bytes[payload] >> 1) & 0x3f;
+            if (type == 32) info->parameters |= 1;
+            if (type == 33) info->parameters |= 2;
+            if (type == 34) info->parameters |= 4;
+            if (type >= 16 && type <= 21) {
+                if (!info->keyframe) info->key_parameters = info->parameters;
+                info->keyframe = 1;
+            }
+            if (type <= 31) info->picture = 1;
+        }
         at = end;
     }
-    if (!slice || (baseline && !idr))
-        return 0;
-    *keyframe = idr;
-    return 1;
+    return nals != 0;
+}
+
+/* Low-overhead AV1 OBUs have an explicit bounded LEB128 payload size. The
+ * first uncompressed-header bits distinguish show-existing and inter/intra
+ * pictures from KEY_FRAME; the sequence's reduced-still mode omits those bits.
+ * No payload is passed to a generic demuxer or dynamically allocated parser. */
+static int inspect_av1(const uint8_t *bytes, size_t length, int *reduced_still, PacketInfo *info)
+{
+    size_t at = 0;
+    int units = 0;
+    *info = (PacketInfo){0};
+    while (at < length) {
+        uint8_t header = bytes[at++];
+        int type = (header >> 3) & 15;
+        uint64_t payload = 0;
+        int completed = 0;
+        if ((header & 0x81) || !(header & 2) || ++units > SEREIN_MAX_NALS ||
+            type == 0 || (type >= 9 && type <= 14))
+            return 0;
+        if (header & 4) {
+            if (at == length || (bytes[at++] & 7))
+                return 0;
+        }
+        for (unsigned int index = 0; index < 8; index++) {
+            uint8_t byte;
+            if (at == length)
+                return 0;
+            byte = bytes[at++];
+            payload |= (uint64_t)(byte & 127) << (index * 7);
+            if (!(byte & 128)) { completed = 1; break; }
+        }
+        if (!completed || payload > (uint64_t)(length - at))
+            return 0;
+        if (type == 1) {
+            if (!payload || (bytes[at] >> 5) > 2)
+                return 0;
+            *reduced_still = !!(bytes[at] & 8);
+            if (*reduced_still && !(bytes[at] & 16))
+                return 0;
+            info->parameters |= 1;
+        } else if (type == 3 || type == 6) {
+            if (!payload)
+                return 0;
+            info->picture = 1;
+            if (*reduced_still || (!(bytes[at] & 128) && !(bytes[at] & 96))) {
+                if (!info->keyframe) info->key_parameters = info->parameters;
+                info->keyframe = 1;
+            }
+        } else if (type == 2 && payload != 0) {
+            return 0;
+        }
+        at += (size_t)payload;
+    }
+    return units != 0;
+}
+
+static int inspect_packet(const uint8_t *bytes, size_t length, int kind,
+                          int *reduced_still, PacketInfo *info)
+{
+    return kind == 2 ? inspect_av1(bytes, length, reduced_still, info) :
+                       inspect_annex_b(bytes, length, kind, info);
 }
 
 /* A native driver may report a packet length larger than its negotiated
@@ -359,7 +440,10 @@ int serein_avc_encode(void *opaque, const uint8_t *input, size_t length,
                       int *keyframe)
 {
     SereinAvc *encoder = opaque;
-    int status, is_keyframe = 0;
+    int status, reduced_still;
+    PacketInfo info;
+    unsigned int required;
+    size_t prefix_bytes = 0, packet_bytes;
 
     if (output_length)
         *output_length = 0;
@@ -388,15 +472,42 @@ int serein_avc_encode(void *opaque, const uint8_t *input, size_t length,
     status = avcodec_receive_packet(encoder->codec, encoder->packet);
     if (status == AVERROR(EAGAIN))
         return 0;
-    if (status < 0 || !packet_fits(encoder->packet, encoder->max_bytes, output_capacity) ||
-        !inspect_annex_b(encoder->packet->data, (size_t)encoder->packet->size,
-                         encoder->baseline, &is_keyframe))
+    if (status < 0 || !packet_fits(encoder->packet, encoder->max_bytes, output_capacity))
         goto failed;
-
+    packet_bytes = (size_t)encoder->packet->size;
+    required = encoder->kind == 0 ? 3U : encoder->kind == 1 ? 7U : 1U;
+    reduced_still = encoder->av1_reduced_still;
+    if (!inspect_packet(encoder->packet->data, packet_bytes, encoder->kind, &reduced_still, &info) || !info.picture)
+        goto failed;
+    if (encoder->kind == 2 && !(encoder->packet->flags & AV_PKT_FLAG_KEY))
+        info.keyframe = 0;
+    if (info.keyframe && info.key_parameters != required) {
+        PacketInfo extra;
+        /* Some QSV HEVC drivers supply VPS in extradata rather than each AU.
+         * Accept only raw, parameter-only Annex B / sized OBUs. Never interpret
+         * arbitrary AVCC/HVCC/container bytes as an encoded access unit. */
+        int bytes = encoder->codec->extradata_size;
+        if (bytes <= 0 || !encoder->codec->extradata || (size_t)bytes > encoder->max_bytes ||
+            !inspect_packet(encoder->codec->extradata, (size_t)bytes, encoder->kind, &reduced_still, &extra) ||
+            extra.picture || (extra.parameters | info.key_parameters) != required)
+            goto failed;
+        prefix_bytes = (size_t)bytes;
+    }
+    if ((encoder->baseline || !encoder->has_output) && !info.keyframe)
+        goto failed;
+    if (prefix_bytes > encoder->max_bytes - packet_bytes ||
+        prefix_bytes > output_capacity - packet_bytes)
+        goto failed;
+    /* All native/driver sizes, syntax, independence and combined bounds pass
+     * before any caller-owned output byte is written. */
+    if (prefix_bytes)
+        memcpy(output, encoder->codec->extradata, prefix_bytes);
+    memcpy(output + prefix_bytes, encoder->packet->data, packet_bytes);
+    *output_length = prefix_bytes + packet_bytes;
+    *keyframe = info.keyframe;
     encoder->in_flight--;
-    memcpy(output, encoder->packet->data, (size_t)encoder->packet->size);
-    *output_length = (size_t)encoder->packet->size;
-    *keyframe = is_keyframe;
+    encoder->has_output = 1;
+    encoder->av1_reduced_still = reduced_still;
     av_packet_unref(encoder->packet);
     return 1;
 

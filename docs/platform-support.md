@@ -80,7 +80,8 @@ requests are honored; native X11/Wayland verification of this toggle remains pen
 
 Debian/Ubuntu development packages typically include `build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev libfontconfig1-dev libxkbcommon-dev libwayland-dev libx11-dev libxi-dev libxrandr-dev libxcursor-dev libvulkan-dev`. Package names vary by distribution. SQLite is bundled through rusqlite; it is an embedded client cache, with no database service.
 
-Outgoing camera and screen encoding also require the pinned shared FFmpeg libraries.
+The Experimental camera/screen backend requires the pinned shared FFmpeg libraries;
+standard packages include them alongside the Stable platform encoders.
 Build them before Cargo:
 
 ```sh
@@ -179,7 +180,7 @@ Apple Color Emoji was visually checked with a synthetic moon status on September
 
 Outgoing in-call capture uses AVFoundation on macOS, Media Foundation and DirectShow on Windows,
 and V4L2 on Linux. The existing camera button becomes available after the voice
-server negotiates H264; capture starts only after an explicit click in a connected
+server negotiates the selected codec; capture starts only after an explicit click in a connected
 call. All adapters send 640×480 video at most 15 encoded frames/s. Native capture now
 selects the closest supported dimensions/rate within a 1280×720 input ceiling
 (DirectShow preserves its existing 1920×1080 fallback) and
@@ -335,17 +336,18 @@ available with a visible recovery path on the next update attempt.
 The system screen-sharing picker requires PipeWire, a ScreenCast-capable portal backend for the current
 desktop (GNOME, KDE or the compositor-specific backend), and GStreamer Base/Good plus
 the PipeWire source plugin. GStreamer supplies bounded raw capture, CPU scaling
-and preview; outgoing encoding uses the shared FFmpeg libraries with NVENC,
-AMD AMF or Intel Quick Sync when available, then OpenH264 software fallback.
-GStreamer VA/NVCodec/OpenGL encoder
-plugins are no longer needed for outgoing media. Inbound playback can still use
-its existing VA-API hardware decoder. NVENC requires the NVIDIA runtime; AMF
-requires the AMD AMF runtime (Vulkan on Linux); Quick Sync requires an Intel GPU
-runtime and iHD VA driver. The Linux VA interface supplies Quick Sync's device,
-while `h264_vaapi` remains excluded. Device permissions and matching runtimes must
-be available. Windows ARM64 uses software encoding. Flatpak uses the pinned
-FFmpeg build with its existing GPU access permissions; matching hardware runtimes
-must also be present inside the sandbox. Native hardware validation remains pending.
+and preview. Stable uses GStreamer VA/NV encoders with direct OpenH264 fallback;
+the optional Bad/VA/NVCodec plugins enable those hardware paths. Experimental uses
+the shared FFmpeg NVENC, AMD AMF or Intel Quick Sync encoders. H.264 has software
+fallback; H.265/AV1 require compatible hardware. Incoming playback remains H.264-only
+and may use its existing VA-API decoder. NVENC requires the NVIDIA runtime; AMF
+requires AMD's AMF runtime (Vulkan on Linux); Quick Sync requires an Intel GPU
+runtime and iHD VA driver. Experimental excludes VA-API encoders while permitting
+Quick Sync's Linux VA device interface. Device permissions and matching runtimes
+must be available, including inside Flatpak's sandbox. Experimental on Windows ARM64 is H.264
+software-only. macOS Experimental supports H.264/H.265 VideoToolbox and H.264
+software fallback; this pinned build has no macOS AV1 encoder. Hardware and live
+codec compatibility remain unverified. See [video settings](voice.md#video-backend-and-codec-settings).
 
 Niri portal capture normalizes frame timestamps at arrival before frame-rate filtering,
 including on Niri 26.04 where presentation timestamps remain constant. This preserves

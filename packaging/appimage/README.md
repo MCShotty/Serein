@@ -35,11 +35,14 @@ or override the host library search path. A graphical session, graphics driver,
 portal backend and unlocked Secret Service provider are still required. A KDE
 portal/keyring provider can replace the GNOME choices above. No library or desktop
 service is installed by launching the AppImage.
-The replaceable FFmpeg/OpenH264 libraries and their pinned source recipe are
+The Experimental engine's replaceable FFmpeg/OpenH264 libraries and their pinned source recipe are
 included. libva/libva-drm/libdrm are host dependencies for the Quick Sync device
 interface; compatible Intel/NVIDIA/AMD GPU runtimes enable hardware encoders.
-The `h264_vaapi` encoder is disabled, with OpenH264 available when hardware
-device initialization fails. See [the encoder recipe](../ffmpeg/README.md).
+FFmpeg's H264/HEVC/AV1 VA-API encoders are disabled. Experimental HEVC/AV1 require
+compatible hardware; H264 provides OpenH264 software fallback. Stable uses
+the original system GStreamer VA-API/NVENC H264 encoders, requiring optional Bad
+plugins and compatible drivers; the Ubuntu command above includes those plugins.
+The Base/Good plugins support raw capture and media playback. See [the encoder recipe](../ffmpeg/README.md).
 
 The embedded runtime includes FUSE support without requiring the old `libfuse2`
 package. Systems that cannot mount AppImages can run:

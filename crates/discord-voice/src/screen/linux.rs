@@ -77,6 +77,7 @@ pub(super) fn x11_source(cursor: bool) -> Result<gst::Element, &'static str> {
 #[allow(clippy::too_many_arguments)] // The existing worker's bounded media outputs.
 pub(super) fn run(
 	settings: Settings,
+	video_settings: model::voice_settings::VideoSettings,
 	stop: Arc<AtomicBool>,
 	ready: Arc<AtomicBool>,
 	keyframe: Arc<AtomicBool>,
@@ -206,7 +207,7 @@ pub(super) fn run(
 				let target = bitrate
 					.load(Ordering::Acquire)
 					.clamp(250_000, settings.bit_rate());
-				// A rate change replaces only the FFmpeg encoder, preserving the approved
+				// A rate change updates only the encoder, preserving the approved
 				// source, preview and audio. Do not restart while waiting for its first IDR.
 				if !waiting_keyframe
 					&& let Some(encoder) = encoding.as_mut()
@@ -298,7 +299,8 @@ pub(super) fn run(
 							requested_keyframe || keepalive,
 						)? {
 							if encoding.is_none() {
-								encoding = Some(ScreenEncoder::new(settings, target)?);
+								encoding =
+									Some(ScreenEncoder::new(settings, target, video_settings)?);
 							}
 							let encoder = encoding.as_mut().expect("screen encoder initialized");
 							let start = metrics.start();
@@ -317,6 +319,7 @@ pub(super) fn run(
 							}
 							if !data.is_empty() && (!waiting_keyframe || is_keyframe) {
 								let frame = EncodedFrame {
+									codec: video_settings.codec,
 									data,
 									keyframe: is_keyframe,
 									timestamp: (origin.elapsed().as_micros() * 90 / 1000) as u32,

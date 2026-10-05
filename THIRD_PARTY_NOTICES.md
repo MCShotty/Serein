@@ -177,7 +177,7 @@ assets/licenses/voice/PROVENANCE.md and staged by the existing voice packager.
 
 Native screen capture uses **screencapturekit 10.0.3** (MIT OR Apache-2.0) on macOS and **windows-capture 2.0.1** (MIT) on Windows. Incoming software decoding uses **openh264 / openh264-sys2 0.9.8** (BSD-2-Clause). Media reuses **image 0.25.10** (MIT OR Apache-2.0) for bounded scaling. Native frameworks are supplied by the OS. Voice and video ship in the standard build. Unmodified available license texts and source provenance are retained in `assets/licenses/voice/PROVENANCE.md`; the noted missing binding license text and existing full per-artifact redistribution review remain outstanding.
 
-Camera and screen sharing use **FFmpeg 7.1.5** libavcodec/libavutil,
+Experimental camera and screen sharing use **FFmpeg 7.1.5** libavcodec/libavutil,
 source-built **Cisco OpenH264 2.6.0**, and **nv-codec-headers 12.2.72.0** on
 supported NVIDIA platforms. AMD AMF uses **AMF 1.4.36** MIT-licensed public headers;
 the unchanged AMD license includes its standards/patent notice. Intel Quick Sync
@@ -186,8 +186,13 @@ into FFmpeg; its license and third-party-programs notice are retained. GPU
 runtime drivers are supplied by the OS/vendor, not bundled. Linux QSV uses
 distribution-provided libva/libdrm for its driver device interface.
 The bundled FFmpeg build is **LGPL-2.1-or-later**;
-GPL, nonfree, Media Foundation and the `h264_vaapi` encoder are disabled. NVIDIA headers
-retain their MIT notices; VideoToolbox is an OS framework. FFmpeg is dynamically
+GPL, nonfree, Media Foundation and H264/HEVC/AV1 VA-API encoders are disabled
+in this FFmpeg build. Its hardware wrappers support H264, HEVC and AV1 where
+the platform/backend supplies them; software encoding remains OpenH264/H264.
+Stable retains original H264 platform encoders, including OS Media Foundation,
+VideoToolbox and distribution-provided GStreamer VA-API/NVENC, with Rust OpenH264
+fallback. These platform frameworks/plugins are not newly bundled codec source.
+NVIDIA headers retain their MIT notices; VideoToolbox is an OS framework. FFmpeg is dynamically
 linked through replaceable shared libraries. Packages retain its complete
 corresponding source archive, exact checksum/source URLs, configure arguments, source patch,
 LGPL text and build recipe under `ffmpeg-source` (Linux:
