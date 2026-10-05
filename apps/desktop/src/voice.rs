@@ -303,6 +303,7 @@ struct CameraTest {
 
 #[derive(Default)]
 pub struct Voice {
+	video_capabilities: crate::video_capabilities::Detector,
 	camera_test: Option<CameraTest>,
 	mic_preview: Option<MicPreview>,
 	screen: crate::screen::Screen,
@@ -319,6 +320,7 @@ pub struct Voice {
 }
 impl Voice {
 	pub fn stop(&mut self) {
+		self.video_capabilities.cancel();
 		self.camera_test = None;
 		self.mic_preview = None;
 		self.screen.stop();
@@ -619,6 +621,7 @@ impl Voice {
 		ctx: &egui::Context,
 	) -> Option<Command> {
 		self.reap();
+		self.video_capabilities.poll(state.demo, ui, ctx);
 		ui.voice_switch_ready =
 			self.pending.is_none() && self.live.is_none() && self.retiring.is_none();
 		self.poll_mic_preview(state, ui, ctx);

@@ -8,6 +8,15 @@ VA-API/NVENC on Linux, with source-built Rust OpenH264 fallback.
 Experimental compiles this exact encoder set; hardware capabilities and runtime
 availability determine which can open:
 
+Experimental settings probe each hardware engine/codec with synthetic camera
+and screen-share pictures. These checks call the linked libraries in disposable
+Serein helper processes, not an FFmpeg CLI. Successful validated output is
+required, without software or another hardware fallback. A ten-second helper
+deadline makes driver hangs unknown; the parent kills and reaps canceled helpers.
+The settings expose separate camera/screen results and a manual Recheck. The
+report is process-local and does not guarantee other stream presets or peer
+negotiation; see [voice documentation](../../docs/voice.md).
+
 | Platform | H264 | H265/HEVC | AV1 |
 |---|---|---|---|
 | Linux/Windows x64 | OpenH264, NVENC, AMF, Quick Sync | NVENC, AMF, Quick Sync | NVENC, AMF, Quick Sync |

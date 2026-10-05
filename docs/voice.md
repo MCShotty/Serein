@@ -533,6 +533,27 @@ starts; a local camera preview uses the current settings and stops when they cha
 Screen sharing snapshots the settings at the explicit Share gesture. Changes do not
 alter an already negotiated stream. Existing incoming playback remains H.264-only.
 
+Experimental checks hardware support when its Voice & Video settings are opened.
+The H.264, H.265 and AV1 rows show usable NVENC, AMD AMF, Intel Quick Sync or Apple
+VideoToolbox engines separately for camera and screen sharing. Recheck refreshes
+the process-local results after a driver/device change. A hardware-only session
+must produce a validated synthetic keyframe with inline codec parameters; an
+installed encoder name or software fallback does not count as hardware support.
+The checks use the camera's 640×480/15 fps profile and a 1280×720/30 fps screen
+profile. Higher resolutions/rates, concurrent GPU sessions and peer negotiation
+can still fail. The report describes Experimental, not Stable.
+
+Each backend/codec check runs in a disposable Serein helper process with a
+ten-second deadline, sequentially on a background thread. Closing these settings,
+switching to Stable, logging out or exiting cancels the scan and kills/reaps an
+outstanding helper. Driver crashes, helper failures and timeouts are unknown,
+not evidence that a codec is unsupported. A completed negative scan disables
+new H.265/AV1 selections but preserves a saved selection with a warning; H.264
+remains selectable through software fallback. Results are never persisted.
+Offline demos use unknown or explicitly synthetic fixtures and do not probe
+hardware. No capture, microphone, credentials or network session is initialized
+by the helper.
+
 Experimental uses native FFmpeg 7.1.5 `libavcodec`/`libavutil` contexts on the media
 worker without a CLI process. Windows/Linux try NVENC, AMD AMF and Intel Quick Sync
 in that order for the selected codec. H.264 then falls back to `libopenh264`.

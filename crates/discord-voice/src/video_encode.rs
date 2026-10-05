@@ -2,7 +2,7 @@
 //! Hardware backends preserve the selected codec; OpenH264 is the H.264 fallback.
 #![allow(unsafe_code)] // Small, checked ABI to the owned libavcodec context in the C shim.
 
-use model::voice_settings::VideoCodec;
+use model::voice_settings::{HardwareBackend, VideoCodec};
 use std::{ffi::c_void, marker::PhantomData, ptr::NonNull, rc::Rc};
 
 #[derive(Clone, Copy)]
@@ -66,6 +66,22 @@ const BACKENDS: &[Backend] = &[
 	Backend::VideoToolbox,
 	Backend::Software,
 ];
+
+/// Capability checks select exactly one hardware encoder, including on hybrid
+/// systems. A software or different GPU fallback would misreport support.
+fn probe_backend(backend: HardwareBackend, _codec: VideoCodec) -> Option<Backend> {
+	match backend {
+		#[cfg(any(target_os = "linux", target_os = "windows"))]
+		HardwareBackend::Nvenc => Some(Backend::Nvenc),
+		#[cfg(any(target_os = "linux", target_os = "windows"))]
+		HardwareBackend::Amf => Some(Backend::Amf),
+		#[cfg(any(target_os = "linux", target_os = "windows"))]
+		HardwareBackend::Qsv => Some(Backend::Qsv),
+		#[cfg(target_os = "macos")]
+		HardwareBackend::VideoToolbox if _codec != VideoCodec::Av1 => Some(Backend::VideoToolbox),
+		_ => None,
+	}
+}
 
 /// Keep failed GPUs out of this stream's remaining attempts, including after
 /// a backend opens successfully but rejects its first actual picture.
@@ -147,6 +163,28 @@ impl Encoder {
 	pub(crate) fn new(config: Config) -> Result<Self, &'static str> {
 		config.picture_bytes()?;
 		try_backends(config.codec, None, |backend| Self::open(config, backend))
+	}
+
+	pub(crate) fn hardware_only(
+		config: Config,
+		backend: HardwareBackend,
+	) -> Result<Self, &'static str> {
+		let backend = probe_backend(backend, config.codec)
+			.ok_or("FFmpeg hardware backend is unavailable on this platform")?;
+		Self::open(config, backend)
+	}
+
+	/// Submit probe pictures through the real validator without retrying another
+	/// encoder or reopening an AMF session to handle a requested keyframe.
+	pub(crate) fn encode_without_fallback(
+		&mut self,
+		picture: &[u8],
+		force: bool,
+	) -> Result<(Vec<u8>, bool), &'static str> {
+		if picture.len() != self.config.picture_bytes()? {
+			return Err("Invalid FFmpeg video encoder picture");
+		}
+		self.encode_native(picture, force)
 	}
 
 	#[cfg(test)]
@@ -345,6 +383,34 @@ mod tests {
 		profile: Profile::Baseline,
 		codec: VideoCodec::H264,
 	};
+	#[test]
+	fn capability_backends_never_select_software_or_another_gpu() {
+		for codec in [VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1] {
+			for backend in HardwareBackend::ALL {
+				let selected = probe_backend(backend, codec);
+				assert!(selected != Some(Backend::Software));
+				#[cfg(any(target_os = "linux", target_os = "windows"))]
+				assert!(
+					selected
+						== match backend {
+							HardwareBackend::Nvenc => Some(Backend::Nvenc),
+							HardwareBackend::Amf => Some(Backend::Amf),
+							HardwareBackend::Qsv => Some(Backend::Qsv),
+							HardwareBackend::VideoToolbox => None,
+						}
+				);
+				#[cfg(target_os = "macos")]
+				assert!(
+					selected
+						== if backend == HardwareBackend::VideoToolbox && codec != VideoCodec::Av1 {
+							Some(Backend::VideoToolbox)
+						} else {
+							None
+						}
+				);
+			}
+		}
+	}
 	#[test]
 	fn failed_backends_advance_once_without_revisiting_a_gpu() {
 		let mut attempts = Vec::new();
