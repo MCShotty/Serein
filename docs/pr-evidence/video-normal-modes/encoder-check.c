@@ -5,6 +5,10 @@
 #include <time.h>
 #include SHIM
 
+#ifndef HEVC_MAX_QUALITY
+#define HEVC_MAX_QUALITY 0
+#endif
+
 static void check_options(int normal) {
     const char *names[3][5] = {
         {"libopenh264", "h264_nvenc", "h264_videotoolbox", "h264_amf", "h264_qsv"},
@@ -25,8 +29,8 @@ static void check_options(int normal) {
                 keys[0] = "tune"; values[0] = normal ? "hq" : "ull";
                 keys[1] = "zerolatency"; values[1] = normal ? "0" : "1";
             } else if (backend == 3) {
-                keys[0] = "usage"; values[0] = normal ? "transcoding" : "ultralowlatency";
-                keys[1] = "quality"; values[1] = normal ? "balanced" : "speed";
+                keys[0] = "usage"; values[0] = normal ? (kind == 1 && HEVC_MAX_QUALITY ? "high_quality" : "transcoding") : "ultralowlatency";
+                keys[1] = "quality"; values[1] = normal ? (kind == 1 && HEVC_MAX_QUALITY ? "quality" : "balanced") : "speed";
                 keys[2] = "latency"; values[2] = normal ? (kind == 2 ? "none" : "0") : (kind == 2 ? "lowest_latency" : "1");
             } else if (backend == 4) {
                 keys[0] = "preset"; values[0] = normal ? "medium" : "veryfast";

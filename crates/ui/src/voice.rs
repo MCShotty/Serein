@@ -2305,11 +2305,6 @@ impl MessagingUi {
 		let colors = design::palette(ui);
 		ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
 		ui.spacing_mut().item_spacing.y = if compact { 6.0 } else { 12.0 };
-		design::group(
-			ui,
-			&crate::i18n::translate("voice-video-settings-title"),
-			|ui| self.video_settings_controls(ui),
-		);
 		if !demo && !self.voice_available {
 			design::notice(
 				ui,
@@ -2375,6 +2370,11 @@ impl MessagingUi {
 				);
 			});
 		}
+		design::group(
+			ui,
+			&crate::i18n::translate("voice-video-settings-title"),
+			|ui| self.video_settings_controls(ui),
+		);
 	}
 
 	fn video_settings_controls(&mut self, ui: &mut egui::Ui) {

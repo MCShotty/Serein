@@ -4554,7 +4554,7 @@ compiler checks pass; complete native validation remains a CI requirement.
 To reproduce the C checks with the pinned FFmpeg prefix in `FFMPEG_DIR`:
 
 ```bash
-cc -std=c11 -O2 -Wall -Wextra -Werror -DNORMAL=1 \
+cc -std=c11 -O2 -Wall -Wextra -Werror -DNORMAL=1 -DHEVC_MAX_QUALITY=1 \
   "-DSHIM=\"$PWD/crates/discord-voice/src/video_encode_ffmpeg.c\"" \
   -Icrates/discord-voice/src -I"$FFMPEG_DIR/include" \
   docs/pr-evidence/video-normal-modes/encoder-check.c \
@@ -4565,3 +4565,56 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -DNORMAL=1 \
 
 For the baseline, extract its shim with `git show f87aa5d:crates/discord-voice/src/video_encode_ffmpeg.c`
 into a temporary file, select that file with `SHIM`, and compile with `-DNORMAL=0`.
+The current H.265 AMF policy is selected with `HEVC_MAX_QUALITY=1`; use `0` to
+check the earlier all-balanced AMF policy from the initial normal-modes change.
+
+## AMD quality and responsive native controls — October 5, 2026
+
+UI baseline `be644d9064e0b53caf6db103037c8a48a5c7baa8` already contains the normal
+encoder modes above. This change keeps AMF AV1 balanced and selects HEVC
+`usage=high_quality, quality=quality`, while fixing responsive native controls
+and moving video encoding below the camera settings. The pinned FFmpeg shim
+passes its strict C compilation and 20 actual AVOption configurations. Both
+330-picture software streams decode without errors. Physical GPU encoding,
+driver compatibility, quality and throughput remain unverified; software checks
+do not measure the HEVC preset's hardware cost.
+
+[Raw samples and source hashes](pr-evidence/amd-quality-ui/measurements.json) and
+[reproduction scripts](pr-evidence/amd-quality-ui/README.md) record a fresh native
+before/after comparison. Environment: Debian 13 x86-64, Xeon Platinum 8573C,
+five visible CPUs, 17 GiB RAM, Rust 1.98.1, eframe/wgpu under Xvfb with
+`WGPU_BACKEND=gl` and Mesa software output. Both builds use the same isolated
+native preview, `dev` profile with optimization level 1 and no debug info, actual
+UI code, synthetic long-name reply fixture, dark appearance, 1120x760 pixels
+and 100% zoom. Tray/startup availability is fixed to false; the helper contains
+no service or capture adapters. These are development preview measurements,
+not standard release/package measurements.
+
+Compilation stopped before sampling. One run per revision warms up for three
+seconds, then samples process RSS once per second for 15 seconds and computes
+aggregate CPU time over that interval. Neither process had children.
+
+| Metric / method | Baseline | After | Delta |
+| --- | ---: | ---: | ---: |
+| Idle CPU, percentage of one core | 0.00% | 0.00% | Below process-timer resolution |
+| Post-warmup sampled peak/settled RSS | 192,663,552 bytes | 191,758,336 bytes | -905,216 bytes / -0.47% |
+| Isolated development preview executable | 83,176,272 bytes | 83,183,560 bytes | +7,288 bytes / +0.009% |
+
+The small RSS difference is noise from one short paired sample; no memory or
+speed improvement is claimed. Startup peak, frame/startup latency, sustained
+load, leak soaks and GPU memory remain unmeasured. Native screenshots were
+inspected at 1120x760/100% dark and 760x520/150% light/dark, including scrolling
+to the encoding card and the last Add Friend action. The reply/edit regression
+test also verifies that context controls leave the message input inside the
+viewport. All 417 UI library tests pass (five benchmark tests ignored), and
+strict UI Clippy across all targets passes.
+
+The default workspace-check/package commands hit the inherited read-only debug
+cache. Retrying the workspace check and standard release package in an owned
+target directory reaches the native dependency build and fails because
+`glib-sys` cannot find `glib-2.0.pc`.
+The environment also lacks GTK4/WebKit6 development/runtime dependencies.
+Standard release executable, installed-package and compressed-distribution
+sizes remain unavailable; complete workspace/packaging validation is a CI
+requirement. The development preview sizes above must not be treated as shipped
+package sizes.

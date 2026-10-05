@@ -73,8 +73,10 @@ static int configure_backend(SereinAvc *encoder, int backend)
                set_option(codec, "forced-idr", "1") && set_option(codec, "surfaces", "4");
     }
     if (backend == 3) {
+        const int hevc = encoder->kind == 1;
         if (!set_option(codec, "profile", h264 && encoder->baseline ? "constrained_baseline" : "main") ||
-            !set_option(codec, "usage", "transcoding") || !set_option(codec, "quality", "balanced") ||
+            !set_option(codec, "usage", hevc ? "high_quality" : "transcoding") ||
+            !set_option(codec, "quality", hevc ? "quality" : "balanced") ||
             !set_option(codec, "rc", "cbr") || !set_option(codec, "preanalysis", "0") ||
             !set_option(codec, "preencode", "0") ||
             !set_option(codec, "latency", av1 ? "none" : "0"))
