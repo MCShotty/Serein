@@ -4714,3 +4714,45 @@ tracked credential-removal IDs cap at eight. These are resource ceilings, not
 process RSS or proof that all application leaks are absent. Standard workspace
 and package checks were attempted and remain blocked at missing GLib development
 metadata; the license-policy command also lacks `cargo-deny`.
+
+### October 6, 2026 — driver discovery and optional encoder tests
+
+Baseline is upstream feature-PR head `16a09a986b73c7bf6abc3a80559ecdefb919c84a`.
+The change replaces automatic synthetic encodes with vendor driver codec queries,
+adds a separate Test encoder action, and restarts cancelled automatic discovery
+on reopening. It does not change active-stream encoding or capture presets.
+[Raw measurements and build identities](pr-evidence/video-driver-detection/README.md)
+record freshly rebuilt before/after source with pinned Rust 1.98.1 and real cached
+dependencies. No account, camera, microphone or screen capture was accessed.
+
+| Metric / method | Baseline | After | Delta |
+| --- | ---: | ---: | ---: |
+| No-GPU full scan median, one warmup/five alternating runs each | 262.166580 ms | 265.353937 ms | +3.187357 ms / +1.22% |
+| Auxiliary settings helper sampled peak/settled RSS | 152,633,344 bytes | 152,551,424 bytes | −81,920 bytes / −0.054% |
+| Auxiliary settings helper idle CPU, one core | 0.00% | 0.067% | Timer-resolution scale |
+| Auxiliary settings helper executable | 88,546,592 bytes | 88,564,208 bytes | +17,616 bytes / +0.020% |
+| Full desktop release / installed / compressed package | Unavailable | Unavailable | Local package build blocked by missing `glib-2.0.pc` |
+
+The UI workload uses synthetic advertised support with tests unrun, the default
+Inter font, 1120 × 760 dark at 100%, six seconds of warmup/scrolling and fifteen
+one-second RSS/CPU samples. It runs an opt-level-1/debug-0 native helper, without
+children or driver calls. The single pair does not establish a memory/CPU
+improvement or regression and does not measure the shipped release package.
+
+The separate headless detector workload uses real driver queries/encoder checks
+and the same FFmpeg 7.1.5/OpenH264 2.6 prefix. This host has no usable GPU; all nine
+vendor/codec paths were unavailable. The parent is sampled every millisecond;
+all nine child PIDs were observed on each run, with at most one helper at a time
+and no surviving helpers. Both parent and child RSS observations are sampled,
+not memory ceilings. Similar scan times here mostly reflect process startup;
+positive GPU query cost, encoding throughput, GPU memory and live interoperability
+remain unmeasured.
+
+Driver queries never initialize encoders or submit frames. SDK/API errors remain
+Unknown. Only clicking Test encoder submits at most eight synthetic pictures per
+camera/screen preset; a test failure does not change driver-reported support.
+Every helper has a ten-second deadline, shared by both presets for a test.
+Cancelling discovery drops stale messages and restarts on reopening; cancelling
+a test leaves it waiting for an explicit new click. Full local workspace checks
+also stop at missing GLib development metadata. Native platform CI remains the
+standard build validation for this change.

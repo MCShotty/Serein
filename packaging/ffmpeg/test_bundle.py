@@ -76,13 +76,24 @@ class BundleTest(unittest.TestCase):
                            "Darwin": ["lib/libavcodec-serein.dylib", "lib/libavutil-serein.dylib"],
                            "Windows": ["lib/avcodec-serein.lib", "lib/avutil-serein.lib"]}[system]
                 relative_files += aliases + ["share/serein-ffmpeg/" + name for name in provenance]
+                backends = builder.encoder_backends(system, False)
+                query_files = []
+                if backends["nvenc"]:
+                    query_files += ["include/ffnvcodec/nvEncodeAPI.h", "include/ffnvcodec/dynlink_cuda.h"]
+                if backends["amf"]:
+                    query_files += ["include/AMF/core/Factory.h", "include/AMF/components/ComponentCaps.h",
+                                    "include/AMF/components/VideoEncoderVCE.h", "include/AMF/components/VideoEncoderHEVC.h",
+                                    "include/AMF/components/VideoEncoderAV1.h"]
+                if backends["qsv"]:
+                    query_files += ["include/vpl/mfxdispatcher.h", "include/vpl/mfxstructures.h", "lib/pkgconfig/vpl.pc",
+                                    "lib/vpl.lib" if system == "Windows" else "lib/libvpl.a"]
+                relative_files += query_files
                 if system == "Linux":
                     relative_files.append("share/serein-ffmpeg/serein-openh264.patch")
                 for name in relative_files:
                     target = prefix / name
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_bytes(b"synthetic required artifact")
-                backends = builder.encoder_backends(system, False)
                 recipe = {"sources": builder.SOURCES, "system": system, "architecture": "x86_64", **backends,
                           "encoders": sorted(builder.encoder_names(backends)),
                           "toolchain": builder.toolchain_options(system, False),
@@ -98,8 +109,8 @@ class BundleTest(unittest.TestCase):
                             with patch.dict(os.environ, {compiler: "/different/compiler-wrapper"}):
                                 with self.assertRaisesRegex(ValueError, "prefix contains another build"):
                                     builder.build(args)
-                    for name in ("include/libavcodec/avcodec.h", libraries[0], aliases[0],
-                                 "share/serein-ffmpeg/source/ffmpeg-7.1.5.tar.xz"):
+                    for name in ["include/libavcodec/avcodec.h", libraries[0], aliases[0],
+                                 "share/serein-ffmpeg/source/ffmpeg-7.1.5.tar.xz", *query_files]:
                         target = prefix / name
                         original = target.read_bytes()
                         target.unlink()

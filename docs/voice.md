@@ -533,26 +533,38 @@ starts; a local camera preview uses the current settings and stops when they cha
 Screen sharing snapshots the settings at the explicit Share gesture. Changes do not
 alter an already negotiated stream. Existing incoming playback remains H.264-only.
 
-Experimental checks hardware support when its Voice & Video settings are opened.
-The H.264, H.265 and AV1 rows show usable NVENC, AMD AMF, Intel Quick Sync or Apple
-VideoToolbox engines separately for camera and screen sharing. Recheck refreshes
-the process-local results after a driver/device change. A hardware-only session
-must produce a validated synthetic keyframe with inline codec parameters; an
-installed encoder name or software fallback does not count as hardware support.
-The checks use the camera's 640×480/15 fps profile and a 1280×720/30 fps screen
-profile. Higher resolutions/rates, concurrent GPU sessions and peer negotiation
-can still fail. The report describes Experimental, not Stable.
+Experimental queries hardware codec capabilities when Voice & Video is opened.
+The H.264, H.265 and AV1 rows show driver-reported NVENC, AMD AMF, Intel Quick Sync
+or Apple VideoToolbox support for the FFmpeg encoders compiled into this build.
+Detection does not initialize an encoder or encode any pictures. NVENC queries
+codec GUIDs/caps through a lightweight capability session; AMF reads component
+caps without initializing it; oneVPL enumerates Intel hardware encoder
+descriptions; VideoToolbox lists hardware-accelerated encoders. A missing or
+incomplete capability API, including legacy Intel descriptions without codec
+metadata, stays Unknown. Recheck repeats only these driver queries.
 
-Each backend/codec check runs in a disposable Serein helper process with a
-ten-second deadline, sequentially on a background thread. Closing these settings,
-switching to Stable, logging out or exiting cancels the scan and kills/reaps an
-outstanding helper. Driver crashes, helper failures and timeouts are unknown,
-not evidence that a codec is unsupported. A completed negative scan disables
-new H.265/AV1 selections but preserves a saved selection with a warning; H.264
-remains selectable through software fallback. Results are never persisted.
-Offline demos use unknown or explicitly synthetic fixtures and do not probe
-hardware. No capture, microphone, credentials or network session is initialized
-by the helper.
+**Test encoder** is optional and tests only the selected codec, without software
+or another-vendor fallback. It separately checks camera 640×480/15 fps and screen
+sharing 1280×720/30 fps, with at most eight synthetic pictures per preset.
+Successful keyframes must pass the size/bitstream checks and contain codec
+parameters. Results are retained per codec and never replace the driver report
+or disable a codec. Failure can reflect a busy device, preset or runtime problem.
+The test does not independently decode the output or verify a live call. Higher
+resolutions/rates, concurrent GPU sessions and peer negotiation can still fail.
+These reports describe Experimental, not Stable.
+
+Each backend/codec query or test runs in a disposable Serein helper process with
+a ten-second deadline, sequentially on a background thread. For a test, the
+deadline covers both camera and screen presets together. Closing the settings,
+switching to Stable, logging out or exiting cancels the operation and kills/reaps
+its helper. Cancelled automatic detection discards its partial report and starts
+again when the panel is reopened. Cancelled encoder tests wait for another click.
+Crashes, helper failures and timeouts are Unknown, not evidence that a codec is
+unsupported. Only a complete negative driver report disables new H.265/AV1
+selections; saved selections remain with a warning and H.264 stays selectable for
+software fallback. Results are process-local and never persisted. Offline demos
+use Unknown or explicitly synthetic fixtures without accessing drivers. Helpers
+never initialize capture, microphone, credentials or network sessions.
 
 Experimental uses native FFmpeg 7.1.5 `libavcodec`/`libavutil` contexts on the media
 worker without a CLI process. Windows/Linux try NVENC, AMD AMF and Intel Quick Sync

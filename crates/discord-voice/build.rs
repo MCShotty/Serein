@@ -2,6 +2,15 @@ fn main() {
 	println!("cargo:rerun-if-env-changed=FFMPEG_DIR");
 	println!("cargo:rerun-if-changed=src/video_encode_ffmpeg.c");
 	println!("cargo:rerun-if-changed=src/video_encode_ffmpeg.h");
+	for file in [
+		"video_query.c",
+		"video_query_nvenc.c",
+		"video_query_qsv.c",
+		"video_query_amf.cpp",
+		"video_query_videotoolbox.c",
+	] {
+		println!("cargo:rerun-if-changed=src/{file}");
+	}
 	let target = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
 	if target == "linux" {
 		// Test executables also link static OpenH264 from hashed Rust rlibs.
@@ -14,13 +23,26 @@ fn main() {
 	}
 	let prefix = std::env::var_os("FFMPEG_DIR").map(std::path::PathBuf::from);
 	let mut native = cc::Build::new();
-	native.file("src/video_encode_ffmpeg.c").std("c11");
+	native
+		.file("src/video_encode_ffmpeg.c")
+		.file("src/video_query.c")
+		.file("src/video_query_nvenc.c")
+		.file("src/video_query_qsv.c")
+		.file("src/video_query_videotoolbox.c")
+		.static_crt(target == "windows")
+		.std("c11");
 	if let Some(prefix) = &prefix {
 		assert!(
 			prefix.join("include/libavcodec/avcodec.h").is_file(),
 			"Build the LGPL FFmpeg libraries with python3 scripts/build-ffmpeg.py, then set FFMPEG_DIR to its prefix"
 		);
 		native.include(prefix.join("include"));
+		query_dependencies(
+			&target,
+			&[prefix.join("include")],
+			Some(prefix),
+			&mut native,
+		);
 		native.compile("serein_avc");
 		println!(
 			"cargo:rustc-link-search=native={}",
@@ -43,6 +65,7 @@ fn main() {
 		for include in &codec.include_paths {
 			native.include(include);
 		}
+		query_dependencies(&target, &codec.include_paths, None, &mut native);
 		native.compile("serein_avc");
 		pkg_config::Config::new()
 			.atleast_version("61")
@@ -56,5 +79,70 @@ fn main() {
 	if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
 		// Dependency link-args do not propagate to this crate's test executables.
 		println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
+		println!("cargo:rustc-link-lib=framework=VideoToolbox");
+		println!("cargo:rustc-link-lib=framework=CoreFoundation");
+	}
+}
+
+fn query_dependencies(
+	target: &str,
+	includes: &[std::path::PathBuf],
+	prefix: Option<&std::path::PathBuf>,
+	native: &mut cc::Build,
+) {
+	if !matches!(target, "linux" | "windows") {
+		return;
+	}
+	let has = |header: &str| {
+		includes
+			.iter()
+			.any(|include| include.join(header).is_file())
+	};
+	if has("ffnvcodec/nvEncodeAPI.h") && has("ffnvcodec/dynlink_cuda.h") {
+		native.define("SEREIN_HAVE_NVENC_QUERY", "1");
+	}
+	if has("AMF/core/Factory.h") {
+		native.define("SEREIN_HAVE_AMF_QUERY", "1");
+		let mut amf = cc::Build::new();
+		amf.cpp(true)
+			.file("src/video_query_amf.cpp")
+			.std("c++11")
+			.static_crt(target == "windows");
+		for include in includes {
+			amf.include(include);
+		}
+		amf.compile("serein_amf_query");
+	}
+	if has("vpl/mfxdispatcher.h") {
+		if let Some(prefix) = prefix {
+			assert!(
+				prefix
+					.join("lib")
+					.join(if target == "windows" {
+						"vpl.lib"
+					} else {
+						"libvpl.a"
+					})
+					.is_file(),
+				"The oneVPL headers require the matching static dispatcher library"
+			);
+			println!("cargo:rustc-link-lib=static=vpl");
+			if target == "windows" {
+				for library in ["advapi32", "ole32", "uuid"] {
+					println!("cargo:rustc-link-lib={library}");
+				}
+			} else {
+				println!("cargo:rustc-link-lib=stdc++");
+			}
+		} else {
+			pkg_config::Config::new()
+				.statik(true)
+				.probe("vpl")
+				.expect("Driver queries require the matching oneVPL dispatcher");
+		}
+		native.define("SEREIN_HAVE_QSV_QUERY", "1");
+	}
+	if target == "linux" {
+		println!("cargo:rustc-link-lib=dl");
 	}
 }

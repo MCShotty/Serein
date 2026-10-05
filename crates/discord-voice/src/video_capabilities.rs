@@ -1,4 +1,4 @@
-//! Synthetic, bounded hardware encoder checks using the outgoing FFmpeg path.
+//! Driver capability queries and optional bounded tests of the outgoing FFmpeg path.
 //! Run in the desktop's disposable probe process: native drivers can block even
 //! during open or cleanup, so the caller owns the wall-clock timeout.
 
@@ -6,6 +6,33 @@ use crate::video_encode::{Config, Encoder, Profile};
 use model::voice_settings::{HardwareBackend, HardwareSupport, ProbeResult, VideoCodec};
 
 const MAX_PROBE_FRAMES: usize = 8;
+
+#[allow(unsafe_code)]
+unsafe extern "C" {
+	fn serein_video_query(backend: i32, codec: i32) -> i32;
+}
+
+/// Ask the vendor driver about the codec without submitting synthetic pictures.
+/// This does not prove that a stream's resolution, profile or preset will work.
+#[allow(unsafe_code)]
+pub fn query(backend: HardwareBackend, codec: VideoCodec) -> ProbeResult {
+	let backend = match backend {
+		HardwareBackend::Nvenc => 1,
+		HardwareBackend::VideoToolbox => 2,
+		HardwareBackend::Amf => 3,
+		HardwareBackend::Qsv => 4,
+	};
+	// The bridge owns all driver resources. Only fixed enum values cross the ABI.
+	query_result(unsafe { serein_video_query(backend, codec.index() as i32) })
+}
+
+fn query_result(result: i32) -> ProbeResult {
+	match result {
+		1 => ProbeResult::Available,
+		0 => ProbeResult::Unavailable,
+		_ => ProbeResult::Failed,
+	}
+}
 
 pub fn backends() -> &'static [HardwareBackend] {
 	&[
@@ -102,6 +129,15 @@ fn probe_profile<E: ProbeEncoder>(
 mod tests {
 	use super::*;
 	use std::{cell::Cell, collections::VecDeque, rc::Rc};
+
+	#[test]
+	fn driver_errors_are_inconclusive_instead_of_unsupported() {
+		assert_eq!(query_result(1), ProbeResult::Available);
+		assert_eq!(query_result(0), ProbeResult::Unavailable);
+		for result in [-1, -2, 2, i32::MAX] {
+			assert_eq!(query_result(result), ProbeResult::Failed);
+		}
+	}
 
 	struct Fake {
 		frames: VecDeque<Result<(Vec<u8>, bool), &'static str>>,
