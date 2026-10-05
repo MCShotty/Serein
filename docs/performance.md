@@ -4670,3 +4670,47 @@ positive GPU-driver session startup, encode throughput or GPU memory usage.
 Full-desktop idle CPU/RSS, release/package deltas and frame/startup latency remain
 unmeasured. Each backend/codec check has a 10-second subprocess deadline; a complete
 Linux/Windows scan has at most nine sequential checks and a fixed 13-entry queue.
+
+## Codebase bug hunt — October 5, 2026
+
+Baseline `8a369cc3c71c18d97065dde8197c16d90970ed0a`; see
+[reproduction and raw samples](pr-evidence/codebase-bug-hunt/README.md).
+Debian 13 x86_64, kernel 6.18.44, five visible CPUs, 18,882,699,264 bytes RAM
+and Rust 1.98.1. Standard release `replay-bench` binaries were rebuilt from each
+revision. Each ran once for warmup and five measured times with alternating pair
+order, without concurrent compilation or preview processes. Both replay 100,000
+synthetic events and retain 331,992–332,477 estimated timeline bytes / 500 records.
+
+The isolated native Appearance preview uses actual UI code with `ui/demo`,
+opt-level 1/debug 0, Xvfb, eframe/wgpu and requested GL software rendering
+(`WGPU_BACKEND=gl`, `LIBGL_ALWAYS_SOFTWARE=1`; exact adapter not instrumented).
+Both use 1120 × 760 dark at 100% zoom, a six-second warmup including 100 scroll
+events, then 15 one-second process RSS samples. Aggregate idle CPU is the
+percentage of one core over that interval. Neither preview had children. The
+new synthetic fixture requests Serif after session reset; baseline silently
+retains Inter, while the fixed registry applies Serif.
+
+| Metric / method | Baseline | After | Delta |
+| --- | ---: | ---: | ---: |
+| Release reducer median, five runs | 83.116483 ms | 88.286294 ms | +5.169811 ms / +6.22% |
+| Release replay executable | 1,510,296 bytes | 1,509,592 bytes | −704 bytes / −0.047% |
+| Auxiliary UI sampled peak/settled RSS | 161,026,048 bytes | 161,624,064 bytes | +598,016 bytes / +0.37% |
+| Auxiliary UI idle CPU, one core | 0.00% | 0.00% | Below process-timer resolution |
+| Auxiliary UI executable | 89,526,776 bytes | 89,530,560 bytes | +3,784 bytes / +0.0042% |
+| Full desktop release / installed / compressed package | Unavailable | Unavailable | Missing `glib-2.0.pc` |
+
+Reducer ranges overlap widely: 80.75–123.18 ms before and 82.21–142.91 ms after.
+The single short UI pair and five replay samples do not establish a performance
+improvement or a statistically significant regression. Preview binary sizes
+must not be treated as shipped desktop/package sizes. Frame/startup latency,
+GPU memory, sustained-load/leak soaks and physical media-device cost remain
+unmeasured. Actual voice tests pass with two Linux OpenH264 runtime versions;
+those checks measure correctness, not encoding performance.
+
+The thumbnail fix admits at most two jobs and 32 MiB of source bytes before
+copying/spawning, retaining permits through actual decoder completion. Failed
+placeholder attempts cap at 2,048; per-user video progress tables cap at 16;
+tracked credential-removal IDs cap at eight. These are resource ceilings, not
+process RSS or proof that all application leaks are absent. Standard workspace
+and package checks were attempted and remain blocked at missing GLib development
+metadata; the license-policy command also lacks `cargo-deny`.

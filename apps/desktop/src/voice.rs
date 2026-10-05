@@ -322,7 +322,7 @@ impl Voice {
 	pub fn stop(&mut self) {
 		self.video_capabilities.cancel();
 		self.camera_test = None;
-		self.mic_preview = None;
+		self.stop_mic_preview();
 		self.screen.stop();
 		self.watch.stop();
 		self.pending = None;
@@ -330,8 +330,20 @@ impl Voice {
 		if let Some(live) = self.live.take() {
 			live.audio.set_ready(false);
 			live.task.abort();
-			self.retiring = Some(live.audio.shutdown());
+			self.retire_audio(live.audio);
 		}
+	}
+	fn retire_audio(&mut self, audio: Audio) {
+		// Calls and previews share one owner; neither starts during retirement.
+		assert!(self.retiring.is_none(), "previous audio is still retiring");
+		self.retiring = Some(audio.shutdown());
+	}
+	fn stop_mic_preview(&mut self) -> bool {
+		let Some(preview) = self.mic_preview.take() else {
+			return false;
+		};
+		self.retire_audio(preview.audio);
+		true
 	}
 	pub fn stop_camera(&mut self) {
 		if let Some(camera) = &self.camera {
@@ -370,9 +382,9 @@ impl Voice {
 			return Err("Stable video encoding supports H.264 only");
 		}
 		self.camera_test = None;
-		self.mic_preview = None;
+		let preview_retired = self.stop_mic_preview();
 		self.reap();
-		if self.retiring.is_some() {
+		if self.retiring.is_some() && !preview_retired {
 			return Err("Previous audio devices are still closing; try again shortly");
 		}
 		if self.pending.is_some() || self.live.is_some() {
@@ -622,9 +634,12 @@ impl Voice {
 	) -> Option<Command> {
 		self.reap();
 		self.video_capabilities.poll(state.demo, ui, ctx);
+		self.poll_mic_preview(state, ui, ctx);
 		ui.voice_switch_ready =
 			self.pending.is_none() && self.live.is_none() && self.retiring.is_none();
-		self.poll_mic_preview(state, ui, ctx);
+		if self.retiring.is_some() {
+			ctx.request_repaint_after(Duration::from_millis(50));
+		}
 		self.poll_camera_test(state, ui, ctx);
 		ui.voice_speaking.clear();
 		ui.voice_microphone_unavailable = false;
@@ -733,9 +748,6 @@ impl Voice {
 			{
 				return self.fail(state, error);
 			}
-		}
-		if self.pending.is_some() && self.retiring.is_some() {
-			ctx.request_repaint_after(Duration::from_millis(50));
 		}
 		let mut failure = None;
 		let mut command = None;
@@ -1065,8 +1077,14 @@ impl Voice {
 			if self.mic_preview.is_some() {
 				ui.voice_preview_status = "";
 			}
-			self.mic_preview = None;
+			self.stop_mic_preview();
 			ui.voice_preview_level = None;
+			return;
+		}
+		if self.retiring.is_some() {
+			ui.voice_preview_level = None;
+			ui.voice_preview_status = "Previous audio devices are still closing…";
+			ctx.request_repaint_after(Duration::from_millis(50));
 			return;
 		}
 		if self.mic_preview.is_none() {
@@ -1136,7 +1154,7 @@ impl Voice {
 			ui.voice_preview_requested = false;
 			ui.voice_preview_level = None;
 			ui.voice_preview_status = error;
-			self.mic_preview = None;
+			self.stop_mic_preview();
 			return;
 		}
 		ui.voice_preview_level = Some(preview.audio.preview_level_db());
@@ -1740,6 +1758,65 @@ pub fn takeover_notice(state: &State, event: &Event) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	#[allow(clippy::field_reassign_with_default)] // Voice implements Drop, so struct update cannot move its fields.
+	fn stopping_microphone_preview_tracks_the_actual_audio_completion() {
+		// The initial ready=false gate keeps this worker away from device discovery.
+		let audio = Audio::preview(Devices::default(), |_| {}).unwrap();
+		let gate = audio.gate.clone();
+		let mut manager = Voice::default();
+		manager.mic_preview = Some(MicPreview {
+			audio,
+			devices: Devices::default(),
+			failure: Arc::new(OnceLock::new()),
+			started: Instant::now(),
+		});
+		assert!(manager.stop_mic_preview());
+		assert!(manager.mic_preview.is_none() && manager.retiring.is_some());
+		assert!(!gate.ready.load(std::sync::atomic::Ordering::Acquire));
+		assert!(!manager.stop_mic_preview());
+		manager.stop(); // Repeated stops preserve the same completion receiver.
+		manager
+			.retiring
+			.take()
+			.unwrap()
+			.recv_timeout(Duration::from_secs(2))
+			.unwrap();
+	}
+
+	#[test]
+	#[allow(clippy::field_reassign_with_default)] // Voice implements Drop; MessagingUi has private fields.
+	fn stalled_audio_retirement_blocks_preview_restarts_and_call_opening() {
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		let mut view = ui::MessagingUi::default();
+		view.voice_available = true;
+		view.preview_settings("voice");
+		let ctx = egui::Context::default();
+		let (finish, completion) = mpsc::sync_channel(1);
+		let mut manager = Voice::default();
+		manager.retiring = Some(completion);
+		for _ in 0..16 {
+			view.voice_preview_requested = true;
+			manager.poll_mic_preview(&state, &mut view, &ctx);
+			assert!(manager.mic_preview.is_none() && manager.retiring.is_some());
+			assert!(view.voice_preview_status.contains("closing"));
+			view.voice_preview_requested = false;
+			manager.poll_mic_preview(&state, &mut view, &ctx);
+			manager.stop();
+			manager.reap();
+			assert!(manager.retiring.is_some());
+		}
+		state.start_call(Id(22), false).unwrap();
+		assert!(manager.begin(&state, false, Default::default()).is_err());
+		assert!(manager.pending.is_none() && manager.live.is_none());
+		finish.send(()).unwrap();
+		manager.reap();
+		assert!(manager.retiring.is_none());
+		manager.begin(&state, false, Default::default()).unwrap();
+		assert!(manager.pending.is_some() && manager.live.is_none());
+	}
 
 	#[test]
 	fn call_cues_track_joins_and_departures_without_reconnect_noise() {

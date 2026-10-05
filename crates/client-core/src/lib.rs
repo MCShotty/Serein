@@ -58,7 +58,7 @@ use trail::Place;
 pub const MAX_DRAFT_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_CONTENT: usize = 2000;
 /// Nitro and Nitro Classic accounts may send longer messages.
-pub const MAX_PREMIUM_CONTENT: usize = 4000;
+pub const MAX_PREMIUM_CONTENT: usize = model::message_options::MAX_PREMIUM_CONTENT;
 /// Discord accepts at most ten attachments per message.
 pub const MAX_ATTACHMENTS: usize = 10;
 pub const MAX_NAV: usize = model::account::MAX_ENTRIES;
@@ -2459,9 +2459,14 @@ impl State {
 		}
 		// Search is a snapshot. A mutation can race an in-flight index response; invalidate
 		// its snippets instead of restoring deleted/edited text from an older index.
-		if matches!(&envelope.event,Event::Patch(p) if Some(p.channel)==self.selected)
-			|| matches!(&envelope.event,Event::Delete{channel,..}|Event::DeleteBulk{channel,..} if Some(*channel)==self.selected)
-		{
+		let search_mutation = match &envelope.event {
+			Event::Patch(patch) => Some(patch.channel),
+			Event::Delete { channel, .. } | Event::DeleteBulk { channel, .. } => Some(*channel),
+			_ => None,
+		};
+		if search_mutation.is_some_and(|channel| {
+			self.selected == Some(channel) || self.search_covers_channel(channel)
+		}) {
 			self.clear_search();
 		}
 		let previous_channel = self.selected;

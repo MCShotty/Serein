@@ -3,8 +3,9 @@ use crate::{
 	crypto::{Dave, Encryption, Identity, MAX_PACKET, MAX_SIGNAL, MODE},
 	diagnostics::{Signal, Video},
 	video_receive::{
-		DecoderQueue, Encoded, Receivers, VideoSink, has_parameter_sets, is_keyframe, offer, pli,
-		remove as remove_decoder, retain_sources, spawn_decoder,
+		DecoderQueue, Encoded, MAX_SOURCES, Receivers, SourceLifetime, VideoSink,
+		has_parameter_sets, is_keyframe, offer, pli, remove as remove_decoder, retain_sources,
+		spawn_decoder,
 	},
 };
 use client_core::voice::VoiceConnection;
@@ -878,24 +879,31 @@ const SINK_WANTS_STALLED_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Folds remote video state into the diagnostics report once per tick.
 struct VideoWatch {
-	last_picture_at: Instant,
+	sources: Vec<PictureWatch>,
 	pictures: u64,
 	errors: u64,
 	stale: u64,
 }
 
+struct PictureWatch {
+	user: u64,
+	lifetime: Option<Arc<SourceLifetime>>,
+	pictures: u64,
+	last_picture_at: Instant,
+}
+
 impl VideoWatch {
 	fn new() -> Self {
 		Self {
-			last_picture_at: Instant::now(),
+			sources: Vec::with_capacity(MAX_SOURCES),
 			pictures: 0,
 			errors: 0,
 			stale: 0,
 		}
 	}
 
-	/// Returns true while video is stalled: a source is announced but no picture arrived
-	/// recently. Every announced sender is asked for a keyframe for as long as that holds.
+	/// Returns true while any announced sender is stalled. Progress from another sender
+	/// cannot hide its stall; only that user's current lifetime resets its picture deadline.
 	fn tick(
 		&mut self,
 		metrics: &mut crate::diagnostics::Metrics,
@@ -927,7 +935,6 @@ impl VideoWatch {
 		if pictures != self.pictures {
 			metrics.video(Video::Pictures, pictures.wrapping_sub(self.pictures));
 			self.pictures = pictures;
-			self.last_picture_at = now;
 		}
 		let errors = decoder
 			.counters
@@ -935,17 +942,53 @@ impl VideoWatch {
 			.load(std::sync::atomic::Ordering::Relaxed);
 		metrics.video(Video::DecoderErrors, errors.wrapping_sub(self.errors));
 		self.errors = errors;
-		let gap = now.saturating_duration_since(self.last_picture_at);
-		if self.pictures > 0 {
-			metrics.video_max(
-				Video::PictureGapMs,
-				gap.as_millis().min(u128::from(u64::MAX)) as u64,
-			);
+		if !receivers.has_sources() {
+			self.sources.clear();
+			return false;
+		}
+		self.sources
+			.retain(|source| receivers.users().any(|user| user == source.user));
+		for user in receivers.users() {
+			let lifetime = decoder.source_lifetime(user);
+			let pictures = lifetime
+				.as_ref()
+				.map_or(0, |lifetime| lifetime.pictures.load(Ordering::Relaxed));
+			if let Some(source) = self.sources.iter_mut().find(|source| source.user == user) {
+				let unchanged = match (&source.lifetime, &lifetime) {
+					(Some(previous), Some(current)) => Arc::ptr_eq(previous, current),
+					(None, None) => true,
+					_ => false,
+				};
+				if !unchanged || pictures != source.pictures {
+					source.last_picture_at = now;
+				}
+				source.lifetime = lifetime;
+				source.pictures = pictures;
+			} else if self.sources.len() < MAX_SOURCES {
+				self.sources.push(PictureWatch {
+					user,
+					lifetime,
+					pictures,
+					last_picture_at: now,
+				});
+			}
 		}
 		// A clean stop leaves nothing marked lost, so only elapsed time can reveal it.
-		let stalled = receivers.has_sources() && gap >= VIDEO_STALL;
+		let mut stalled = false;
+		for source in &self.sources {
+			let gap = now.saturating_duration_since(source.last_picture_at);
+			if source.pictures > 0 {
+				metrics.video_max(
+					Video::PictureGapMs,
+					gap.as_millis().min(u128::from(u64::MAX)) as u64,
+				);
+			}
+			if gap >= VIDEO_STALL {
+				receivers.require_keyframe(source.user);
+				stalled = true;
+			}
+		}
 		if stalled {
-			receivers.require_all_keyframes();
 			metrics.video(Video::StallTicks, 1);
 		}
 		stalled
@@ -1561,12 +1604,134 @@ mod tests {
 		}
 		assert!(receivers.accept(7, true) && receivers.accept(8, true));
 		assert!(!receivers.awaiting());
+		assert!(!watch.tick(&mut metrics, &mut receivers, Some(&decoder), later));
 		// Video stops with nothing marked lost; only the elapsed-time path can recover it.
-		assert!(watch.tick(&mut metrics, &mut receivers, Some(&decoder), later));
+		assert!(watch.tick(
+			&mut metrics,
+			&mut receivers,
+			Some(&decoder),
+			later + VIDEO_STALL * 2
+		));
 		assert_eq!(
 			receivers.keyframe_requests().collect::<Vec<_>>(),
 			vec![700, 800]
 		);
+	}
+
+	#[test]
+	fn an_active_camera_does_not_mask_another_senders_stall() {
+		let mut metrics = crate::diagnostics::Metrics::new(crate::diagnostics::Scope::Transport);
+		let mut watch = VideoWatch::new();
+		let mut receivers = Receivers::default();
+		let (decoder, _) = spawn_decoder(Arc::new(|_| {})).unwrap();
+		for (user, ssrc) in [(7, 700), (8, 800)] {
+			receivers.announce(user, ssrc).unwrap();
+			assert!(receivers.accept(user, true));
+		}
+		retain_sources(&decoder, &receivers);
+		let alice = decoder.source_lifetime(7).unwrap();
+		let bob = decoder.source_lifetime(8).unwrap();
+		alice.pictures.store(1, Ordering::Relaxed);
+		bob.pictures.store(1, Ordering::Relaxed);
+		decoder.counters.pictures.store(2, Ordering::Relaxed);
+		let start = Instant::now();
+		assert!(!watch.tick(&mut metrics, &mut receivers, Some(&decoder), start));
+		for step in 1..=10 {
+			bob.pictures.fetch_add(1, Ordering::Relaxed);
+			decoder.counters.pictures.fetch_add(1, Ordering::Relaxed);
+			let stalled = watch.tick(
+				&mut metrics,
+				&mut receivers,
+				Some(&decoder),
+				start + Duration::from_millis(step * 500),
+			);
+			assert_eq!(stalled, step >= 2);
+			assert_eq!(
+				receivers.keyframe_requests().collect::<Vec<_>>(),
+				if step >= 2 { vec![700] } else { vec![] }
+			);
+		}
+		assert!(receivers.accept(7, true));
+		alice.pictures.fetch_add(1, Ordering::Relaxed);
+		bob.pictures.fetch_add(1, Ordering::Relaxed);
+		decoder.counters.pictures.fetch_add(2, Ordering::Relaxed);
+		assert!(!watch.tick(
+			&mut metrics,
+			&mut receivers,
+			Some(&decoder),
+			start + Duration::from_secs(6)
+		));
+		assert!(!receivers.awaiting());
+	}
+
+	#[test]
+	fn source_replacement_and_removal_retire_old_picture_progress() {
+		let mut metrics = crate::diagnostics::Metrics::new(crate::diagnostics::Scope::Transport);
+		let mut watch = VideoWatch::new();
+		let mut receivers = Receivers::default();
+		let (decoder, _) = spawn_decoder(Arc::new(|_| {})).unwrap();
+		for (user, ssrc) in [(7, 700), (8, 800)] {
+			announce_video(
+				&mut receivers,
+				&decoder,
+				user,
+				&json!({"video_ssrc":ssrc,"streams":[]}),
+			)
+			.unwrap();
+			assert!(receivers.accept(user, true));
+		}
+		let queue = &decoder;
+		let bob = queue.source_lifetime(8).unwrap();
+		let mut alice = queue.source_lifetime(7).unwrap();
+		let mut now = Instant::now();
+		assert!(!watch.tick(&mut metrics, &mut receivers, Some(queue), now));
+		for ssrc in 701..=732 {
+			announce_video(
+				&mut receivers,
+				&decoder,
+				7,
+				&json!({"video_ssrc":ssrc,"streams":[]}),
+			)
+			.unwrap();
+			let replacement = queue.source_lifetime(7).unwrap();
+			assert!(!Arc::ptr_eq(&alice, &replacement));
+			assert_eq!(replacement.pictures.load(Ordering::Relaxed), 0);
+			assert!(receivers.accept(7, true));
+			// A callback retained by the old decoder must not count for the new source.
+			alice.pictures.fetch_add(100, Ordering::Relaxed);
+			bob.pictures.fetch_add(1, Ordering::Relaxed);
+			now += VIDEO_STALL * 2;
+			assert!(!watch.tick(&mut metrics, &mut receivers, Some(queue), now));
+			assert_eq!(watch.sources.len(), 2);
+			bob.pictures.fetch_add(1, Ordering::Relaxed);
+			now += VIDEO_STALL;
+			assert!(watch.tick(&mut metrics, &mut receivers, Some(queue), now));
+			assert_eq!(
+				receivers.keyframe_requests().collect::<Vec<_>>(),
+				vec![ssrc]
+			);
+			alice = replacement;
+		}
+		receivers.remove(7);
+		retain_sources(queue, &receivers);
+		assert!(queue.source_lifetime(7).is_none());
+		bob.pictures.fetch_add(1, Ordering::Relaxed);
+		now += VIDEO_STALL;
+		assert!(!watch.tick(&mut metrics, &mut receivers, Some(queue), now));
+		assert_eq!(watch.sources.len(), 1);
+		announce_video(
+			&mut receivers,
+			&decoder,
+			7,
+			&json!({"video_ssrc":732,"streams":[]}),
+		)
+		.unwrap();
+		assert!(!Arc::ptr_eq(&alice, &queue.source_lifetime(7).unwrap()));
+		assert!(receivers.accept(7, true));
+		bob.pictures.fetch_add(1, Ordering::Relaxed);
+		now += VIDEO_STALL;
+		assert!(!watch.tick(&mut metrics, &mut receivers, Some(queue), now));
+		assert_eq!(watch.sources.len(), 2);
 	}
 
 	async fn receive_media(socket: &UdpSocket, packet: &mut [u8]) -> (usize, SocketAddr) {

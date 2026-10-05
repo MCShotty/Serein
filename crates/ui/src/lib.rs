@@ -1038,6 +1038,7 @@ impl MessagingUi {
 			// The switcher roster belongs to the device, not to the account being cleared.
 			accounts: std::mem::take(&mut self.accounts),
 			updates: std::mem::take(&mut self.updates),
+			custom_font: std::mem::take(&mut self.custom_font),
 			minimize_to_tray: self.minimize_to_tray,
 			tray_available: self.tray_available,
 			tray_status: self.tray_status,
