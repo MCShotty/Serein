@@ -36,7 +36,11 @@ jobs:
         os: [macos-latest, windows-latest, windows-11-arm, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     env:
-      FFMPEG_DIR: ${{ github.workspace }}/target/ffmpeg/prefix
+      # Cargo cache restoration prunes native headers/build trees under target.
+      # Use fresh job-owned paths for every part of the FFmpeg build instead.
+      FFMPEG_DIR: ${{ runner.temp }}/serein-ffmpeg/prefix
+      FFMPEG_WORK: ${{ runner.temp }}/serein-ffmpeg/build
+      FFMPEG_CACHE: ${{ runner.temp }}/serein-ffmpeg/sources
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Mac signing regression (offline)
@@ -75,17 +79,17 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build LGPL-only FFmpeg encoders
         if: runner.os != 'Windows'
-        run: python3 scripts/build-ffmpeg.py
+        run: python3 scripts/build-ffmpeg.py --prefix "$FFMPEG_DIR" --work-dir "$FFMPEG_WORK" --cache-dir "$FFMPEG_CACHE"
       - name: Build LGPL-only FFmpeg encoders (MSVC)
         if: runner.os == 'Windows'
         shell: msys2 {0}
-        run: python scripts/build-ffmpeg.py
+        run: python scripts/build-ffmpeg.py --prefix "$FFMPEG_DIR" --work-dir "$FFMPEG_WORK" --cache-dir "$FFMPEG_CACHE"
       - name: Preserve FFmpeg configure diagnostics
         if: failure()
         uses: actions/upload-artifact@v7.0.1
         with:
           name: ffmpeg-configure-${{ runner.os }}-${{ runner.arch }}
-          path: target/ffmpeg/build/**/ffbuild/config.log
+          path: ${{ env.FFMPEG_WORK }}/**/ffbuild/config.log
           if-no-files-found: ignore
           retention-days: 7
       - name: Make encoder DLLs available to offline tests

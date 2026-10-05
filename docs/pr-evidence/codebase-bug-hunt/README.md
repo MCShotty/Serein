@@ -62,6 +62,14 @@ sample focused synthetic proofs also pass.
 by missing `cargo-deny`. Windows installer execution and macOS native permission
 behavior require their native platforms.
 
+Merge preparation on native CI exposed two additional problems. Cargo cache
+restoration pruned freshly built FFmpeg headers and restored incomplete native
+build trees; restore Rust artifacts first and build FFmpeg entirely in fresh
+job-owned scratch paths. The owned-file uninstall assertion also identified a
+leftover `serein.pdb` generated with the synthetic MSVC executable; delete this
+known application debug-symbol file explicitly while preserving owner files.
+The assertion reports remaining paths to make future cleanup failures actionable.
+
 ## Native font reproduction
 
 The reviewed images show actual native egui/eframe rendering of the Appearance
