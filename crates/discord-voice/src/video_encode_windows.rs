@@ -1,8 +1,8 @@
 //! Bounded Media Foundation hardware H.264 encoder for Windows screen sharing and camera video.
 #![allow(unsafe_code)]
 
+use super::i420_to_nv12;
 use super::{Config, Profile};
-use crate::screen::i420_to_nv12;
 use std::{
 	marker::PhantomData,
 	rc::Rc,
@@ -89,9 +89,7 @@ impl Encoder {
 			attributes
 				.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1)
 				.map_err(|_| UNAVAILABLE)?;
-			let _ = attributes.SetUINT32(&MF_LOW_LATENCY, 1);
 			let codec: ICodecAPI = transform.cast().map_err(|_| UNAVAILABLE)?;
-			let _ = codec.SetValue(&CODECAPI_AVLowLatencyMode, &VARIANT::from(true));
 			let _ = codec.SetValue(
 				&CODECAPI_AVEncCommonRateControlMode,
 				&VARIANT::from(eAVEncCommonRateControlMode_CBR.0 as u32),

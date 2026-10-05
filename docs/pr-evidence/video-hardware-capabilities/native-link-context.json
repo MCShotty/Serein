@@ -1,0 +1,36 @@
+{
+  "voice_library": "/workspace/scratch/serein-hw-capabilities/native/voice-current-source-build/libdiscord_voice_hw.rlib",
+  "dependency_search": [
+    "/workspace/Serein/target/debug/deps",
+    "/workspace/scratch/serein-ui-preview/target/debug/deps"
+  ],
+  "native_flags": [
+    "-C",
+    "link-arg=-Wl,--exclude-libs,ALL",
+    "-C",
+    "link-arg=-Wl,-rpath,$ORIGIN/lib",
+    "-C",
+    "link-arg=-Wl,-rpath,$ORIGIN/../lib/serein",
+    "-l",
+    "static=serein_avc",
+    "-L",
+    "native=/workspace/scratch/serein-hw-capabilities/native/voice-current-source-build",
+    "-L",
+    "native=/workspace/scratch/serein-openh264-isolation/ffmpeg-prefix/lib",
+    "-l",
+    "dylib=avcodec-serein",
+    "-l",
+    "dylib=avutil-serein",
+    "-C",
+    "link-arg=-Wl,-rpath,/workspace/scratch/serein-openh264-isolation/ffmpeg-prefix/lib"
+  ],
+  "native_search": [
+    "/workspace/scratch/serein-hw-capabilities/native/voice-current-source-build/native-runtime-aliases",
+    "/workspace/Serein/target/debug/build/aws-lc-sys-0c7a7459a9b872e8/out",
+    "/workspace/Serein/target/debug/build/libopus_sys-57e24d9b231ff602/out/build",
+    "/workspace/Serein/target/debug/build/libopus_sys-57e24d9b231ff602/out/lib",
+    "/workspace/Serein/target/debug/build/libsqlite3-sys-a7bc6715df3ec749/out",
+    "/workspace/Serein/target/debug/build/openh264-sys2-6a9afbd233d59378/out"
+  ],
+  "ui_fingerprint": "/workspace/scratch/serein-ui-preview/target/debug/.fingerprint/serein-ui-task-preview-14ee405c98b0ef11/bin-serein-ui-task-preview.json"
+}

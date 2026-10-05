@@ -110,12 +110,23 @@ rasterized once into `assets/icons/atlas.png` (37 white glyphs in 64px cells) an
 draw time by `crates/ui/src/icons.rs`; there is no icon font. Provenance and the regeneration
 command are in `assets/icons/README.md`. The profile popout keeps its 300px Discord-style card.
 
+Settings headings and descriptions wrap within a reserved Close column. Segmented choices
+fit their track at narrow widths, with elided labels available on hover. Add Friend keeps
+its navigation fixed while the form scrolls in short windows. Voice & Video places video
+backend and codec controls after audio, keybinds and camera controls, at the bottom of the page.
+
+The conversation header collapses its closed search field to a keyboard-accessible icon
+in narrow panes. Reply/edit context reserves the action buttons first and elides long names
+or status text; hover reveals the full context. Message actions stay inside the timeline
+viewport when the start of a tall message scrolls away, without changing its cached height.
+
 Voice follows Discord's call screens: a black stage with 80px participant avatars (DM calls,
 above the conversation) or 16:9 tiles with name badges (guild channels), a bottom control bar
 of dark pills (mute with settings chevron, camera, screen share, activities, soundboard, more)
 and a red hang-up button, a green "In a call" badge in the header, mute/deafen toggles in the
-account card, and a "Voice Connected" panel above it while connected. Camera, screen share,
-activities and soundboard are shown disabled: Serein has no such features.
+account card, and a "Voice Connected" panel above it while connected. Camera and screen
+sharing depend on native capture and negotiated codec support; offline previews keep
+capture inert. Activities and soundboard remain disabled where unsupported.
 
 ## Verification notes
 

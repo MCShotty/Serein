@@ -1,14 +1,16 @@
 use crate::{
-	Controls, Frame, Status,
+	CapturedFrame, Controls, Frame, Status,
 	crypto::{Dave, Encryption, Identity, MAX_PACKET, MAX_SIGNAL, MODE},
 	diagnostics::{Signal, Video},
 	video_receive::{
-		DecoderQueue, Encoded, Receivers, VideoSink, has_parameter_sets, is_keyframe, offer, pli,
-		remove as remove_decoder, retain_sources, spawn_decoder,
+		DecoderQueue, Encoded, MAX_SOURCES, Receivers, SourceLifetime, VideoSink,
+		has_parameter_sets, is_keyframe, offer, pli, remove as remove_decoder, retain_sources,
+		spawn_decoder,
 	},
 };
 use client_core::voice::VoiceConnection;
 use futures_util::{SinkExt, StreamExt};
+use model::voice_settings::{VideoCodec, VideoSettings};
 use opus2::{Application, Bitrate, Channels, Encoder};
 use serde_json::{Value, json};
 use std::{
@@ -168,10 +170,28 @@ fn id(data: &Value, key: &str) -> Result<u64, &'static str> {
 fn transition(data: &Value) -> Result<u16, &'static str> {
 	u16::try_from(number(data, "transition_id")?).map_err(|_| "Invalid voice transition")
 }
-fn h264_negotiated(data: &Value) -> bool {
+fn video_negotiated(data: &Value, codec: VideoCodec) -> bool {
 	data["video_codec"]
 		.as_str()
-		.is_some_and(|codec| codec.eq_ignore_ascii_case("H264"))
+		.is_some_and(|selected| selected.eq_ignore_ascii_case(crate::video::codec_name(codec)))
+}
+fn offered_codecs(outgoing: Option<VideoCodec>, decode: bool) -> Vec<Value> {
+	let mut codecs = vec![json!({"name":"opus","type":"audio","priority":1000,"payload_type":120})];
+	if let Some(codec) = outgoing {
+		let payload = crate::video::payload_type(codec);
+		codecs.push(json!({"name":crate::video::codec_name(codec),"type":"video","priority":1000,"payload_type":payload,"rtx_payload_type":payload+1,"encode":true,"decode":decode && codec==VideoCodec::H264}));
+	}
+	if decode && outgoing != Some(VideoCodec::H264) {
+		codecs.push(json!({"name":"H264","type":"video","priority":900,"payload_type":101,"rtx_payload_type":102,"encode":false,"decode":true}));
+	}
+	codecs
+}
+fn codec_negotiation_error(codec: VideoCodec) -> &'static str {
+	match codec {
+		VideoCodec::H264 => "Discord did not negotiate DAVE H264 stream media",
+		VideoCodec::H265 => "Discord did not negotiate DAVE H265 stream media",
+		VideoCodec::Av1 => "Discord did not negotiate DAVE AV1 stream media",
+	}
 }
 /// Bind every video SSRC of a client announcement (opcode 12) to its user; zero clears them.
 pub(super) fn announce_video(
@@ -240,7 +260,7 @@ fn discovery(packet: &[u8], ssrc: u32) -> Result<(IpAddr, u16), &'static str> {
 #[allow(clippy::too_many_arguments)] // Every media input of one call.
 pub async fn run(
 	credentials: VoiceConnection,
-	capture: Receiver<Frame>,
+	capture: Receiver<CapturedFrame>,
 	playback: SyncSender<Frame>,
 	controls: watch::Receiver<Controls>,
 	camera: Option<Receiver<crate::camera_video::Frame>>,
@@ -265,7 +285,7 @@ pub async fn run(
 #[allow(clippy::too_many_arguments)] // Every media input of one call plus its identity.
 pub async fn run_with_identity(
 	credentials: VoiceConnection,
-	capture: Receiver<Frame>,
+	capture: Receiver<CapturedFrame>,
 	playback: SyncSender<Frame>,
 	controls: watch::Receiver<Controls>,
 	camera: Option<Receiver<crate::camera_video::Frame>>,
@@ -295,7 +315,7 @@ pub async fn run_with_identity(
 #[allow(clippy::too_many_arguments)] // Public media inputs plus the loopback-only test endpoint.
 async fn run_inner(
 	credentials: VoiceConnection,
-	capture: Receiver<Frame>,
+	capture: Receiver<CapturedFrame>,
 	playback: SyncSender<Frame>,
 	mut controls: watch::Receiver<Controls>,
 	camera: Option<Receiver<crate::camera_video::Frame>>,
@@ -307,6 +327,12 @@ async fn run_inner(
 	local_test: bool,
 ) -> Result<(), &'static str> {
 	let video_capable = camera.is_some() || remote_video.is_some();
+	// Preference edits apply to the next call, never the active encrypted session.
+	let video_settings = controls.borrow().video;
+	if camera.is_some() && !video_settings.is_valid() {
+		return Err("Stable video supports H264 only");
+	}
+	let outgoing_codec = video_settings.codec;
 	let (decoder, lost) = match remote_video.map(spawn_decoder).transpose()? {
 		Some((decoder, lost)) => (Some(decoder), Some(lost)),
 		None => (None, None),
@@ -347,7 +373,7 @@ async fn run_inner(
 	let mut discovering = false;
 	let mut discovery_deadline = Instant::now();
 	let mut ssrc = 0u32;
-	let mut video = crate::camera_video::Sender::default();
+	let mut video = crate::camera_video::Sender::new(outgoing_codec);
 	let mut video_tick = tokio::time::interval(Duration::from_millis(2));
 	video_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 	let mut mixer = crate::mixer::Mixer::default();
@@ -442,13 +468,14 @@ async fn run_inner(
 				}
 				if let Some(camera)=&camera && let Ok(frame)=camera.try_recv()
 					&& camera_enabled && frame.generation==control.camera && video.is_empty()
+					&& frame.codec==outgoing_codec
 					&& frame.data.len()<=crate::camera_video::MAX_FRAME_BYTES {
 					if !video.announced {
 						json_send(&mut ws,video.announcement(ssrc,true)).await?;
 						video.announced=true;
 					}
-					let normalized=crate::video_sps::normalize(&frame.data)?;
-					let encrypted=dave.session.encrypt(davey::MediaType::VIDEO,davey::Codec::H264,&normalized).map_err(|_|"DAVE camera encryption failed")?;
+					let normalized=crate::video::prepare_source(&frame.data,outgoing_codec)?;
+					let encrypted=dave.session.encrypt(davey::MediaType::VIDEO,crate::video::dave_codec(outgoing_codec),&normalized).map_err(|_|"DAVE camera encryption failed")?;
 					video.packetize(&encrypted,frame.timestamp,encryption.as_mut().ok_or("Missing camera transport key")?)?;
 				}
 				// Preserve ordinary callback batches. Only a real stall (four packet
@@ -459,16 +486,22 @@ async fn run_inner(
 				capture_at = now;
 				capture_enabled = enabled;
 				capture_reset = false;
-				let latest=if waiting {
-					capture_pacer.preview(&capture)
+				let mut latest=if waiting {
+					capture_pacer.preview(&capture,control.capture_generation)
 				} else {
-					capture_pacer.next(&capture,enabled && !control.muted && !control.deafened,stalled)
+					capture_pacer.next(&capture,enabled && !control.muted && !control.deafened,stalled,control.capture_generation)
 				};
 				local_activity=if (enabled || waiting) && !control.muted && !control.deafened && !stalled {
 					crate::activity::hold_at(latest.as_ref().map_or(0.0, |frame| frame.iter().filter(|s| s.is_finite()).map(|s| s*s).sum()),local_activity,control.activity_threshold_db)
 				} else {0};
-				let active=enabled && !control.muted && !control.deafened && latest.is_some();
+				let mut active=enabled && !control.muted && !control.deafened && latest.is_some();
 				if active && !speaking {json_send(&mut ws,json!({"op":5,"d":{"speaking":1,"delay":0,"ssrc":ssrc}})).await?;speaking=true;}
+				// Speaking notification can await the websocket: recheck privacy before encoding.
+				let current=*controls.borrow();
+				if current.capture_generation!=control.capture_generation || current.muted || current.deafened {
+					active=false;latest=None;local_activity=0;
+					let _=capture_pacer.next(&capture,false,false,current.capture_generation);
+				}
 				if !active && speaking && silence==0 {silence=5;}
 				if enabled && (active || silence>0) {
 					let start = metrics.start();
@@ -520,7 +553,7 @@ async fn run_inner(
 				if length>MAX_PACKET {continue;}
 				if discovering {
 					let (address,port)=discovery(&packet[..length],ssrc)?;
-					json_send(&mut ws,json!({"op":1,"d":{"protocol":"udp","data":{"address":address.to_string(),"port":port,"mode":MODE},"codecs":if video_capable{vec![json!({"name":"opus","type":"audio","priority":1000,"payload_type":120}),json!({"name":"H264","type":"video","priority":1000,"payload_type":101,"rtx_payload_type":102,"encode":camera.is_some(),"decode":decoder.is_some()})]}else{vec![json!({"name":"opus","type":"audio","priority":1000,"payload_type":120})]}}})).await?;
+					json_send(&mut ws,json!({"op":1,"d":{"protocol":"udp","data":{"address":address.to_string(),"port":port,"mode":MODE},"codecs":offered_codecs(camera.as_ref().map(|_|outgoing_codec),decoder.is_some())}})).await?;
 					discovering=false;continue;
 				}
 				let Some(crypto)=&encryption else{continue;};
@@ -606,7 +639,7 @@ async fn run_inner(
 								encryption=Some(Encryption::new(&key));secured_at=Some(Instant::now());
 								// Register the audio SSRC without opening a microphone or sending media.
 								json_send(&mut ws,json!({"op":5,"d":{"speaking":0,"delay":0,"ssrc":ssrc}})).await?;
-								video.negotiated=h264_negotiated(data);
+								video.negotiated=video_negotiated(data,outgoing_codec);
 								if camera.is_some(){emit(Status::CameraAvailable(video.available())).map_err(|_|"Call interface closed")?;}
 								send(&mut ws,Message::Binary(dave.key_package()?.into())).await?;
 								emit(Status::TransportReady).map_err(|_|"Call interface closed")?;
@@ -846,24 +879,31 @@ const SINK_WANTS_STALLED_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Folds remote video state into the diagnostics report once per tick.
 struct VideoWatch {
-	last_picture_at: Instant,
+	sources: Vec<PictureWatch>,
 	pictures: u64,
 	errors: u64,
 	stale: u64,
 }
 
+struct PictureWatch {
+	user: u64,
+	lifetime: Option<Arc<SourceLifetime>>,
+	pictures: u64,
+	last_picture_at: Instant,
+}
+
 impl VideoWatch {
 	fn new() -> Self {
 		Self {
-			last_picture_at: Instant::now(),
+			sources: Vec::with_capacity(MAX_SOURCES),
 			pictures: 0,
 			errors: 0,
 			stale: 0,
 		}
 	}
 
-	/// Returns true while video is stalled: a source is announced but no picture arrived
-	/// recently. Every announced sender is asked for a keyframe for as long as that holds.
+	/// Returns true while any announced sender is stalled. Progress from another sender
+	/// cannot hide its stall; only that user's current lifetime resets its picture deadline.
 	fn tick(
 		&mut self,
 		metrics: &mut crate::diagnostics::Metrics,
@@ -895,7 +935,6 @@ impl VideoWatch {
 		if pictures != self.pictures {
 			metrics.video(Video::Pictures, pictures.wrapping_sub(self.pictures));
 			self.pictures = pictures;
-			self.last_picture_at = now;
 		}
 		let errors = decoder
 			.counters
@@ -903,17 +942,53 @@ impl VideoWatch {
 			.load(std::sync::atomic::Ordering::Relaxed);
 		metrics.video(Video::DecoderErrors, errors.wrapping_sub(self.errors));
 		self.errors = errors;
-		let gap = now.saturating_duration_since(self.last_picture_at);
-		if self.pictures > 0 {
-			metrics.video_max(
-				Video::PictureGapMs,
-				gap.as_millis().min(u128::from(u64::MAX)) as u64,
-			);
+		if !receivers.has_sources() {
+			self.sources.clear();
+			return false;
+		}
+		self.sources
+			.retain(|source| receivers.users().any(|user| user == source.user));
+		for user in receivers.users() {
+			let lifetime = decoder.source_lifetime(user);
+			let pictures = lifetime
+				.as_ref()
+				.map_or(0, |lifetime| lifetime.pictures.load(Ordering::Relaxed));
+			if let Some(source) = self.sources.iter_mut().find(|source| source.user == user) {
+				let unchanged = match (&source.lifetime, &lifetime) {
+					(Some(previous), Some(current)) => Arc::ptr_eq(previous, current),
+					(None, None) => true,
+					_ => false,
+				};
+				if !unchanged || pictures != source.pictures {
+					source.last_picture_at = now;
+				}
+				source.lifetime = lifetime;
+				source.pictures = pictures;
+			} else if self.sources.len() < MAX_SOURCES {
+				self.sources.push(PictureWatch {
+					user,
+					lifetime,
+					pictures,
+					last_picture_at: now,
+				});
+			}
 		}
 		// A clean stop leaves nothing marked lost, so only elapsed time can reveal it.
-		let stalled = receivers.has_sources() && gap >= VIDEO_STALL;
+		let mut stalled = false;
+		for source in &self.sources {
+			let gap = now.saturating_duration_since(source.last_picture_at);
+			if source.pictures > 0 {
+				metrics.video_max(
+					Video::PictureGapMs,
+					gap.as_millis().min(u128::from(u64::MAX)) as u64,
+				);
+			}
+			if gap >= VIDEO_STALL {
+				receivers.require_keyframe(source.user);
+				stalled = true;
+			}
+		}
 		if stalled {
-			receivers.require_all_keyframes();
 			metrics.video(Video::StallTicks, 1);
 		}
 		stalled
@@ -939,7 +1014,9 @@ fn invalidate_stream(video: &mut Option<crate::screen::Video>, audio: &mut Optio
 	}
 }
 
-/// Send one unofficial Discord Go Live H.264 stream on its own voice gateway.
+/// Send one unofficial Discord Go Live stream on its own voice gateway.
+/// Outgoing H265/AV1 require compatible Experimental hardware. Incoming video
+/// remains H264; live codec negotiation and AV1 DAVE framing are unverified.
 ///
 /// `credentials.guild` is the stream RTC server ID and `credentials.channel` is
 /// its RTC channel ID. Discord has not documented the stream MLS group mapping;
@@ -1000,6 +1077,13 @@ async fn run_stream_inner(
 	url: String,
 	local_test: bool,
 ) -> Result<(), &'static str> {
+	let video_settings = video
+		.as_ref()
+		.map_or_else(VideoSettings::default, |video| video.video_settings);
+	if !video_settings.is_valid() {
+		return Err("Stable video supports H264 only");
+	}
+	let outgoing_codec = video_settings.codec;
 	let (decoder, lost) = match sink.map(spawn_decoder).transpose()? {
 		Some((decoder, lost)) => (Some(decoder), Some(lost)),
 		None => (None, None),
@@ -1267,14 +1351,15 @@ async fn run_stream_inner(
 			},
 			frame=async {match video.as_mut() {Some(video)=>video.frames.recv().await,None=>std::future::pending().await}}, if outgoing.is_empty()=>{
 				let Some(frame)=frame else {return Ok(());};
+				if frame.codec!=outgoing_codec {return Err("Stream encoder codec differs from the negotiated codec");}
 				if frame.data.len()>2*1024*1024 {return Err("Encoded stream frame exceeds the sharing limit");}
 				let secure=announced&&dave.ready&&dave.session.is_ready()&&dave.pending.is_none()&&encryption.is_some()&&!discovering&&video.as_ref().is_some_and(|video|video.ready.load(Ordering::Acquire));
 				if !secure {awaiting_keyframe=true;invalidate_stream(&mut video, &mut share_audio);continue;}
 				if awaiting_keyframe && !frame.keyframe {continue;}
 				let start=metrics.start();
-				let normalized=crate::video_sps::normalize(&frame.data)?;
-				let encrypted=dave.session.encrypt(davey::MediaType::VIDEO,davey::Codec::H264,&normalized).map_err(|_|"DAVE H264 encryption failed")?;
-				let packets=crate::video::packetize(&encrypted,&mut sequence,frame.timestamp,video_ssrc)?;
+				let normalized=crate::video::prepare_source(&frame.data,outgoing_codec)?;
+				let encrypted=dave.session.encrypt(davey::MediaType::VIDEO,crate::video::dave_codec(outgoing_codec),&normalized).map_err(|_|"DAVE stream video encryption failed")?;
+				let packets=crate::video::packetize_for_codec(&encrypted,outgoing_codec,&mut sequence,frame.timestamp,video_ssrc,frame.keyframe)?;
 				outgoing.queue(packets,Instant::now());
 				outgoing_keyframe=frame.keyframe;
 				metrics.finish(crate::diagnostics::Stage::VideoSend,start);
@@ -1283,7 +1368,7 @@ async fn run_stream_inner(
 				let length=match result {Ok(length)=>length,Err(error) if transient_receive(&error)=>continue,Err(_)=>return Err("Stream UDP receive failed")};
 				if discovering {
 					let (address,port)=discovery(&packet[..length],audio_ssrc)?;
-					json_send(&mut ws,json!({"op":1,"d":{"protocol":"udp","data":{"address":address.to_string(),"port":port,"mode":MODE},"codecs":[{"name":"opus","type":"audio","priority":1000,"payload_type":120},{"name":"H264","type":"video","priority":1000,"payload_type":101,"rtx_payload_type":102,"encode":video.is_some(),"decode":decoder.is_some()}]}})).await?;
+					json_send(&mut ws,json!({"op":1,"d":{"protocol":"udp","data":{"address":address.to_string(),"port":port,"mode":MODE},"codecs":offered_codecs(video.as_ref().map(|_|outgoing_codec),decoder.is_some())}})).await?;
 					discovering=false;
 					continue;
 				}
@@ -1361,7 +1446,7 @@ async fn run_stream_inner(
 							},
 							4=>{
 								if encryption.is_some()||udp.is_none()||discovering{return Err("Unexpected stream session description");}
-								if data["mode"].as_str()!=Some(MODE)||data["dave_protocol_version"].as_u64()!=Some(1)||!h264_negotiated(data){return Err("Discord did not negotiate DAVE H264 stream media");}
+								if data["mode"].as_str()!=Some(MODE)||data["dave_protocol_version"].as_u64()!=Some(1)||!video_negotiated(data,outgoing_codec){return Err(codec_negotiation_error(outgoing_codec));}
 								let values=data["secret_key"].take();let values=values.as_array().ok_or("Missing stream transport key")?;if values.len()!=32{return Err("Invalid stream transport key");}
 								let mut key=Zeroizing::new([0;32]);for(out,value)in key.iter_mut().zip(values){*out=value.as_u64().and_then(|value|u8::try_from(value).ok()).ok_or("Invalid stream transport key")?;}
 								encryption=Some(Encryption::new(&key));secured_at=Some(Instant::now());send(&mut ws,Message::Binary(dave.key_package()?.into())).await?;metrics.signal(Signal::KeyPackageSent,1);emit(Status::TransportReady).map_err(|_|"Stream interface closed")?;emit(Status::Securing).map_err(|_|"Stream interface closed")?;
@@ -1519,12 +1604,134 @@ mod tests {
 		}
 		assert!(receivers.accept(7, true) && receivers.accept(8, true));
 		assert!(!receivers.awaiting());
+		assert!(!watch.tick(&mut metrics, &mut receivers, Some(&decoder), later));
 		// Video stops with nothing marked lost; only the elapsed-time path can recover it.
-		assert!(watch.tick(&mut metrics, &mut receivers, Some(&decoder), later));
+		assert!(watch.tick(
+			&mut metrics,
+			&mut receivers,
+			Some(&decoder),
+			later + VIDEO_STALL * 2
+		));
 		assert_eq!(
 			receivers.keyframe_requests().collect::<Vec<_>>(),
 			vec![700, 800]
 		);
+	}
+
+	#[test]
+	fn an_active_camera_does_not_mask_another_senders_stall() {
+		let mut metrics = crate::diagnostics::Metrics::new(crate::diagnostics::Scope::Transport);
+		let mut watch = VideoWatch::new();
+		let mut receivers = Receivers::default();
+		let (decoder, _) = spawn_decoder(Arc::new(|_| {})).unwrap();
+		for (user, ssrc) in [(7, 700), (8, 800)] {
+			receivers.announce(user, ssrc).unwrap();
+			assert!(receivers.accept(user, true));
+		}
+		retain_sources(&decoder, &receivers);
+		let alice = decoder.source_lifetime(7).unwrap();
+		let bob = decoder.source_lifetime(8).unwrap();
+		alice.pictures.store(1, Ordering::Relaxed);
+		bob.pictures.store(1, Ordering::Relaxed);
+		decoder.counters.pictures.store(2, Ordering::Relaxed);
+		let start = Instant::now();
+		assert!(!watch.tick(&mut metrics, &mut receivers, Some(&decoder), start));
+		for step in 1..=10 {
+			bob.pictures.fetch_add(1, Ordering::Relaxed);
+			decoder.counters.pictures.fetch_add(1, Ordering::Relaxed);
+			let stalled = watch.tick(
+				&mut metrics,
+				&mut receivers,
+				Some(&decoder),
+				start + Duration::from_millis(step * 500),
+			);
+			assert_eq!(stalled, step >= 2);
+			assert_eq!(
+				receivers.keyframe_requests().collect::<Vec<_>>(),
+				if step >= 2 { vec![700] } else { vec![] }
+			);
+		}
+		assert!(receivers.accept(7, true));
+		alice.pictures.fetch_add(1, Ordering::Relaxed);
+		bob.pictures.fetch_add(1, Ordering::Relaxed);
+		decoder.counters.pictures.fetch_add(2, Ordering::Relaxed);
+		assert!(!watch.tick(
+			&mut metrics,
+			&mut receivers,
+			Some(&decoder),
+			start + Duration::from_secs(6)
+		));
+		assert!(!receivers.awaiting());
+	}
+
+	#[test]
+	fn source_replacement_and_removal_retire_old_picture_progress() {
+		let mut metrics = crate::diagnostics::Metrics::new(crate::diagnostics::Scope::Transport);
+		let mut watch = VideoWatch::new();
+		let mut receivers = Receivers::default();
+		let (decoder, _) = spawn_decoder(Arc::new(|_| {})).unwrap();
+		for (user, ssrc) in [(7, 700), (8, 800)] {
+			announce_video(
+				&mut receivers,
+				&decoder,
+				user,
+				&json!({"video_ssrc":ssrc,"streams":[]}),
+			)
+			.unwrap();
+			assert!(receivers.accept(user, true));
+		}
+		let queue = &decoder;
+		let bob = queue.source_lifetime(8).unwrap();
+		let mut alice = queue.source_lifetime(7).unwrap();
+		let mut now = Instant::now();
+		assert!(!watch.tick(&mut metrics, &mut receivers, Some(queue), now));
+		for ssrc in 701..=732 {
+			announce_video(
+				&mut receivers,
+				&decoder,
+				7,
+				&json!({"video_ssrc":ssrc,"streams":[]}),
+			)
+			.unwrap();
+			let replacement = queue.source_lifetime(7).unwrap();
+			assert!(!Arc::ptr_eq(&alice, &replacement));
+			assert_eq!(replacement.pictures.load(Ordering::Relaxed), 0);
+			assert!(receivers.accept(7, true));
+			// A callback retained by the old decoder must not count for the new source.
+			alice.pictures.fetch_add(100, Ordering::Relaxed);
+			bob.pictures.fetch_add(1, Ordering::Relaxed);
+			now += VIDEO_STALL * 2;
+			assert!(!watch.tick(&mut metrics, &mut receivers, Some(queue), now));
+			assert_eq!(watch.sources.len(), 2);
+			bob.pictures.fetch_add(1, Ordering::Relaxed);
+			now += VIDEO_STALL;
+			assert!(watch.tick(&mut metrics, &mut receivers, Some(queue), now));
+			assert_eq!(
+				receivers.keyframe_requests().collect::<Vec<_>>(),
+				vec![ssrc]
+			);
+			alice = replacement;
+		}
+		receivers.remove(7);
+		retain_sources(queue, &receivers);
+		assert!(queue.source_lifetime(7).is_none());
+		bob.pictures.fetch_add(1, Ordering::Relaxed);
+		now += VIDEO_STALL;
+		assert!(!watch.tick(&mut metrics, &mut receivers, Some(queue), now));
+		assert_eq!(watch.sources.len(), 1);
+		announce_video(
+			&mut receivers,
+			&decoder,
+			7,
+			&json!({"video_ssrc":732,"streams":[]}),
+		)
+		.unwrap();
+		assert!(!Arc::ptr_eq(&alice, &queue.source_lifetime(7).unwrap()));
+		assert!(receivers.accept(7, true));
+		bob.pictures.fetch_add(1, Ordering::Relaxed);
+		now += VIDEO_STALL;
+		assert!(!watch.tick(&mut metrics, &mut receivers, Some(queue), now));
+		assert_eq!(watch.sources.len(), 2);
 	}
 
 	async fn receive_media(socket: &UdpSocket, packet: &mut [u8]) -> (usize, SocketAddr) {
@@ -1625,6 +1832,7 @@ mod tests {
 		enqueue(vec![0.75; STREAM_AUDIO_FRAME]);
 		let (_, frames) = tokio::sync::mpsc::channel(3);
 		let mut video = Some(crate::screen::Video {
+			video_settings: VideoSettings::default(),
 			settings: crate::screen::Settings {
 				source: crate::screen::SourceId::Display(1),
 				width: 1280,
@@ -1732,16 +1940,53 @@ mod tests {
 		assert!(output.iter().any(|sample| sample.abs() > 0.01));
 
 		{
-			assert!(h264_negotiated(&json!({"video_codec":"H264"})));
-			assert!(!h264_negotiated(&json!({"video_codec":"VP8"})));
-			assert!(!h264_negotiated(
-				&json!({"sdp":"a=rtpmap:101 H264/90000\\r\\n"})
+			assert!(video_negotiated(
+				&json!({"video_codec":"H264"}),
+				VideoCodec::H264
+			));
+			assert!(!video_negotiated(
+				&json!({"video_codec":"VP8"}),
+				VideoCodec::H264
+			));
+			assert!(!video_negotiated(
+				&json!({"sdp":"a=rtpmap:101 H264/90000\\r\\n"}),
+				VideoCodec::H264
 			));
 		}
 	}
 	#[tokio::test]
 	async fn local_voice_websocket_udp_dave_and_opus_exchange() {
 		local_voice_exchange(false).await;
+	}
+	#[test]
+	fn outgoing_codec_offers_never_claim_unsupported_decoders_or_h264_fallback() {
+		for codec in [VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1] {
+			let send_only = offered_codecs(Some(codec), false);
+			assert_eq!(send_only.len(), 2);
+			assert_eq!(send_only[1]["name"], crate::video::codec_name(codec));
+			assert_eq!(send_only[1]["encode"], true);
+			assert_eq!(send_only[1]["decode"], false);
+			let duplex = offered_codecs(Some(codec), true);
+			assert_eq!(duplex[1]["decode"], codec == VideoCodec::H264);
+			if codec != VideoCodec::H264 {
+				assert_eq!(duplex.len(), 3);
+				assert_eq!(duplex[2]["name"], "H264");
+				assert_eq!(duplex[2]["encode"], false);
+				assert_eq!(duplex[2]["decode"], true);
+				assert!(!video_negotiated(&json!({"video_codec":"H264"}), codec));
+			}
+			assert!(video_negotiated(
+				&json!({"video_codec":crate::video::codec_name(codec)}),
+				codec
+			));
+			assert!(!video_negotiated(&json!({}), codec));
+		}
+		let receive_only = offered_codecs(None, true);
+		assert_eq!(receive_only.len(), 2);
+		assert_eq!(receive_only[1]["name"], "H264");
+		assert_eq!(receive_only[1]["encode"], false);
+		assert_eq!(receive_only[1]["decode"], true);
+		assert_eq!(offered_codecs(None, false).len(), 1);
 	}
 	#[tokio::test]
 	async fn local_guild_voice_waiting_mixed_audio_and_resume() {
@@ -2063,7 +2308,12 @@ mod tests {
 			request: 1,
 		};
 		let (capture_tx, capture) = std::sync::mpsc::sync_channel(8);
-		capture_tx.try_send([0.25; 960]).unwrap();
+		capture_tx
+			.try_send(CapturedFrame {
+				generation: 0,
+				pcm: [0.25; 960],
+			})
+			.unwrap();
 		let (playback, playback_rx) = std::sync::mpsc::sync_channel(8);
 		let (control_tx, control_rx) = watch::channel(Controls::default());
 		let (_camera_tx, camera_rx) = std::sync::mpsc::sync_channel(1);
@@ -2137,7 +2387,7 @@ mod tests {
 					_ = capture_tick.tick(), if ready > 0 => {
 						// Model a bounded continuous microphone, not one frame discarded by a stall.
 						if !captured {
-							match capture_tx.try_send(std::array::from_fn(|i| (i as f32 * 0.06).sin() * 0.3)) {
+							match capture_tx.try_send(CapturedFrame { generation: 0, pcm: std::array::from_fn(|i| (i as f32 * 0.06).sin() * 0.3) }) {
 								Ok(()) | Err(std::sync::mpsc::TrySendError::Full(_)) => {}
 								Err(std::sync::mpsc::TrySendError::Disconnected(_)) => panic!("test capture stopped before peer receipt"),
 							}

@@ -51,25 +51,26 @@ class PreparationTest(unittest.TestCase):
             original_output = subprocess.check_output
 
             def checked_output(*args, **kwargs):
-                self.assertFalse(any(key.startswith("GIT_") for key in os.environ))
-                self.assertEqual(os.environ["SEREIN_FIXTURE_ENV"], "retained")
+                effective_environment = kwargs.get("env", os.environ)
+                self.assertFalse(any(key.startswith("GIT_") for key in effective_environment))
+                self.assertEqual(effective_environment["SEREIN_FIXTURE_ENV"], "retained")
                 return original_output(*args, **kwargs)
 
             before_environment = dict(os.environ)
             with patch.dict(os.environ, inherited), patch.object(subprocess, "check_output", side_effect=checked_output):
                 polluted_environment = dict(os.environ)
-                self.prepare_fixture()
+                self.prepare_fixture(inherited=inherited)
                 self.assertEqual(dict(os.environ), polluted_environment)
             self.assertEqual(dict(os.environ), before_environment)
             self.assertEqual(index.read_bytes(), before_index)
             self.assertEqual(tracked.read_bytes(), before_source)
             self.assertEqual({path.name for path in parent.iterdir()}, {".git", "parent-tracked"})
 
-    def prepare_fixture(self, symlink=False):
+    def prepare_fixture(self, symlink=False, inherited=None):
         with patch.dict(os.environ, clean_git_environment(), clear=True):
-            self._prepare_fixture(symlink)
+            self._prepare_fixture(symlink, inherited)
 
-    def _prepare_fixture(self, symlink):
+    def _prepare_fixture(self, symlink, inherited=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "repo"
             root.mkdir()
@@ -122,7 +123,12 @@ class PreparationTest(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "Refusing symlink source: tracked-symlink"):
                         build.prepare(destination)
                     return
-                build.prepare(destination)
+                # Apply pollution at the actual production boundary, after the
+                # independent fixture repositories have been created safely.
+                with patch.dict(os.environ, inherited or {}):
+                    before_prepare = dict(os.environ)
+                    build.prepare(destination)
+                    self.assertEqual(dict(os.environ), before_prepare)
                 with self.assertRaises(FileExistsError):
                     build.prepare(destination)
             source = destination / "source"
@@ -137,3 +143,25 @@ class PreparationTest(unittest.TestCase):
             self.assertIn('[alias]', config)
             self.assertIn('directory = "cargo-vendor"', config)
             self.assertEqual(json.loads((destination / "cz.viceverse.serein.json").read_text()), manifest)
+            prepared = json.loads((destination / "cz.viceverse.serein.json").read_text())
+            modules = prepared["modules"]
+            names = [module["name"] for module in modules]
+            # ELF rewriting must use a tool built inside the sandbox; host
+            # patchelf is unavailable to flatpak-builder's build commands.
+            self.assertLess(names.index("patchelf"), names.index("serein-ffmpeg"))
+            patchelf = modules[names.index("patchelf")]
+            self.assertEqual(patchelf["buildsystem"], "autotools")
+            self.assertEqual(patchelf["cleanup"], ["*"])
+            self.assertEqual(patchelf["sources"], [{
+                "type": "archive",
+                "url": "https://github.com/NixOS/patchelf/releases/download/0.18.0/patchelf-0.18.0.tar.bz2",
+                "sha256": "1952b2a782ba576279c211ee942e341748fdb44997f704dd53def46cd055470b",
+            }])
+            encoders = next(module for module in prepared["modules"] if module["name"] == "serein-ffmpeg")
+            archives = {item["dest-filename"]: item for item in encoders["sources"] if "dest-filename" in item}
+            self.assertEqual(set(archives), {"ffmpeg-7.1.5.tar.xz", "openh264-2.6.0.tar.gz",
+                                            "nv-codec-headers-12.2.72.0.tar.gz", "AMF-1.4.36.tar.gz", "libvpl-2.14.0.tar.gz"})
+            # Preparation passes arch restrictions through to flatpak-builder,
+            # which selects SDK source downloads for the target architecture.
+            self.assertEqual(archives["libvpl-2.14.0.tar.gz"]["only-arches"], ["x86_64"])
+            self.assertTrue(all(len(item["sha256"]) == 64 for item in archives.values()))

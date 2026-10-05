@@ -21,6 +21,7 @@ pub struct SearchView {
 	pub error: Option<&'static str>,
 	pub page: Option<SearchPage>,
 }
+
 impl SearchView {
 	pub fn page_count(&self) -> u32 {
 		self.total
@@ -38,6 +39,17 @@ pub enum Outcome {
 	Indexing,
 }
 impl State {
+	/// Include every channel that may appear in an in-flight server-wide result.
+	pub(crate) fn search_covers_channel(&self, channel: Id) -> bool {
+		self.search.as_ref().is_some_and(|view| {
+			view.channel == channel
+				|| (!view.pins
+					&& view.guild.is_some_and(|guild| {
+						self.channel(channel)
+							.is_some_and(|known| known.guild == Some(guild))
+					}))
+		})
+	}
 	pub fn can_search(&self) -> bool {
 		self.auth == AuthState::Authenticated
 			&& self.gateway_connected
@@ -254,5 +266,158 @@ impl State {
 			self.status = status;
 			None
 		})
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::{Envelope, Event};
+	use model::{Channel, Guild, SearchHit};
+
+	fn state() -> State {
+		let channels = [(1, Some(10)), (2, Some(10)), (3, Some(20)), (4, None)]
+			.into_iter()
+			.map(|(id, guild)| Channel {
+				id: Id(id),
+				guild: guild.map(Id),
+				parent_id: None,
+				position: 0,
+				name: "Synthetic".into(),
+				kind: if guild.is_some() { 0 } else { 1 },
+				recipients: vec![],
+				last_message: None,
+				icon: None,
+				member_list_id: None,
+				tags: None,
+				message_count: None,
+			})
+			.collect();
+		let mut state = State {
+			user: Some(crate::tests::message(100).author),
+			channels,
+			guilds: [10, 20]
+				.into_iter()
+				.map(|id| Guild {
+					id: Id(id),
+					name: "Synthetic".into(),
+					icon: None,
+					default_message_notifications: None,
+					emojis: None,
+					stickers: None,
+				})
+				.collect(),
+			selected: Some(Id(1)),
+			auth: AuthState::Authenticated,
+			gateway_connected: true,
+			freshness: Freshness::Fresh,
+			..State::default()
+		};
+		crate::tests::grant_permissions(&mut state);
+		state
+	}
+	fn page(channel: Id) -> SearchPage {
+		SearchPage {
+			hits: vec![SearchHit {
+				id: Id(100),
+				channel,
+				author: crate::tests::message(100).author,
+				mentions: vec![],
+				excerpt: "Synthetic old snippet".into(),
+				attachments: vec![],
+				embeds: vec![],
+			}],
+			total: 1,
+			partial: false,
+			pin_cursor: None,
+		}
+	}
+	fn mutation(channel: Id, kind: usize) -> Event {
+		match kind {
+			0 => Event::Patch(crate::message_actions::content_patch(
+				channel,
+				Id(100),
+				"Edited".into(),
+			)),
+			1 => Event::Delete {
+				channel,
+				id: Id(100),
+			},
+			_ => Event::DeleteBulk {
+				channel,
+				ids: vec![Id(100)],
+			},
+		}
+	}
+	fn apply(state: &mut State, event: Event) {
+		state.apply(Envelope {
+			generation: state.generation,
+			event,
+		});
+	}
+
+	#[test]
+	fn sibling_channel_mutations_retire_loaded_and_in_flight_guild_searches() {
+		for in_flight in [false, true] {
+			for kind in 0..3 {
+				let mut state = state();
+				let Some(Command::Search {
+					channel, request, ..
+				}) = state.request_search("snippet".into(), None)
+				else {
+					panic!("Expected guild search");
+				};
+				if !in_flight {
+					state.apply_search(channel, request, Ok(Outcome::Page(page(Id(2)))));
+					assert!(state.search.as_ref().unwrap().page.is_some());
+				}
+				apply(&mut state, mutation(Id(2), kind));
+				assert!(state.search.is_none());
+				assert!(state.search_request > request);
+				state.apply_search(channel, request, Ok(Outcome::Page(page(Id(2)))));
+				assert!(
+					state.search.is_none(),
+					"A stale index must not restore the snippet"
+				);
+			}
+		}
+	}
+
+	#[test]
+	fn mutations_outside_the_search_scope_preserve_results_and_pending_reads() {
+		for in_flight in [false, true] {
+			for unrelated in [Id(3), Id(4)] {
+				let mut state = state();
+				let Some(Command::Search {
+					channel, request, ..
+				}) = state.request_search("snippet".into(), None)
+				else {
+					panic!("Expected guild search");
+				};
+				if !in_flight {
+					state.apply_search(channel, request, Ok(Outcome::Page(page(Id(2)))));
+				}
+				apply(&mut state, mutation(unrelated, 1));
+				assert_eq!(state.search.as_ref().unwrap().request, request);
+				assert_eq!(state.search.as_ref().unwrap().loading, in_flight);
+				if in_flight {
+					state.apply_search(channel, request, Ok(Outcome::Page(page(Id(2)))));
+				}
+				assert!(state.search.as_ref().unwrap().page.is_some());
+			}
+		}
+		let mut state = state();
+		let Some(Command::Pins {
+			channel, request, ..
+		}) = state.request_pins()
+		else {
+			panic!("Expected pins");
+		};
+		apply(&mut state, mutation(Id(2), 1));
+		assert!(state.search.as_ref().unwrap().loading);
+		state.apply_search(channel, request, Ok(Outcome::Pins(page(channel))));
+		assert!(state.search.as_ref().unwrap().page.is_some());
+		apply(&mut state, mutation(channel, 1));
+		assert!(state.search.is_none());
 	}
 }

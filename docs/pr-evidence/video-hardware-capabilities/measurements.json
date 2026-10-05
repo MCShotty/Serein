@@ -1,0 +1,246 @@
+{
+  "base": "a08d5a7b6fef26959166708b690378bfd1e3da6c",
+  "environment": {
+    "os": "Debian13 x86_64",
+    "kernel": "6.18.44",
+    "cpu_count": 5,
+    "ram_bytes": 18882699264,
+    "rust": "1.98.1",
+    "renderer": "WGPU_BACKEND=gl, Xvfb :94 / Mesa software display",
+    "viewport": "1120x760 at100% dark",
+    "preview_profile": "opt-level1 / debug0, demo UI; baseline Cargo incremental default, after incremental disabled",
+    "limitation": "Auxiliary isolated previews only; full standard release package blocked by missing glib-2.0.pc. One pair, noisy, no improvement claim."
+  },
+  "baseline": {
+    "revision": "a08d5a7b6fef26959166708b690378bfd1e3da6c",
+    "command": [
+      "/workspace/scratch/serein-hw-capabilities/baseline-preview",
+      "--demo",
+      "--page=voice",
+      "--video-backend=experimental",
+      "--video-codec=h265",
+      "--capabilities=hardware",
+      "--interactive",
+      "--width=1120",
+      "--height=760"
+    ],
+    "warmup_s": 6,
+    "interaction": "100 wheel-down events in settings body, pointer moved out",
+    "duration_s": 15.11395733700192,
+    "interval_s": 1,
+    "process_cpu_one_core_percent": 0.0,
+    "peak_rss_bytes": 155234304,
+    "settled_rss_bytes": 155234304,
+    "children": [],
+    "executable_bytes": 83183560,
+    "samples": [
+      {
+        "elapsed_s": 1.0002031550102402,
+        "rss_bytes": 155234304
+      },
+      {
+        "elapsed_s": 2.001897853013361,
+        "rss_bytes": 155234304
+      },
+      {
+        "elapsed_s": 3.002289001000463,
+        "rss_bytes": 155234304
+      },
+      {
+        "elapsed_s": 4.030649150008685,
+        "rss_bytes": 155234304
+      },
+      {
+        "elapsed_s": 5.041934895009035,
+        "rss_bytes": 155234304
+      },
+      {
+        "elapsed_s": 6.049018052013707,
+        "rss_bytes": 155234304
+      },
+      {
+        "elapsed_s": 7.1004316239996115,
+        "rss_bytes": 155234304
+      },
+      {
+        "elapsed_s": 8.110285148010007,
+        "rss_bytes": 155234304
+      },
+      {
+        "elapsed_s": 9.110617097001523,
+        "rss_bytes": 155234304
+      },
+      {
+        "elapsed_s": 10.111002146004466,
+        "rss_bytes": 155234304
+      },
+      {
+        "elapsed_s": 11.111318929004483,
+        "rss_bytes": 155234304
+      },
+      {
+        "elapsed_s": 12.11179488300695,
+        "rss_bytes": 155234304
+      },
+      {
+        "elapsed_s": 13.112127208005404,
+        "rss_bytes": 155234304
+      },
+      {
+        "elapsed_s": 14.112451009001234,
+        "rss_bytes": 155234304
+      },
+      {
+        "elapsed_s": 15.112798633010243,
+        "rss_bytes": 155234304
+      }
+    ]
+  },
+  "after": {
+    "revision": "current-feature-source",
+    "command": [
+      "/workspace/scratch/serein-ui-preview/target/debug/serein-ui-task-preview",
+      "--demo",
+      "--page=voice",
+      "--video-backend=experimental",
+      "--video-codec=h265",
+      "--capabilities=hardware",
+      "--interactive",
+      "--width=1120",
+      "--height=760"
+    ],
+    "warmup_s": 6,
+    "interaction": "100 wheel-down events in settings body, pointer moved out",
+    "duration_s": 15.013771232988802,
+    "interval_s": 1,
+    "process_cpu_one_core_percent": 0.06660551732683541,
+    "peak_rss_bytes": 153792512,
+    "settled_rss_bytes": 153792512,
+    "children": [],
+    "executable_bytes": 84268632,
+    "samples": [
+      {
+        "elapsed_s": 1.000603879991104,
+        "rss_bytes": 153792512
+      },
+      {
+        "elapsed_s": 2.002846691990271,
+        "rss_bytes": 153792512
+      },
+      {
+        "elapsed_s": 3.0035163139982615,
+        "rss_bytes": 153792512
+      },
+      {
+        "elapsed_s": 4.003832042988506,
+        "rss_bytes": 153792512
+      },
+      {
+        "elapsed_s": 5.004114907991607,
+        "rss_bytes": 153792512
+      },
+      {
+        "elapsed_s": 6.004414593000547,
+        "rss_bytes": 153792512
+      },
+      {
+        "elapsed_s": 7.004709921995527,
+        "rss_bytes": 153792512
+      },
+      {
+        "elapsed_s": 8.0050220109988,
+        "rss_bytes": 153792512
+      },
+      {
+        "elapsed_s": 9.005324762998498,
+        "rss_bytes": 153792512
+      },
+      {
+        "elapsed_s": 10.005665524993674,
+        "rss_bytes": 153792512
+      },
+      {
+        "elapsed_s": 11.006550493999384,
+        "rss_bytes": 153792512
+      },
+      {
+        "elapsed_s": 12.007177080988185,
+        "rss_bytes": 153792512
+      },
+      {
+        "elapsed_s": 13.009079097988433,
+        "rss_bytes": 153792512
+      },
+      {
+        "elapsed_s": 14.012363820002065,
+        "rss_bytes": 153792512
+      },
+      {
+        "elapsed_s": 15.01268467400223,
+        "rss_bytes": 153792512
+      }
+    ]
+  },
+  "probe": {
+    "method": "One warmup and five fresh headless synthetic scans of actual Detector and linked FFmpeg. RSS polled every1ms; sampled peaks may miss short-lived allocations. No usable GPU devices.",
+    "runs": [
+      {
+        "run": 0,
+        "warmup": true,
+        "elapsed_s": 0.2787686599913286,
+        "parent_peak_rss_bytes": 8417280,
+        "child_peak_rss_bytes": 4087808,
+        "maximum_simultaneous_children": 1,
+        "children_observed": 9
+      },
+      {
+        "run": 1,
+        "warmup": false,
+        "elapsed_s": 0.29740284600120503,
+        "parent_peak_rss_bytes": 8404992,
+        "child_peak_rss_bytes": 8392704,
+        "maximum_simultaneous_children": 1,
+        "children_observed": 9
+      },
+      {
+        "run": 2,
+        "warmup": false,
+        "elapsed_s": 0.26229364800383337,
+        "parent_peak_rss_bytes": 8437760,
+        "child_peak_rss_bytes": 3919872,
+        "maximum_simultaneous_children": 1,
+        "children_observed": 9
+      },
+      {
+        "run": 3,
+        "warmup": false,
+        "elapsed_s": 0.2649091900093481,
+        "parent_peak_rss_bytes": 8622080,
+        "child_peak_rss_bytes": 5197824,
+        "maximum_simultaneous_children": 1,
+        "children_observed": 9
+      },
+      {
+        "run": 4,
+        "warmup": false,
+        "elapsed_s": 0.26285624800948426,
+        "parent_peak_rss_bytes": 8482816,
+        "child_peak_rss_bytes": 8396800,
+        "maximum_simultaneous_children": 1,
+        "children_observed": 8
+      },
+      {
+        "run": 5,
+        "warmup": false,
+        "elapsed_s": 0.2742524610075634,
+        "parent_peak_rss_bytes": 8425472,
+        "child_peak_rss_bytes": 4034560,
+        "maximum_simultaneous_children": 1,
+        "children_observed": 9
+      }
+    ],
+    "median_elapsed_s": 0.2649091900093481,
+    "median_parent_peak_rss_bytes": 8437760,
+    "median_child_peak_rss_bytes": 5197824
+  }
+}

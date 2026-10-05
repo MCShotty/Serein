@@ -32,6 +32,7 @@ const TEXTURE_BYTES: usize = 64 * 1024 * 1024;
 /// Longest edge for string-keyed artwork: stickers, picker previews, banners and activity art.
 pub const EMBED_EDGE: u32 = 512;
 const REQUESTS: usize = 128;
+const ATTEMPTS: usize = 2048;
 const RETRY: Duration = Duration::from_secs(5);
 
 struct AvatarKey {
@@ -269,19 +270,32 @@ impl Avatars {
 	}
 	fn request(&mut self, key: String) {
 		let now = Instant::now();
-		self.attempts
-			.retain(|_, (at, failed)| !*failed || now.duration_since(*at) < RETRY);
 		if key.len() <= 2054
-			&& self.attempts.len() < 2048
 			&& self.requests.len() < REQUESTS
 			&& self
 				.attempts
 				.get(&key)
 				.is_none_or(|(at, failed)| *failed && now.duration_since(*at) >= RETRY)
+			&& self.reserve_attempt(now)
 		{
 			self.attempts.insert(key.clone(), (now, false));
 			self.requests.push(key);
 		}
+	}
+	fn reserve_attempt(&mut self, now: Instant) -> bool {
+		self.attempts
+			.retain(|_, (at, failed)| !*failed || now.duration_since(*at) < RETRY);
+		if self.attempts.len() >= ATTEMPTS
+			&& let Some(oldest) = self
+				.attempts
+				.iter()
+				.filter(|(_, (_, failed))| *failed)
+				.min_by_key(|(_, (at, _))| *at)
+				.map(|(key, _)| key.clone())
+		{
+			self.attempts.remove(&oldest);
+		}
+		self.attempts.len() < ATTEMPTS
 	}
 	pub fn accept(&mut self, ctx: &egui::Context, key: String, image: Option<ColorImage>) {
 		if key.starts_with("media:") {
@@ -744,6 +758,9 @@ impl Avatars {
 		}
 		if !self.textures.contains_key(&key) {
 			if self.attempts.get(&key).is_some_and(|(_, failed)| *failed) {
+				return false;
+			}
+			if !self.reserve_attempt(Instant::now()) {
 				return false;
 			}
 			self.attempts.insert(key.clone(), (Instant::now(), false));
@@ -1283,6 +1300,31 @@ fn synthetic_gif(gif: &model::Gif) -> ColorImage {
 #[cfg(test)]
 mod tests {
 	#[test]
+	fn malformed_placeholders_keep_attempts_bounded_and_leave_room_for_real_images() {
+		use super::*;
+		let ctx = egui::Context::default();
+		let mut avatars = Avatars::default();
+		ctx.run_ui(Default::default(), |ui| {
+			for seed in 0..ATTEMPTS as u32 * 2 {
+				let mut hash = seed.to_le_bytes().to_vec();
+				hash.push(0);
+				assert!(!avatars.paint_placeholder(ui, &hash, ui.max_rect(), 0, false));
+				assert!(avatars.attempts.len() <= ATTEMPTS);
+			}
+			assert_eq!(avatars.attempts.len(), ATTEMPTS);
+			avatars.request("default-0".into());
+			assert_eq!(avatars.take_requests(), ["default-0"]);
+			avatars.accept(
+				&ctx,
+				"default-0".into(),
+				Some(ColorImage::filled([1, 1], egui::Color32::WHITE)),
+			);
+			assert!(avatars.textures.contains_key("default-0"));
+		})
+		.drop_without_applying_deltas();
+	}
+
+	#[test]
 	fn stickers_obey_animation_preferences_and_demo_stays_offline() {
 		let ctx = egui::Context::default();
 		let sticker = model::Sticker {
@@ -1773,6 +1815,53 @@ mod tests {
 		assert_eq!(images.media.bytes(), 64 * 32 * 4);
 		frame(&mut images, false);
 		assert_eq!(images.media.bytes(), 0);
+	}
+
+	#[test]
+	fn closing_viewer_releases_full_resolution_pixels_after_inline_repaint() {
+		let ctx = egui::Context::default();
+		let mut images = Avatars::default();
+		let media = model::EmbedMedia {
+			url: Some("https://cdn.discordapp.com/attachments/1/2/a.png".into()),
+			width: 4096,
+			height: 2048,
+			..Default::default()
+		};
+		let frame = |images: &mut Avatars, surface: Surface| {
+			ctx.run_ui(Default::default(), |ui| {
+				let size = if surface == Surface::Viewer {
+					egui::vec2(100.0, 80.0)
+				} else {
+					egui::vec2(40.0, 40.0)
+				};
+				images.show_media(ui, &media, size, false, surface);
+			})
+			.drop_without_applying_deltas();
+			images.take_requests()
+		};
+		// A viewer request can finish before the inline thumbnail already in flight.
+		let inline = frame(&mut images, Surface::Inline).pop().unwrap();
+		let viewer = frame(&mut images, Surface::Viewer).pop().unwrap();
+		assert_ne!(inline, viewer);
+		images.accept(
+			&ctx,
+			viewer.clone(),
+			Some(ColorImage::filled([4, 2], egui::Color32::WHITE)),
+		);
+		frame(&mut images, Surface::Viewer);
+		assert_eq!(images.media.bytes(), 4 * 2 * 4);
+		// The timeline paints its inline image before the closed viewer is swept.
+		frame(&mut images, Surface::Inline);
+		assert!(images.texture_id(&viewer).is_none());
+		assert_eq!(images.media.bytes(), 0);
+		images.accept(
+			&ctx,
+			inline.clone(),
+			Some(ColorImage::filled([2, 1], egui::Color32::WHITE)),
+		);
+		frame(&mut images, Surface::Inline);
+		assert!(images.texture_id(&inline).is_some());
+		assert_eq!(images.media.bytes(), 2 * 4);
 	}
 
 	/// Offline settled media frames; no window, GPU, network, or account access.

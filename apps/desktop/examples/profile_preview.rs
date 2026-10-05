@@ -498,7 +498,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let args: Vec<_> = std::env::args().skip(1).collect();
 	let value = |prefix: &str| args.iter().find_map(|arg| arg.strip_prefix(prefix));
 	if !args.iter().any(|arg| arg == "--demo") {
-		return Err("Usage: profile_preview --demo [--output=PATH.png | --smoke | --interactive] [--page=stickers|slash-commands|slash-command-search|slash-command-options|profile|markdown|profile-card|member-tags|dm-tags|account|appearance|general|keybinds|extensions|server|server-engagement|server-safety|server-emoji|server-stickers|server-members|server-roles|server-invites|server-integrations|server-audit-log] [--command=help|weather] [--themes] [--extension=ID] [--thumbnail] [--width=1120] [--height=760] [--scroll=PIXELS] [--light] [--transparency=0..100]".into());
+		return Err("Usage: profile_preview --demo [--output=PATH.png | --smoke | --interactive] [--page=stickers|slash-commands|slash-command-search|slash-command-options|profile|markdown|profile-card|member-tags|dm-tags|account|appearance|voice|general|keybinds|extensions|server|server-engagement|server-safety|server-emoji|server-stickers|server-members|server-roles|server-invites|server-integrations|server-audit-log] [--command=help|weather] [--themes] [--extension=ID] [--thumbnail] [--width=1120] [--height=760] [--scroll=PIXELS] [--light] [--transparency=0..100]".into());
 	}
 	let smoke = args.iter().any(|arg| arg == "--smoke");
 	let interactive = args.iter().any(|arg| arg == "--interactive");
@@ -521,7 +521,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			| "dm-tags"
 			| "account"
 			| "appearance"
-			| "general"
+			| "voice" | "general"
 			| "keybinds"
 			| "extensions"
 			| "server"
@@ -539,7 +539,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			| "forum-settings"
 			| "friends"
 	) {
-		return Err("Page must be profile, markdown, profile-card, member-tags, dm-tags, account, appearance, general, keybinds, extensions, slash-commands, slash-command-search, slash-command-options, server, server-engagement, server-safety, server-emoji, server-stickers, server-members, server-roles, server-invites, server-integrations or server-audit-log".into());
+		return Err("Page must be profile, markdown, profile-card, member-tags, dm-tags, account, appearance, voice, general, keybinds, extensions, slash-commands, slash-command-search, slash-command-options, server, server-engagement, server-safety, server-emoji, server-stickers, server-members, server-roles, server-invites, server-integrations or server-audit-log".into());
 	}
 	let slash_command = value("--command=").unwrap_or("help").to_owned();
 	if !matches!(slash_command.as_str(), "help" | "weather") {
@@ -797,6 +797,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 					});
 				}
 			} else {
+				if page == "voice" {
+					use model::voice_settings::{VideoBackend, VideoCodec};
+					if let Some(backend) = args
+						.iter()
+						.find_map(|arg| arg.strip_prefix("--video-backend="))
+					{
+						messaging.video_settings.backend = match backend {
+							"stable" => VideoBackend::Stable,
+							"experimental" => VideoBackend::Experimental,
+							_ => return Err("Video backend must be stable or experimental".into()),
+						};
+					}
+					if let Some(codec) = args
+						.iter()
+						.find_map(|arg| arg.strip_prefix("--video-codec="))
+					{
+						messaging.video_settings.codec = match codec {
+							"h264" => VideoCodec::H264,
+							"h265" => VideoCodec::H265,
+							"av1" => VideoCodec::Av1,
+							_ => return Err("Video codec must be h264, h265 or av1".into()),
+						};
+					}
+					if !messaging.video_settings.is_valid() {
+						return Err("Stable supports H.264 only".into());
+					}
+				}
 				messaging.preview_settings(
 					if page == "extensions" && args.iter().any(|arg| arg == "--themes") {
 						"themes"

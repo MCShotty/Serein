@@ -1552,6 +1552,7 @@ name = "discord-voice"
 version = "0.1.0"
 dependencies = [
  "block2 0.6.2",
+ "cc",
  "chacha20poly1305",
  "client-core",
  "cpal",
@@ -1579,6 +1580,7 @@ dependencies = [
  "openmls_basic_credential",
  "openmls_rust_crypto",
  "opus2",
+ "pkg-config",
  "platform",
  "rtrb",
  "screencapturekit",
@@ -6325,6 +6327,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "image",
+ "libc",
  "local-store",
  "log",
  "md4",

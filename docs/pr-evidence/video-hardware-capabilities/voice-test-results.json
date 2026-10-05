@@ -1,0 +1,65 @@
+{
+  "executable": "/workspace/scratch/serein-hw-capabilities/native/voice-current-source-build/discord-voice-current-tests",
+  "executable_sha256": "a6e3f1941390a0ce8a7b7916fcba7d183ab3a12468ad0567c8f7a9164267a126",
+  "exported_openh264_symbols": [],
+  "runs": [
+    {
+      "name": "capability-focused",
+      "arguments": [
+        "video_capabilities::tests::",
+        "--nocapture"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 0.2545044200087432,
+      "log": "/workspace/scratch/serein-hw-capabilities/native/capability-focused.log",
+      "log_sha256": "712002f9a6c37f4fa85fb37ba6f90ff6ffbe497399581a9157abb3db91af03d4",
+      "selected_output": [
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 97 filtered out; finished in 0.03s"
+      ]
+    },
+    {
+      "name": "current-ubuntu-2.4-exact",
+      "arguments": [
+        "video_backend::native::tests::compact_i420_chroma_strides_encode_an_854_pixel_picture",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 3.4957614970044233,
+      "log": "/workspace/scratch/serein-hw-capabilities/native/current-ubuntu-2.4-exact.log",
+      "log_sha256": "aa9054de4eca500eeb6fce3b09b50b88d79201d9146292d01b8a47aecc54e739",
+      "selected_output": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 100 filtered out; finished in 3.41s"
+      ]
+    },
+    {
+      "name": "current-ubuntu-2.4-full-suite",
+      "arguments": [
+        "--nocapture"
+      ],
+      "returncode": 101,
+      "elapsed_seconds": 37.54475185699994,
+      "log": "/workspace/scratch/serein-hw-capabilities/native/current-ubuntu-2.4-full-suite.log",
+      "log_sha256": "06c0172dc5409b6399702e639ac0f62c38f05396d2b355fdef149be53356d0f9",
+      "selected_output": [
+        "test result: FAILED. 96 passed; 1 failed; 4 ignored; 0 measured; 0 filtered out; finished in 37.47s"
+      ]
+    },
+    {
+      "name": "current-local-2.6-full-suite",
+      "arguments": [
+        "--nocapture"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 35.964370276997215,
+      "log": "/workspace/scratch/serein-hw-capabilities/native/current-local-2.6-full-suite.log",
+      "log_sha256": "145a574597d959ff714e0140b34072e617e9ca1cc70e8a73a3822ce7b31bacea",
+      "selected_output": [
+        "test result: ok. 97 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 35.87s"
+      ]
+    }
+  ],
+  "old_plugin_sha256": "cf8cb9dba124543790bb82050d20dfffa9e756f42d985bea2718d961d8c904e2",
+  "local_plugin_sha256": "45bfc6fd0c748354eed14d4c0807ce5ecb21fbf83e15dda88c9860afbf2148f5"
+}

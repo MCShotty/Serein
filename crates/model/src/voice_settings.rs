@@ -1,5 +1,131 @@
-//! Device-local microphone processing. Profiles leave the user's custom settings intact.
+//! Device-local voice and video settings. Profiles preserve custom microphone settings.
 use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VideoBackend {
+	#[default]
+	Stable,
+	Experimental,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VideoCodec {
+	#[default]
+	H264,
+	H265,
+	Av1,
+}
+
+impl VideoCodec {
+	pub const ALL: [Self; 3] = [Self::H264, Self::H265, Self::Av1];
+
+	pub const fn index(self) -> usize {
+		match self {
+			Self::H264 => 0,
+			Self::H265 => 1,
+			Self::Av1 => 2,
+		}
+	}
+
+	pub const fn key(self) -> &'static str {
+		match self {
+			Self::H264 => "h264",
+			Self::H265 => "h265",
+			Self::Av1 => "av1",
+		}
+	}
+}
+
+/// Hardware-only FFmpeg engines. Capability results are session-local, never preferences.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HardwareBackend {
+	Nvenc,
+	Amf,
+	Qsv,
+	VideoToolbox,
+}
+
+impl HardwareBackend {
+	pub const ALL: [Self; 4] = [Self::Nvenc, Self::Amf, Self::Qsv, Self::VideoToolbox];
+
+	pub const fn index(self) -> usize {
+		match self {
+			Self::Nvenc => 0,
+			Self::Amf => 1,
+			Self::Qsv => 2,
+			Self::VideoToolbox => 3,
+		}
+	}
+
+	pub const fn key(self) -> &'static str {
+		match self {
+			Self::Nvenc => "nvenc",
+			Self::Amf => "amf",
+			Self::Qsv => "qsv",
+			Self::VideoToolbox => "videotoolbox",
+		}
+	}
+
+	pub const fn name(self) -> &'static str {
+		match self {
+			Self::Nvenc => "NVIDIA NVENC",
+			Self::Amf => "AMD AMF",
+			Self::Qsv => "Intel Quick Sync",
+			Self::VideoToolbox => "Apple VideoToolbox",
+		}
+	}
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ProbeResult {
+	#[default]
+	Pending,
+	Available,
+	Unavailable,
+	Failed,
+	TimedOut,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HardwareSupport {
+	pub camera: ProbeResult,
+	pub screen: ProbeResult,
+}
+
+/// A fixed codec/backend matrix bounds scan state independently of driver output.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VideoCapabilities {
+	pub support: [[HardwareSupport; 4]; 3],
+}
+
+impl VideoCapabilities {
+	pub fn codec(&self, codec: VideoCodec) -> &[HardwareSupport; 4] {
+		&self.support[codec.index()]
+	}
+
+	pub fn set(&mut self, backend: HardwareBackend, codec: VideoCodec, value: HardwareSupport) {
+		self.support[codec.index()][backend.index()] = value;
+	}
+
+	/// Only a complete negative scan can disable a codec; failed/timed-out checks are unknown.
+	pub fn confirmed_unavailable(&self, codec: VideoCodec) -> bool {
+		self.codec(codec).iter().all(|support| {
+			support.camera == ProbeResult::Unavailable && support.screen == ProbeResult::Unavailable
+		})
+	}
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VideoSettings {
+	pub backend: VideoBackend,
+	pub codec: VideoCodec,
+}
+impl VideoSettings {
+	pub fn is_valid(self) -> bool {
+		self.backend == VideoBackend::Experimental || self.codec == VideoCodec::H264
+	}
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InputProfile {

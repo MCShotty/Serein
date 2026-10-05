@@ -4207,3 +4207,510 @@ three sources, 220/560/1260-point widths, light/dark themes and scales 1/2.
 The exact announcement failed on the baseline because the following text began
 at y=76 while its quote rail extended to y=216; explicit row boundaries pass.
 `cargo xtask check` and strict Clippy for the demo preview passed.
+
+## FFmpeg camera and screen encoding — October 4, 2026
+
+Baseline `6313e271e9c34b39069eb20787afb1476741b21c` is compared with the
+runtime source hashes in [the measurements](pr-evidence/ffmpeg-video-encoding/measurements.json).
+Debian 13 / Linux x86_64 container, Intel Xeon Platinum 8573C, five visible
+logical CPUs, 18,882,699,264 B RAM, GStreamer 1.26.2, pinned Rust 1.98.1 and
+locked dependencies. No build ran during measurement. All inputs are synthetic;
+no account, camera, microphone or native desktop capture was used.
+
+| Metric / method | Baseline | After | Delta |
+| --- | ---: | ---: | ---: |
+| 300 camera frames, median of five release runs | 1,271.643 ms | 1,061.770 ms | −209.873 ms / −16.50% |
+| Native preview CPU, mean of 40 one-second samples, one core | 371.618% | 384.722% | +13.105 percentage points |
+| Native preview sampled peak RSS, maximum over two launches | 204,468,224 B | 202,825,728 B | -1,642,496 B / -0.80% |
+| Native preview settled RSS, median over two launches | 204,244,992 B | 202,770,432 B | -1,474,560 B / -0.72% |
+| Standard voice-inclusive executable | 85,705,128 B | 85,702,192 B | −2,936 B / −0.0034% |
+| Installed regular files | 90,219,249 B | 104,848,408 B | +14,629,159 B / +16.22% |
+| Complete compressed DEB | 44,277,080 B | 56,252,124 B | +11,975,044 B / +27.05% |
+
+The camera fixture calls the actual `CameraEncoder` on a deterministic 640×480
+RGB gradient, including allocation, conversion and H.264 encoding. Both target
+600 kbit/s with independent IDRs and a 128-KiB packet cap. The same test-only
+function was added to the detached baseline after its production package was
+built. Each process warms 30 frames and times 300; one process warmup precedes
+five alternating measured pairs. Baseline elapsed range: 1,213.192–1,327.404 ms;
+after: 1,048.393–1,075.687 ms. Each emits 300 packets (5,952,600 vs 5,831,668 B).
+The old camera uses one OpenH264 thread; FFmpeg uses two and different wrapper
+defaults. This is a fixture result, not a quality-matched or hardware speed claim.
+Component-process RSS is also sampled every 10 ms in the raw evidence; those
+samples can miss brief peaks and do not describe whole-application memory.
+
+Native sampling uses the existing offline `profile_preview --demo --interactive
+--page=appearance` at 1120×760, scale 1, dark, isolated Xvfb/X11 with forced Mesa
+lavapipe Vulkan and its mapped driver verified. Both release examples use
+`--no-default-features --features demo` and final-example `-C lto=off`. After eight
+seconds, move the pointer to (1100,740), settle three seconds, then sample twenty
+one-second CPU/RSS intervals. Two fresh launches per revision reverse the order;
+settled RSS is each launch's last-five-sample median. No helper children appeared.
+
+The software renderer consumes several cores in this fixture. Per-launch mean
+CPU pairs are 356.130→385.475%, then 387.105→383.970%; the direction reverses.
+A thread sample found five `llvmpipe` workers doing most of the CPU work. These
+fixtures use no media adapters, and the UI implementation is unchanged. This
+small launch set does not isolate encoding-related idle cost or establish an
+application performance improvement. Small RSS differences also include driver
+and allocator variation. Startup/frame p95, GPU memory, active screen conversion,
+hardware encoding and live-call latency remain unmeasured.
+
+Both standard `cargo xtask package` DEBs pass smoke and shared-library closure
+checks. They use normal fat LTO, one codegen unit, stripped executables and no
+default/demo features. Installed bytes sum regular extracted files, excluding
+symlinks and allocation overhead. The increase includes three replaceable codec
+libraries, complete FFmpeg source, exact build recipe/namespace patch and notices;
+there are 225 baseline files and 239 after. The extracted new package resolves
+its private libraries under `usr/lib/serein` through relative RPATH before the
+development-prefix fallback.
+
+The measured Linux package retains its exact builder source/provenance. A final
+Windows ARM64-only assembler flag repair leaves Linux configure options and
+native outputs unchanged; it is verified by the six packaging tests. Metadata
+was not restamped. Future native builds use a fresh prefix for the new recipe.
+The [evidence README](pr-evidence/ffmpeg-video-encoding/README.md) records commands,
+checks and limitations. Full `cargo xtask check` passes (1,162 passing test
+executions, 26 ignored). ASan/UBSan ABI, independent H.264 decode, synthetic Linux
+screen/readiness/pressure and offline packaging regressions pass. NVENC,
+VideoToolbox and native Windows/macOS CI remain unverified locally.
+
+Outgoing encoding bounds remain 128 KiB per camera packet and 2 MiB per screen
+packet, with at most four pending native packets. The encoder uses two camera
+threads or four screen threads, no B-frames/lookahead and a bounded single latest
+raw screen frame. These are component limits, not an application-wide RAM cap.
+
+## FFmpeg AMD AMF and Intel Quick Sync — October 5, 2026
+
+The preserved, verified initial FFmpeg migration `b4c32bb98edbe16e07b60bf8b2d2a138eb536e88`
+is compared with the vendor extension's final source/binary hashes in
+[the raw measurements](pr-evidence/ffmpeg-vendor-encoding/measurements.json).
+The original project baseline `6313e27` and initial migration measurements above
+remain historical evidence. This comparison adds AMD AMF and Intel QSV while
+retaining NVENC/VideoToolbox and software fallback. Linux QSV uses a VA driver
+device; `h264_vaapi` encoding remains excluded.
+
+Debian 13 / Linux x86_64 Docker, Intel Xeon Platinum 8573C, five visible logical
+CPUs, 18,882,699,264 B RAM, GStreamer 1.26.2, pinned Rust 1.98.1 and locked
+dependencies. Compiler work was serialized and stopped before measurement.
+No GPU device, account, camera, microphone or native desktop capture was used.
+
+| Metric / method | FFmpeg baseline | With AMD/Intel | Delta |
+| --- | ---: | ---: | ---: |
+| 300 camera frames, median of five release runs | 986.725 ms | 979.601 ms | −7.124 ms / −0.72% |
+| Native preview CPU, mean of 40 one-second samples, one core | 347.475% | 336.945% | −10.530 percentage points |
+| Native preview sampled peak RSS, maximum over two launches | 202,584,064 B | 201,699,328 B | −884,736 B / −0.44% |
+| Native preview settled RSS, median over two launches | 201,234,432 B | 201,469,952 B | +235,520 B / +0.12% |
+| Standard voice-inclusive executable | 85,702,192 B | 85,704,880 B | +2,688 B / +0.0031% |
+| Installed regular files | 104,848,408 B | 120,678,267 B | +15,829,859 B / +15.10% |
+| Complete compressed DEB | 56,252,124 B | 70,674,624 B | +14,422,500 B / +25.64% |
+
+The actual `CameraEncoder` workload includes RGB allocation/conversion and
+encoding of a deterministic 640×480 gradient. Each process warms 30 frames,
+then times 300. One process warmup precedes five alternating measured pairs.
+Baseline range is 967.395–1,005.343 ms; after is 973.157–1,021.608 ms. Both
+produce 300 independent packets and exactly 5,831,668 encoded bytes per run.
+The ranges overlap; no software speed improvement is claimed. Camera-process
+RSS sampled every 10 ms is retained in the raw data and can miss brief peaks.
+Both revisions use the same software codec/tuning on this machine; hardware
+speed, quality and active screen conversion remain unmeasured.
+
+The native fixture uses `profile_preview --demo --interactive --page=appearance`
+at 1120×760, dark, scale 1, isolated Xvfb :88 and forced Mesa lavapipe Vulkan,
+with its mapped driver verified. Release builds use no default features, demo
+and final-example `-C lto=off`. Eight seconds of warmup precede a pointer move
+to (1100,740), three seconds of settling and twenty one-second CPU/RSS samples.
+Two fresh pairs reverse order. Per-launch baseline/after mean CPU is
+356.775→344.280%, then 338.175→329.610%. There are no helper children.
+Settled RSS is each launch's last-five-sample median. The preview has no media
+adapters and consumes several cores in software rendering; this small sample
+does not establish encoder-related or production-idle CPU/RAM improvement.
+Small RSS differences include allocator/driver variation. Startup/full-frame
+p95 latency, GPU memory, AMF IDR reset cost and live calls remain unmeasured.
+
+The standard package passes Debian smoke and host shared-library closure.
+Normal fat LTO, one codegen unit, stripping and no default/demo features are
+unchanged. Installed bytes sum regular extracted files, excluding symlinks and
+allocation overhead (239→248 files). The extracted executable resolves all
+three private codec libraries from `usr/lib/serein` before its development-prefix
+fallback. The final DEB includes 25,923,241 bytes of source archives, three
+replaceable codec libraries and notices. The source-built static oneVPL
+dispatcher, exact AMF public headers and OpenH264 rebuild source explain most
+of the package increase. The OpenH264 subset omits only root test media and
+retains every source/build/license entry and file mode. Compared with the
+original project package, final executable/installed/DEB sizes are
+85,704,880 / 120,678,267 / 70,674,624 B, versus
+85,705,128 / 90,219,249 / 44,277,080 B; package growth is the main tradeoff.
+
+The delivery prefix and shipped builder match recipe SHA-256
+`5daeee263ee108de8958e315dc55ed3777cfb027d86c5e92f45bc3ee3a3e5be2`.
+Full `cargo xtask check` passes (1,166 test executions, 26 ignored).
+Strict C11 ASan/UBSan/leak ABI, NV12/canary/packet bounds, actual native option
+compatibility for six hardware profile combinations, independent decode and
+both synthetic Linux screen variants pass. FFmpeg native/package checks pass
+10 tests with the Windows-only import check skipped. Debian, four Flatpak
+preparation tests and the synthetic signing fixture pass. See the
+[evidence README](pr-evidence/ffmpeg-vendor-encoding/README.md) for reproduction.
+Physical GPUs, native Windows/macOS, actual Nix/Flatpak and other Linux package
+formats remain unverified. GPU drivers are not redistributed.
+
+Component caps remain 128 KiB per camera packet, 2 MiB per screen packet and
+four pending native pictures. QSV packs directly into owned NV12 storage and
+its patched packet path uses the capped allocator before allocation/copying.
+Returned packets must fit their actual backing allocation before inspection.
+Failed backends remain excluded through bitrate restarts. AMF Main-profile IDR
+requests reopen the context only after output has started; pending startup
+output can drain and camera GOP 1 avoids a per-frame restart. SDK startup,
+polling and shutdown can still block; bounded queues do not bound native call
+time or remove the worker retirement barrier.
+
+
+## Video backend and codec settings — October 5, 2026
+
+Compare the verified local starting commit `65811f20a7dea160ba4c78459c63dd339a794a5a`
+(the AMD/Intel FFmpeg stage) with Stable/Experimental and codec selection. Remote
+base remains `6313e27`; this comparison measures the latest settings/codec stage,
+not the entire branch against original main. Baseline package, native preview and
+camera test executable were preserved before any new Cargo build. All work is
+synthetic/offline, with no physical media or account session. Raw samples and
+identities are in [video settings evidence](pr-evidence/video-backend-settings/README.md)
+and its [measurements.json](pr-evidence/video-backend-settings/measurements.json).
+
+| Metric / method | Baseline | After | Delta |
+| --- | ---: | ---: | ---: |
+| Standard executable, bytes | 85,704,880 | 85,746,216 | 41,336 / +0.05% |
+| Installed regular files, bytes | 120,678,267 | 120,976,132 | 297,865 / +0.25% |
+| Compressed DEB, bytes | 70,674,624 | 70,795,724 | 121,100 / +0.17% |
+| FFmpeg software, 300 camera frames | 993.070 ms | 1,024.365 ms | 31.295 ms / +3.15% |
+| Default: FFmpeg → Stable software, 300 frames | 1,070.348 ms | 961.377 ms | -108.971 ms / -10.18% |
+| FFmpeg camera sampled peak RSS, median | 19.855 MiB | 20.391 MiB | 0.535 MiB / +2.70% |
+| Default camera sampled peak RSS, median | 19.957 MiB | 22.145 MiB | 2.188 MiB / +10.96% |
+| Voice & Video idle mean CPU, one core | 0.000% | 0.000% | 0.000 percentage points; below sampling resolution |
+| Idle sampled peak RSS | 194.012 MiB | 193.664 MiB | -0.348 MiB / -0.18% |
+| Idle settled RSS | 193.578 MiB | 193.082 MiB | -0.496 MiB / -0.26% |
+
+Debian 13.7, Linux 6.18.44, Intel Xeon Platinum 8573C, five visible logical CPUs,
+18,882,699,264 bytes RAM, Rust 1.98.1 and locked dependencies. Standard voice-enabled
+`cargo xtask package` uses fat LTO, one codegen unit and stripping; the 248-file DEB
+smoke and source/library/notice identity checks passed. Installed bytes sum regular
+files, excluding symlink/allocation overhead. The native prefix and shipped recipe
+match SHA-256 `3e6f390ecf333833313c7aaee760cd53ade18d741f535b17bdc32ee1d7538c59`.
+
+Camera uses unchanged deterministic 640×480 RGB data, 30 warmup frames and
+300 timed conversion/allocation/encoding calls. Each comparison has one process
+warmup and five alternating baseline/after pairs; RSS is sampled every 10 ms.
+The FFmpeg pair ranges overlap (981.882..1120.076 → 1000.103..1079.431 ms); its
+median is 3.15% higher, while all runs produce 300 packets/5,831,668 bytes. The
+restored Stable default is measured separately: 978.513..1289.284 →
+948.913..988.283 ms, 300 packets/5,830,468 after bytes. Its median is 10.18% lower
+in that set but sampled peak test-process RSS is 2.188 MiB higher. Backend/thread
+settings differ, visual quality is unmeasured, and baseline medians drifted
+between sets; these observations do not establish general performance gains.
+An initial camera set overlapped the synthetic Linux check and was excluded;
+reported sets ran after all compilation and checks stopped.
+
+Idle uses the release native preview (`--no-default-features --features demo`,
+example link `-C lto=off`) at 1120×760, dark, scale 1, Xvfb :88 and verified Mesa
+lavapipe Vulkan. Each launch warms eight seconds on Appearance, clicks Voice &
+Video, moves the pointer outside controls, settles three seconds, then records
+twenty one-second CPU/RSS samples. Two fresh pairs reverse launch order. CPU is
+percent of one core and every value was below the sampling resolution; settled
+RSS is the last five samples' median, aggregated across launches. Baseline peak
+RSS runs are 194.012/193.145 MiB versus 192.500/193.664 after. The small aggregate
+RSS difference is within variation; no idle improvement is claimed and no
+children were observed. Startup/frame p95, GPU memory and active screen quality
+are unmeasured.
+
+`cargo xtask check` passed formatting, strict workspace/all-target Clippy, 1,183
+passing test executions (27 ignored), no-default-features and policy. Native
+strict C11/ASan/UBSan/buffer bounds, 18 codec hardware-option combinations without
+devices, exact encoder-only bundle registry, both synthetic Linux screen variants
+and package preparation checks passed. Hardware H.265/AV1 requires Experimental
+and explicit codec negotiation; only H.264 has bundled software fallback and
+incoming decoding remains H.264. Physical GPUs/capture, official-client live
+compatibility (including AV1 DAVE framing), Windows/macOS, actual Nix/Flatpak
+packages, dedicated license CI and remote checks remain unverified.
+
+## Repository-wide lifecycle and state bug hunt — October 5, 2026
+
+Compare the verified local starting commit `b6c32b6ddfa3bef63f01bc9b101de5aa20203017`
+with the repository-wide bug-hunt fixes. The baseline and after binaries were built
+from isolated worktrees with locked dependencies. Testing used synthetic offline data
+and did not require an account, physical capture device or GPU. Raw samples, artifact
+identities and environment details are in the
+[bug-hunt measurements](pr-evidence/repository-bug-hunt/measurements.json).
+
+| Metric / method | Baseline | After | Delta |
+| --- | ---: | ---: | ---: |
+| Standard executable, bytes | 85,746,216 | 85,796,648 | 50,432 / +0.059% |
+| Installed regular files, bytes | 120,976,132 | 121,026,564 | 50,432 / +0.042% |
+| Compressed DEB, bytes | 70,795,724 | 70,809,936 | 14,212 / +0.020% |
+| Reducer replay median, 100,000 events | 79.729 ms | 80.958 ms | 1.229 ms / +1.54% |
+| Appearance idle mean CPU, one core | 360.955% | 347.380% | -13.575 percentage points / -3.76% |
+| Appearance idle sampled peak RSS | 192.594 MiB | 194.070 MiB | 1.477 MiB / +0.77% |
+
+The environment was Debian 13.7 on Linux 6.18.44 x86_64, Intel Xeon Platinum
+8573C, five visible logical CPUs, 18,882,699,264 bytes RAM and Rust 1.98.1.
+The standard `cargo xtask package` build used the normal release profile and
+passed the 248-file DEB smoke covering its executable, desktop entry, metadata,
+ownership, content and host shared-library closure. Installed size sums regular
+file content and excludes filesystem allocation and symlink overhead.
+
+The reducer benchmark replays 100,000 deterministic gateway events into a fresh
+process. After one warmup per revision, five baseline/after pairs alternated order.
+Baseline samples ranged from 73.512 to 111.762 ms and after samples from 75.801 to
+94.434 ms. Both revisions retained 500 records with an estimated timeline size of
+331,992 to 332,477 bytes. The overlapping ranges and 1.54% median difference are
+consistent with run-to-run noise, so no reducer regression or improvement is
+claimed.
+
+The native idle check used the release `profile_preview` example with demo data on
+the Appearance page at 1120×760 under Xvfb and Mesa lavapipe Vulkan. Each revision
+warmed for eight seconds, settled for three seconds after pointer movement, then
+recorded twenty one-second CPU and RSS samples. Neither process spawned children.
+After mean CPU was 13.575 percentage points lower and sampled RSS was 1,548,288
+bytes higher. This single software-renderer pair does not establish a performance
+change; frame timing, GPU memory and active media workloads remain unmeasured.
+
+`cargo xtask check` passed the full workspace tests, strict all-target Clippy,
+documentation, no-default-feature build and policy checks. Focused GStreamer,
+voice, packaging and repository-script tests also passed, followed by the standard
+package smoke. Native Windows/macOS builds, physical GPU and capture devices, live
+accounts, live Wayland compositor events and extended soak testing remain
+unverified.
+
+## Encoder build and Windows update regression fixes — October 5, 2026
+
+Compare the verified package from starting commit
+`8cd15690c060f8d2ffde2f04c736ab300d6cba84` with the compiler, Flatpak dependency,
+Windows migration and CI fixes. Artifact identities and local validation results
+are in the [regression measurements](pr-evidence/encoder-regression-fixes/measurements.json).
+The baseline is the retained, verified standard package from the preceding stage.
+
+| Metric / method | Baseline | After | Delta |
+| --- | ---: | ---: | ---: |
+| Standard executable, bytes | 85,796,648 | 85,796,648 | 0 / 0% |
+| Installed regular files, bytes | 121,026,564 | 121,029,988 | 3,424 / +0.0028% |
+| Compressed DEB, bytes | 70,809,936 | 70,810,788 | 852 / +0.0012% |
+
+Both packages contain 248 regular files. Measurement uses one normal
+voice-enabled `cargo xtask package` release build per revision, with locked
+dependencies, fat LTO, one codegen unit and stripping. Installed bytes sum
+regular-file sizes from `dpkg-deb --fsys-tarfile`, excluding symlinks and filesystem
+allocation. The environment matches the preceding Debian 13.7 measurement.
+The final package passed executable, metadata, ownership, content and host
+shared-library closure checks. These tiny size differences establish no runtime
+performance change.
+
+`cargo xtask check` passed 1,235 test executions (27 ignored), strict all-target
+Clippy, formatting, documentation, no-default-features and policy checks. Debug
+symbols were disabled for the dev/test profiles to fit the workspace; the release
+profile remained unchanged. The pinned FFmpeg compiler probe, real Linux bundle,
+release smoke, Flatpak preparation and Windows archive fixtures passed. The exact
+pinned patchelf source passed 54 upstream checks, with two skips.
+
+These fixes change building and updater package selection, with no visible UI or
+encoder algorithm change. CPU/RSS/frame timing were not remeasured. Full native
+Windows/macOS and Nix/Flatpak validation requires CI. Physical GPU encoding,
+capture devices, live interoperability and extended soak testing remain unverified.
+
+## Normal video encoder modes — October 5, 2026
+
+Compared application commit `f87aa5db9df9acb3eedbe288e2b2ef1c2a5d8740` with the
+removal of explicit low-latency video modes. The
+[C ABI workload](pr-evidence/video-normal-modes/encoder-check.c) compiles the real
+FFmpeg shim and checks all 20 available Linux encoder/codec/profile option
+configurations without opening GPUs. It also encodes camera and screen pictures
+through OpenH264, checks camera independence, forced screen keyframes and malformed
+input rejection. The configuration check does not establish working GPU encoding.
+
+Environment: Debian 13 x86-64, Intel Xeon Platinum 8573C, five visible CPUs,
+17 GiB RAM, pinned FFmpeg 7.1.5/OpenH264 2.6.0, GCC `-O2`. Software input is
+640x480 limited-range BT.601 I420, 15 fps and 600 kbps. Each run warms up with 30
+pictures then measures 300; one run per revision is discarded, followed by five
+alternating baseline/after runs. RSS is sampled every 10 ms for the C process.
+There is no renderer, display, audio device, desktop capture or network connection.
+[Raw samples and bitstream hashes](pr-evidence/video-normal-modes/measurements.json)
+record the workload and actual baseline revision.
+
+| Metric / method | Baseline | After | Delta |
+| --- | ---: | ---: | ---: |
+| Median 300 camera pictures | 891.491 ms | 860.949 ms | -30.542 ms / -3.43% |
+| Median 300 screen pictures | 223.383 ms | 218.711 ms | -4.672 ms / -2.09% |
+| Median sampled peak C-process RSS | 9,805,824 bytes | 9,891,840 bytes | +86,016 bytes / +0.88% |
+
+The before/after bitstreams are byte-identical for both profiles. All 330 camera
+and 330 screen pictures decode with `ffmpeg -v error -xerror -i <stream> -f null -`.
+These small timing/RSS differences measure software noise, not hardware quality or
+latency improvements. Physical GPUs are unavailable; GPU buffering, quality and
+latency remain unmeasured. Native demo CPU/RSS and executable/installed/compressed
+package sizes could not be measured: `cargo xtask check` and both baseline/after
+`cargo xtask package` attempts fail on the inherited, read-only
+`target/debug/.cargo-build-lock`. The environment also lacks GTK4/WebKit6 runtime
+libraries and native development headers. A focused Cargo-only voice test rebuild
+hits the existing `winit` platform-feature error. Formatting and the strict C
+compiler checks pass; complete native validation remains a CI requirement.
+
+To reproduce the C checks with the pinned FFmpeg prefix in `FFMPEG_DIR`:
+
+```bash
+cc -std=c11 -O2 -Wall -Wextra -Werror -DNORMAL=1 -DHEVC_MAX_QUALITY=1 \
+  "-DSHIM=\"$PWD/crates/discord-voice/src/video_encode_ffmpeg.c\"" \
+  -Icrates/discord-voice/src -I"$FFMPEG_DIR/include" \
+  docs/pr-evidence/video-normal-modes/encoder-check.c \
+  -L"$FFMPEG_DIR/lib" -Wl,-rpath,"$FFMPEG_DIR/lib" \
+  -lavcodec-serein -lavutil-serein -o /tmp/serein-encoder-check
+/tmp/serein-encoder-check /tmp/serein-camera.h264 /tmp/serein-screen.h264
+```
+
+For the baseline, extract its shim with `git show f87aa5d:crates/discord-voice/src/video_encode_ffmpeg.c`
+into a temporary file, select that file with `SHIM`, and compile with `-DNORMAL=0`.
+The current H.265 AMF policy is selected with `HEVC_MAX_QUALITY=1`; use `0` to
+check the earlier all-balanced AMF policy from the initial normal-modes change.
+
+## AMD quality and responsive native controls — October 5, 2026
+
+UI baseline `be644d9064e0b53caf6db103037c8a48a5c7baa8` already contains the normal
+encoder modes above. This change keeps AMF AV1 balanced and selects HEVC
+`usage=high_quality, quality=quality`, while fixing responsive native controls
+and moving video encoding below the camera settings. The pinned FFmpeg shim
+passes its strict C compilation and 20 actual AVOption configurations. Both
+330-picture software streams decode without errors. Physical GPU encoding,
+driver compatibility, quality and throughput remain unverified; software checks
+do not measure the HEVC preset's hardware cost.
+
+[Raw samples and source hashes](pr-evidence/amd-quality-ui/measurements.json) and
+[reproduction scripts](pr-evidence/amd-quality-ui/README.md) record a fresh native
+before/after comparison. Environment: Debian 13 x86-64, Xeon Platinum 8573C,
+five visible CPUs, 17 GiB RAM, Rust 1.98.1, eframe/wgpu under Xvfb with
+`WGPU_BACKEND=gl` and Mesa software output. Both builds use the same isolated
+native preview, `dev` profile with optimization level 1 and no debug info, actual
+UI code, synthetic long-name reply fixture, dark appearance, 1120x760 pixels
+and 100% zoom. Tray/startup availability is fixed to false; the helper contains
+no service or capture adapters. These are development preview measurements,
+not standard release/package measurements.
+
+Compilation stopped before sampling. One run per revision warms up for three
+seconds, then samples process RSS once per second for 15 seconds and computes
+aggregate CPU time over that interval. Neither process had children.
+
+| Metric / method | Baseline | After | Delta |
+| --- | ---: | ---: | ---: |
+| Idle CPU, percentage of one core | 0.00% | 0.00% | Below process-timer resolution |
+| Post-warmup sampled peak/settled RSS | 192,663,552 bytes | 191,758,336 bytes | -905,216 bytes / -0.47% |
+| Isolated development preview executable | 83,176,272 bytes | 83,183,560 bytes | +7,288 bytes / +0.009% |
+
+The small RSS difference is noise from one short paired sample; no memory or
+speed improvement is claimed. Startup peak, frame/startup latency, sustained
+load, leak soaks and GPU memory remain unmeasured. Native screenshots were
+inspected at 1120x760/100% dark and 760x520/150% light/dark, including scrolling
+to the encoding card and the last Add Friend action. The reply/edit regression
+test also verifies that context controls leave the message input inside the
+viewport. All 417 UI library tests pass (five benchmark tests ignored), and
+strict UI Clippy across all targets passes.
+
+The default workspace-check/package commands hit the inherited read-only debug
+cache. Retrying the workspace check and standard release package in an owned
+target directory reaches the native dependency build and fails because
+`glib-sys` cannot find `glib-2.0.pc`.
+The environment also lacks GTK4/WebKit6 development/runtime dependencies.
+Standard release executable, installed-package and compressed-distribution
+sizes remain unavailable; complete workspace/packaging validation is a CI
+requirement. The development preview sizes above must not be treated as shipped
+package sizes.
+
+## Linux OpenH264 isolation verification — October 5, 2026
+
+The upstream sync and PR #3 merge preparation exposed an Ubuntu GStreamer
+2.4/OpenH264 2.6 ABI collision. The corrected native linkage passes the exact
+crash reproduction and all 92 voice tests with each of the older Ubuntu and
+newer Debian plugins (four intentionally ignored per suite). The current voice
+crate, build script and C shim were compiled afresh using exact cached Rust
+dependency artifacts and real native runtime libraries extracted into scratch.
+[Build hashes and reproduction details](pr-evidence/openh264-isolation/README.md)
+describe this local verification separately from a workspace Cargo build.
+
+The fresh full Linux FFmpeg recipe passes all 20 encoder configuration checks;
+both 330-frame software streams decode and are byte-identical to the previous
+output. Executable-relative portable library staging and the Debian private
+SONAME closure check pass. These are correctness checks. CPU/RSS, physical GPU
+performance and standard release executable/installed/compressed package deltas
+were not measured for this linkage fix. The current `cargo xtask check` attempt
+still fails at missing `glib-2.0.pc`; native development prerequisites and full
+application packaging remain CI requirements.
+
+
+## Hardware codec detection — October 5, 2026
+
+Base `a08d5a7b6fef26959166708b690378bfd1e3da6c`; raw current samples and limits in
+[hardware capability evidence](pr-evidence/video-hardware-capabilities/README.md).
+Debian 13 x86_64, kernel 6.18.44, five CPUs, 18,882,699,264 bytes RAM, Rust 1.98.1,
+Xvfb/Mesa with WGPU GL. The isolated native UI uses synthetic --demo data,
+1120×760 dark at 100%, six-second warmup and 15 one-second RSS samples after the
+same settings scroll interaction. One pair only; opt-level 1/debug 0 previews,
+baseline incremental defaults and after incremental disabled. These are auxiliary
+observations; standard release/package comparisons remain blocked by missing
+`glib-2.0.pc`, and no performance improvement is claimed.
+
+| Metric / method | Baseline | After | Delta |
+| --- | ---: | ---: | ---: |
+| Auxiliary preview settled/peak RSS | 148.043 MiB | 146.668 MiB | −1.375 MiB (no improvement claim)|
+| Auxiliary preview idle CPU, one core | 0.000% | 0.067% | +0.067 percentage points (single short sample)|
+| Auxiliary preview executable | 83,183,560 bytes | 84,268,632 bytes | +1,085,072 bytes; not the desktop package|
+| Full release executable / installed / compressed package |Unavailable|Unavailable|Missing native development metadata|
+
+A headless harness of the actual detector and real FFmpeg path ran one warmup
+and five measured scans with synthetic pictures, without capture or a network
+session. This host has no usable GPU devices: all nine backend/codec pairs were
+unavailable. Median elapsed was 264.909 ms. Polling parent/child RSS every 1 ms gave
+median sampled peaks 8.047 MiB parent and 4.957 MiB helper; short allocations may be
+missed. There was at most one simultaneous helper, nine observed per scan and
+none left after completion. UI previews had no children. This does not predict
+positive GPU-driver session startup, encode throughput or GPU memory usage.
+Full-desktop idle CPU/RSS, release/package deltas and frame/startup latency remain
+unmeasured. Each backend/codec check has a 10-second subprocess deadline; a complete
+Linux/Windows scan has at most nine sequential checks and a fixed 13-entry queue.
+
+## Codebase bug hunt — October 5, 2026
+
+Baseline `8a369cc3c71c18d97065dde8197c16d90970ed0a`; see
+[reproduction and raw samples](pr-evidence/codebase-bug-hunt/README.md).
+Debian 13 x86_64, kernel 6.18.44, five visible CPUs, 18,882,699,264 bytes RAM
+and Rust 1.98.1. Standard release `replay-bench` binaries were rebuilt from each
+revision. Each ran once for warmup and five measured times with alternating pair
+order, without concurrent compilation or preview processes. Both replay 100,000
+synthetic events and retain 331,992–332,477 estimated timeline bytes / 500 records.
+
+The isolated native Appearance preview uses actual UI code with `ui/demo`,
+opt-level 1/debug 0, Xvfb, eframe/wgpu and requested GL software rendering
+(`WGPU_BACKEND=gl`, `LIBGL_ALWAYS_SOFTWARE=1`; exact adapter not instrumented).
+Both use 1120 × 760 dark at 100% zoom, a six-second warmup including 100 scroll
+events, then 15 one-second process RSS samples. Aggregate idle CPU is the
+percentage of one core over that interval. Neither preview had children. The
+new synthetic fixture requests Serif after session reset; baseline silently
+retains Inter, while the fixed registry applies Serif.
+
+| Metric / method | Baseline | After | Delta |
+| --- | ---: | ---: | ---: |
+| Release reducer median, five runs | 83.116483 ms | 88.286294 ms | +5.169811 ms / +6.22% |
+| Release replay executable | 1,510,296 bytes | 1,509,592 bytes | −704 bytes / −0.047% |
+| Auxiliary UI sampled peak/settled RSS | 161,026,048 bytes | 161,624,064 bytes | +598,016 bytes / +0.37% |
+| Auxiliary UI idle CPU, one core | 0.00% | 0.00% | Below process-timer resolution |
+| Auxiliary UI executable | 89,526,776 bytes | 89,530,560 bytes | +3,784 bytes / +0.0042% |
+| Full desktop release / installed / compressed package | Unavailable | Unavailable | Missing `glib-2.0.pc` |
+
+Reducer ranges overlap widely: 80.75–123.18 ms before and 82.21–142.91 ms after.
+The single short UI pair and five replay samples do not establish a performance
+improvement or a statistically significant regression. Preview binary sizes
+must not be treated as shipped desktop/package sizes. Frame/startup latency,
+GPU memory, sustained-load/leak soaks and physical media-device cost remain
+unmeasured. Actual voice tests pass with two Linux OpenH264 runtime versions;
+those checks measure correctness, not encoding performance.
+
+The thumbnail fix admits at most two jobs and 32 MiB of source bytes before
+copying/spawning, retaining permits through actual decoder completion. Failed
+placeholder attempts cap at 2,048; per-user video progress tables cap at 16;
+tracked credential-removal IDs cap at eight. These are resource ceilings, not
+process RSS or proof that all application leaks are absent. Standard workspace
+and package checks were attempted and remain blocked at missing GLib development
+metadata; the license-policy command also lacks `cargo-deny`.

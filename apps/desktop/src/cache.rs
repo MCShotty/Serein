@@ -246,7 +246,7 @@ impl Cache {
 				message_bytes(messages)
 			}
 			Operation::SaveDraft { content, .. } => {
-				if content.len() > 8192 {
+				if content.len() > model::message_options::MAX_DRAFT_CONTENT_BYTES {
 					return false;
 				}
 				content.capacity()
@@ -721,6 +721,48 @@ pub fn debug_voice_preferences_check() {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn premium_unicode_drafts_enter_the_worker_and_reject_only_oversized_content() {
+		use model::message_options::{MAX_DRAFT_CONTENT_BYTES, MAX_PREMIUM_CONTENT};
+		let (send, commands) = mpsc::sync_channel(16);
+		let (_, receive) = mpsc::sync_channel(16);
+		let cache = Cache {
+			send,
+			receive,
+			budget: Arc::new(Budget::default()),
+			history: Arc::new(HistorySafety::default()),
+		};
+		let draft = format!("@silent\u{2003}{}", "🦀".repeat(MAX_PREMIUM_CONTENT));
+		assert!(cache.queue(
+			7,
+			Id(1),
+			Operation::SaveDraft {
+				channel: Id(2),
+				content: draft.clone()
+			}
+		));
+		let (_, _, epoch, operation, reservation) = commands.try_recv().unwrap();
+		let mut store = Ok(LocalStore::open(std::path::Path::new(":memory:")).unwrap());
+		assert!(matches!(
+			execute(&mut store, &cache.history, Id(1), epoch, operation),
+			Outcome::Saved
+		));
+		assert_eq!(
+			store.as_ref().unwrap().load_drafts(Id(1)).unwrap()[&Id(2)],
+			draft
+		);
+		drop(reservation);
+		assert_eq!(*cache.budget.used.lock().unwrap(), 0);
+		assert!(!cache.queue(
+			7,
+			Id(1),
+			Operation::SaveDraft {
+				channel: Id(2),
+				content: "x".repeat(MAX_DRAFT_CONTENT_BYTES + 1)
+			}
+		));
+		assert!(commands.try_recv().is_err());
+	}
 
 	#[test]
 	fn shortcut_restore_waits_for_queue_space_without_losing_or_duplicating_the_request() {

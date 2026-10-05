@@ -419,6 +419,11 @@ pub struct MessagingUi {
 	pub voice_muted: bool,
 	pub voice_deafened: bool,
 	pub voice_processing: model::voice_settings::VoiceProcessing,
+	pub video_settings: model::voice_settings::VideoSettings,
+	/// Session-local hardware results; the host probes outside the render thread.
+	pub video_capabilities: Option<model::voice_settings::VideoCapabilities>,
+	pub video_capabilities_loading: bool,
+	pub video_capabilities_refresh: bool,
 	pub voice_preview_requested: bool,
 	pub voice_preview_level: Option<f32>,
 	pub voice_preview_status: &'static str,
@@ -490,10 +495,68 @@ fn composer_cap(
 	})
 	.show(ui, |ui| {
 		ui.set_min_width((ui.available_width()).max(0.0));
-		ui.horizontal(|ui| add_contents(ui));
+		ui.horizontal(|ui| {
+			ui.with_layout(
+				egui::Layout::right_to_left(egui::Align::Center),
+				add_contents,
+			);
+		});
 	})
 	.response
 	.rect
+}
+
+/// Retain the full search field on wide headers and a focusable icon on narrow ones.
+fn header_search_button(ui: &mut egui::Ui, enabled: bool, label: &str) -> egui::Response {
+	ui.add_enabled_ui(enabled, |ui| {
+		if ui.available_width() < 440.0 {
+			return icons::button(ui, icons::Icon::Search, 32.0, label);
+		}
+		let colors = design::palette(ui);
+		let (pill, response) =
+			ui.allocate_exact_size(egui::vec2(144.0, 28.0), egui::Sense::click());
+		response
+			.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
+		let hot = ui.is_enabled() && (response.hovered() || response.has_focus());
+		ui.painter()
+			.rect_filled(pill, 6, if hot { colors.hover } else { colors.raised });
+		if response.has_focus() {
+			ui.painter().rect_stroke(
+				pill,
+				6,
+				egui::Stroke::new(1.0, colors.accent),
+				egui::StrokeKind::Inside,
+			);
+		}
+		let color = if ui.is_enabled() {
+			colors.muted
+		} else {
+			colors.muted.gamma_multiply(0.5)
+		};
+		let mut job = egui::text::LayoutJob::simple_singleline(
+			label.to_owned(),
+			egui::FontId::proportional(13.0),
+			color,
+		);
+		job.wrap = egui::text::TextWrapping::truncate_at_width(pill.width() - 40.0);
+		let galley = ui.painter().layout_job(job);
+		ui.painter().galley(
+			pill.left_center() + egui::vec2(10.0, -galley.size().y * 0.5),
+			galley,
+			color,
+		);
+		icons::paint(
+			ui.painter(),
+			icons::Icon::Search,
+			egui::Rect::from_center_size(
+				pill.right_center() - egui::vec2(14.0, 0.0),
+				egui::Vec2::splat(16.0),
+			),
+			color,
+		);
+		response
+	})
+	.inner
 }
 
 fn mention_switch(ui: &mut egui::Ui, colors: &design::Palette, on: &mut bool) {
@@ -975,6 +1038,7 @@ impl MessagingUi {
 			// The switcher roster belongs to the device, not to the account being cleared.
 			accounts: std::mem::take(&mut self.accounts),
 			updates: std::mem::take(&mut self.updates),
+			custom_font: std::mem::take(&mut self.custom_font),
 			minimize_to_tray: self.minimize_to_tray,
 			tray_available: self.tray_available,
 			tray_status: self.tray_status,
@@ -2206,43 +2270,9 @@ impl MessagingUi {
 							|ui| self.search.header_input(ui, state, commands),
 						);
 					} else {
-						// Search pill.
-						let (pill, response) =
-							ui.allocate_exact_size(egui::vec2(144.0, 28.0), egui::Sense::click());
-						let enabled = state.can_search();
-						response.widget_info(|| {
-							egui::WidgetInfo::labeled(
-								egui::Role::Button,
-								enabled,
-								language.text("search"),
-							)
-						});
-						ui.painter().rect_filled(pill, 6, colors.raised);
-						let pill_text = if enabled {
-							colors.muted
-						} else {
-							colors.muted.gamma_multiply(0.5)
-						};
-						ui.painter().text(
-							pill.left_center() + egui::vec2(10.0, 0.0),
-							egui::Align2::LEFT_CENTER,
-							language.text("search"),
-							egui::FontId::proportional(13.0),
-							pill_text,
-						);
-						icons::paint(
-							ui.painter(),
-							icons::Icon::Search,
-							egui::Rect::from_center_size(
-								pill.right_center() - egui::vec2(14.0, 0.0),
-								egui::Vec2::splat(16.0),
-							),
-							pill_text,
-						);
-						if enabled
-							&& response
-								.on_hover_text(language.text("search-conversation"))
-								.clicked()
+						if header_search_button(ui, state.can_search(), &language.text("search"))
+							.on_hover_text(language.text("search-conversation"))
+							.clicked()
 						{
 							if state.archives.is_some() {
 								commands.push(state.clear_archives());
@@ -2660,48 +2690,47 @@ impl MessagingUi {
 		if editing_here {
 			let unavailable = editing_key.is_some_and(|(_, id)| state.timeline.get(id).is_none());
 			let cap = composer_cap(ui, &colors, |ui| {
-				ui.label(
-					RichText::new(crate::i18n::translate_if_key(if unavailable {
-						"lib-ime-updates-text-message-unavailable-unsent-edit"
-					} else {
-						"lib-ime-updates-text-editing-message"
-					}))
-					.size(13.0)
-					.color(colors.muted),
-				);
-				if self.edit_sent {
-					ui.label(
-						RichText::new(crate::i18n::translate(
-							"lib-ime-updates-text-save-requested-check-the-connection-before-retrying",
-						))
-						.size(12.0)
-						.color(colors.muted),
-					);
-				}
-				ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-					cancel_edit = icons::button(
-						ui,
-						icons::Icon::Close,
-						22.0,
-						&crate::i18n::translate("lib-ime-updates-text-cancel-edit"),
-					)
-					.clicked();
-					if unavailable
-						&& ui
-							.add(
-								egui::Button::new(
-									RichText::new(crate::i18n::translate(
-										"lib-ime-updates-text-copy-edit-text",
-									))
-									.size(12.0)
-									.color(colors.muted),
-								)
-								.frame(false),
+				// Reserve controls before laying out the possibly long context text.
+				cancel_edit = icons::button(
+					ui,
+					icons::Icon::Close,
+					22.0,
+					&crate::i18n::translate("lib-ime-updates-text-cancel-edit"),
+				)
+				.clicked();
+				if unavailable
+					&& ui
+						.add(
+							egui::Button::new(
+								RichText::new(crate::i18n::translate(
+									"lib-ime-updates-text-copy-edit-text",
+								))
+								.size(12.0)
+								.color(colors.muted),
 							)
-							.clicked() && let Some((_, _, text)) = &self.editing
-					{
-						ui.ctx().copy_text(text.clone());
-					}
+							.frame(false),
+						)
+						.clicked() && let Some((_, _, text)) = &self.editing
+				{
+					ui.ctx().copy_text(text.clone());
+				}
+				let mut context = crate::i18n::translate_if_key(if unavailable {
+					"lib-ime-updates-text-message-unavailable-unsent-edit"
+				} else {
+					"lib-ime-updates-text-editing-message"
+				});
+				if self.edit_sent {
+					context.push_str(" · ");
+					context.push_str(&crate::i18n::translate(
+						"lib-ime-updates-text-save-requested-check-the-connection-before-retrying",
+					));
+				}
+				ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+					ui.add(
+						egui::Label::new(RichText::new(&context).size(13.0).color(colors.muted))
+							.truncate(),
+					)
+					.on_hover_text(context);
 				});
 			});
 			cap_top = Some(cap.top());
@@ -2712,52 +2741,62 @@ impl MessagingUi {
 				.map_or("an earlier message", |message| message.author.name.as_str())
 				.to_owned();
 			let cap = composer_cap(ui, &colors, |ui| {
-				ui.spacing_mut().item_spacing.x = 0.0;
-				ui.label(
-					RichText::new(crate::i18n::translate("lib-ime-updates-text-replying-to"))
-						.size(13.0)
-						.color(colors.muted),
-				);
-				ui.add_space(4.0);
-				ui.label(design::semibold(ui, author.as_str(), 13.0).color(colors.text_strong));
-				ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-					ui.spacing_mut().item_spacing.x = 6.0;
-					if icons::button(
-						ui,
-						icons::Icon::Close,
-						22.0,
-						&crate::i18n::translate("lib-ime-updates-text-cancel-reply"),
-					)
-					.clicked()
-					{
-						state.reply = None;
-					}
-					if let Some(reply) = state.reply.as_mut() {
-						mention_switch(ui, &colors, &mut reply.mention);
-					}
-					if ui
-						.add_enabled(
-							state.can_open_reply_target(reply.target()),
-							egui::Button::new(
-								RichText::new(crate::i18n::translate(
-									"lib-ime-updates-text-view-original",
-								))
-								.size(12.0)
-								.color(colors.muted),
-							)
-							.frame(false),
+				ui.spacing_mut().item_spacing.x = 6.0;
+				if icons::button(
+					ui,
+					icons::Icon::Close,
+					22.0,
+					&crate::i18n::translate("lib-ime-updates-text-cancel-reply"),
+				)
+				.clicked()
+				{
+					state.reply = None;
+				}
+				if let Some(reply) = state.reply.as_mut() {
+					mention_switch(ui, &colors, &mut reply.mention);
+				}
+				if ui
+					.add_enabled(
+						state.can_open_reply_target(reply.target()),
+						egui::Button::new(
+							RichText::new(crate::i18n::translate(
+								"lib-ime-updates-text-view-original",
+							))
+							.size(12.0)
+							.color(colors.muted),
 						)
-						.on_disabled_hover_text(crate::i18n::translate_if_key(
-							if state.timeline.is_deleted(reply.target()) {
-								"lib-ime-updates-text-the-original-message-was-deleted"
-							} else {
-								"lib-ime-updates-text-wait-for-readable-current-message-history"
-							},
-						))
-						.clicked()
-					{
-						self.timeline.request_reply_target(reply.target());
-					}
+						.frame(false),
+					)
+					.on_disabled_hover_text(crate::i18n::translate_if_key(
+						if state.timeline.is_deleted(reply.target()) {
+							"lib-ime-updates-text-the-original-message-was-deleted"
+						} else {
+							"lib-ime-updates-text-wait-for-readable-current-message-history"
+						},
+					))
+					.clicked()
+				{
+					self.timeline.request_reply_target(reply.target());
+				}
+				let prefix = crate::i18n::translate("lib-ime-updates-text-replying-to");
+				let context = format!("{prefix} {author}");
+				let mut label = egui::text::LayoutJob::default();
+				label.append(
+					&format!("{prefix} "),
+					0.0,
+					egui::TextFormat::simple(egui::FontId::proportional(13.0), colors.muted),
+				);
+				label.append(
+					&author,
+					0.0,
+					egui::TextFormat::simple(
+						egui::FontId::new(13.0, design::semibold_family(ui.ctx())),
+						colors.text_strong,
+					),
+				);
+				ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+					ui.add(egui::Label::new(label).truncate())
+						.on_hover_text(context);
 				});
 			});
 			cap_top = Some(cap.top());
@@ -5089,6 +5128,189 @@ impl MessagingUi {
 mod composer_tests {
 	use super::*;
 	use client_core::MAX_CONTENT;
+
+	#[test]
+	fn header_search_collapses_and_keeps_keyboard_and_disabled_behavior() {
+		let key = |key| egui::Event::Key {
+			key,
+			physical_key: None,
+			pressed: true,
+			repeat: false,
+			modifiers: egui::Modifiers::NONE,
+		};
+		for (width, expected_width) in [(260.0, 32.0), (600.0, 144.0)] {
+			for enabled in [false, true] {
+				let ctx = egui::Context::default();
+				design::apply(&ctx);
+				let frame = |events| {
+					let mut search = None;
+					let output = ctx.run_ui(
+						egui::RawInput {
+							screen_rect: Some(egui::Rect::from_min_size(
+								egui::Pos2::ZERO,
+								egui::vec2(width, 200.0),
+							)),
+							events,
+							focused: true,
+							..Default::default()
+						},
+						|ui| {
+							search = Some(header_search_button(ui, enabled, "Search"));
+							let _ = ui.button("Next control");
+						},
+					);
+					output.drop_without_applying_deltas();
+					search.unwrap()
+				};
+				for _ in 0..3 {
+					frame(vec![]);
+				}
+				let response = frame(vec![key(egui::Key::Tab)]);
+				assert_eq!(response.rect.width(), expected_width);
+				assert_eq!(ctx.memory(|memory| memory.has_focus(response.id)), enabled);
+				assert_eq!(frame(vec![key(egui::Key::Enter)]).clicked(), enabled);
+			}
+		}
+	}
+
+	#[test]
+	fn narrow_composer_context_keeps_long_author_and_edit_controls_reachable() {
+		fn collect(shape: &egui::Shape, labels: &mut Vec<(String, egui::Rect)>) {
+			match shape {
+				egui::Shape::Text(text) => labels.push((
+					text.galley.job.text.clone(),
+					text.galley.rect.translate(text.pos.to_vec2()),
+				)),
+				egui::Shape::Vec(shapes) => {
+					for shape in shapes {
+						collect(shape, labels);
+					}
+				}
+				_ => {}
+			}
+		}
+		let key = |key| egui::Event::Key {
+			key,
+			physical_key: None,
+			pressed: true,
+			repeat: false,
+			modifiers: egui::Modifiers::NONE,
+		};
+		for width in [280.0, 360.0] {
+			for mode in 0..3 {
+				let ctx = egui::Context::default();
+				design::apply(&ctx);
+				let mut state = edit_state();
+				let mut source = state.timeline.get(Id(20)).unwrap().clone();
+				source.author.name = "Very long synthetic author 漢字 👋 ".repeat(8);
+				state.timeline.insert(source, true, false).unwrap();
+				let mut view = MessagingUi::default();
+				if mode == 0 {
+					state.reply = Some(client_core::Reply::to(Id(20)));
+				} else {
+					view.editing = Some((Id(10), Id(20), "Changed unsent text".into()));
+					view.edit_modified = Some((Id(10), Id(20), true));
+					view.composer_edit = Some((Id(10), Id(20)));
+					view.edit_sent = mode == 1;
+					if mode == 2 {
+						state.timeline.delete(Id(20)).unwrap();
+					}
+				}
+				let draft = state.drafts.clone();
+				let frame = |view: &mut MessagingUi, state: &mut State, events| {
+					let mut labels = vec![];
+					let mut commands = vec![];
+					let output = ctx.run_ui(
+						egui::RawInput {
+							screen_rect: Some(egui::Rect::from_min_size(
+								egui::Pos2::ZERO,
+								egui::vec2(width, 350.0),
+							)),
+							events,
+							focused: true,
+							..Default::default()
+						},
+						|ui| {
+							view.composer(ui, state, Id(10), &ctx, &mut commands);
+							assert!(
+								ui.min_rect().bottom() <= ui.clip_rect().bottom(),
+								"the context strip must leave the message input inside the viewport"
+							);
+						},
+					);
+					assert!(commands.is_empty());
+					for shape in &output.shapes {
+						collect(&shape.shape, &mut labels);
+					}
+					for event in &output.platform_output.events {
+						if let egui::output::OutputEvent::FocusGained(info) = event
+							&& let Some(label) = &info.label
+							&& let Some(response) = ctx
+								.memory(|memory| memory.focused())
+								.and_then(|id| ctx.read_response(id))
+						{
+							labels.push((label.clone(), response.rect));
+						}
+					}
+					output.drop_without_applying_deltas();
+					labels
+				};
+				for _ in 0..3 {
+					frame(&mut view, &mut state, vec![]);
+				}
+				let labels = frame(&mut view, &mut state, vec![]);
+				let context = labels
+					.iter()
+					.find(|(label, _)| match mode {
+						0 => label.starts_with("Replying to"),
+						1 => label.starts_with("Editing message"),
+						_ => label.starts_with("Message unavailable"),
+					})
+					.expect("composer context remains present");
+				assert!(context.1.left() >= 0.0 && context.1.right() <= width);
+				assert!(context.1.height() < 24.0, "context must stay on one line");
+				let action = if mode == 0 {
+					"View original"
+				} else if mode == 2 {
+					"Copy edit text"
+				} else {
+					""
+				};
+				if !action.is_empty() {
+					let rect = labels.iter().find(|(label, _)| label == action).unwrap().1;
+					assert!(rect.left() >= 0.0 && rect.right() <= width);
+				}
+				ctx.memory_mut(|memory| {
+					if let Some(id) = memory.focused() {
+						memory.surrender_focus(id);
+					}
+				});
+				frame(&mut view, &mut state, vec![egui::Event::PointerGone]);
+				let cancel = if mode == 0 {
+					"Cancel reply"
+				} else {
+					"Cancel edit"
+				};
+				let mut cancelled = false;
+				for _ in 0..16 {
+					let labels = frame(&mut view, &mut state, vec![key(egui::Key::Tab)]);
+					if let Some((_, rect)) = labels.iter().find(|(label, _)| label == cancel) {
+						assert!(rect.left() >= 0.0 && rect.right() <= width);
+						frame(&mut view, &mut state, vec![key(egui::Key::Enter)]);
+						cancelled = true;
+						break;
+					}
+				}
+				assert!(cancelled, "Tab must reach the visible cancel control");
+				assert!(if mode == 0 {
+					state.reply.is_none()
+				} else {
+					view.editing.is_none()
+				});
+				assert_eq!(state.drafts, draft);
+			}
+		}
+	}
 
 	#[test]
 	fn paste_into_an_idle_conversation_focuses_composer_without_sending() {

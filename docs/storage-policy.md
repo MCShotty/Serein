@@ -1,5 +1,41 @@
 # Local storage policy and audit
 
+## Experimental FFmpeg outgoing video (October 5, 2026)
+
+With Experimental selected, each camera/screen worker owns one FFmpeg codec context, frame and packet. The
+context cannot move between threads. Allowed backends are NVENC, AMD AMF, Intel
+Quick Sync, VideoToolbox and OpenH264; no capture, network or CLI process is opened
+by encoding. Hardware failure closes the old context before advancing to the next
+backend or H.264 software; H.265/AV1 have no bundled software fallback. Reconfiguration retains the active backend and excludes
+earlier failed GPUs. Secure-readiness loss
+closes the screen encoder and discards pending native output.
+
+Camera I420 input is 460,800 bytes; screen I420 is at most 3,110,400 bytes
+(1920×1080). Each encoder retains one reusable output buffer capped at 128 KiB
+(camera) or 2 MiB (screen), plus the actual current packet and returned bounded
+access unit. The native packet allocator rejects payloads exceeding the same cap
+before copying. The pinned Quick Sync wrapper is patched to use that allocator
+instead of allocating its driver-advised packet size directly. Returned packets
+must also fit their actual backing allocation before inspection/copy.
+Quick Sync packs chroma into the allocated NV12 frame; it retains no extra
+conversion vector. At most four submitted pictures can lack output; no B frames or
+lookahead are enabled. Software uses at most two camera/four screen threads; NVENC
+requests four surfaces. Codec/driver reference and scratch storage is additional
+and is not a whole-process memory cap. The encoders do not request explicit
+low-latency modes; NVENC and Quick Sync can use normal buffered output within the
+four-picture cap. Disabling lookahead/preanalysis keeps that cap enforceable.
+AMF reopens Main-profile encoding for requested IDRs after output has started;
+camera GOP 1 avoids a per-frame reopen.
+SDK startup/polling/shutdown can still block, retaining the worker retirement
+barrier. Queue bounds do not imply bounded driver-call time.
+
+Linux raw capture and preview each use one-item/byte-bounded appsinks; its worker
+retains at most one validated latest BGRA picture for static-desktop IDR recovery
+and a one-second keepalive. CPU readback, scaling and I420 conversion replace
+outgoing GPU-only GStreamer encoding. Transport queues, encryption gates, camera
+capture ceilings and persistent storage are unchanged. FFmpeg libraries, source
+and build recipes are installed package material; media is never recorded.
+
 ## Linux native live decoder admission (October 3, 2026)
 
 Each Linux live H.264 decoder now admits at most four queued compressed access
@@ -591,15 +627,15 @@ The owner explicitly withdrew the no-storage policy on 2026-09-09. Local files, 
 
 | Data | Location / bound | Removal |
 |---|---|---|
-| Discord token | OS credential store, service `cz.viceverse.serein`; packaged builds use account `discord-session` for the session restored on launch and `discord-session.<account id>` for each remembered account, while default source builds use the corresponding `discord-session.development` names; at most 2048 bytes each. A per-account entry is written once, when the roster records none, and rewritten only for a token the owner just supplied: on macOS every access to an existing entry is governed by that item's keychain ACL | Explicit logout / Forget saved login removes both entries for that build profile's account; forgetting or pruning a saved account removes its per-account entry; invalid-token expiry also requests deletion |
-| Remembered accounts (switcher) | `accounts` table in `client.sqlite3`: at most 8 rows of account ID, username, display name (64 bytes each), avatar hash, last-use timestamp and a flag recording whether the credential store holds that account's entry; no token | Logging out of, or forgetting, that account; the least recently used row is pruned past 8, taking its token and cached data with it |
+| Discord token | OS credential store, service `cz.viceverse.serein`; packaged builds use account `discord-session` for the session restored on launch and `discord-session.<account id>` for each remembered account, while default source builds use the corresponding `discord-session.development` names; at most 2048 bytes each. A per-account entry is written once, when the roster records none, and rewritten only for a token the owner just supplied: on macOS every access to an existing entry is governed by that item's keychain ACL | Explicit logout / Forget saved login removes both entries for that build profile's account; forgetting or pruning a saved account removes its per-account entry and the launch entry when both tokens match; keyed and launch saves share one worker command, with launch updated only after the keyed save succeeds. Account removal is acknowledged before local roster/cache removal; unreadable or unidentifiable legacy launch ownership leaves a visible recovery error; invalid-token expiry also requests deletion |
+| Remembered accounts (switcher) | `accounts` table in `client.sqlite3`: at most 8 rows of account ID, username, display name (Unicode-safe prefixes of at most 64 UTF-8 bytes each), avatar hash, last-use timestamp and a flag recording whether the credential store holds that account's entry; no token | Logging out of, or forgetting, that account; the least recently used row is pruned past 8, taking its token and cached data with it |
 | History and drafts | `SEREIN_DATA_DIR/client.sqlite3` when an absolute override is set; otherwise `dirs::data_local_dir()/serein-development/client.sqlite3` for default source builds and `dirs::data_local_dir()/serein/client.sqlite3` for packaged builds | Clear cached history also clears service images and keeps drafts; logout clears the authenticated account’s history and drafts |
 | Messages | 500 per window, at most 20 stored channel windows globally, 48 MiB estimated text/metadata; SQLite main database capped at 64 MiB | Oldest touched channel evicted transactionally |
 | Avatar, server-icon, profile-banner and message-preview PNGs | Account subdirectory beneath the selected application-data root's `avatars`; 1 GiB / 4096 files per account, 90 days since last use, at most 2 MiB per preview (512 KiB for icons/avatars) | Clear cache or account logout; versioned avatar/icon/banner keys and hashed media-source keys separate changed images |
 | Selected profile metadata | One session-memory record, at most 64 KiB; profile response body at most 256 KiB | Closing/changing the profile, session reset or logout; no SQLite profile table |
 | Explicit attachment downloads | User-selected destination, 1 byte through 100 MiB per original file; one active dialog/transfer; randomized sibling partial while writing | Cancel/error removes the partial when possible; completed downloads remain user-owned outside cache cleanup |
 | Selected upload source | Up to ten session-only paths (4096 encoded bytes each), filenames (256 UTF-8 bytes each) and size/modified metadata; 500,000,000 bytes total, read in 64 KiB chunks | Removal, send completion/failure, cancellation or session teardown; sources are never copied to recovery/cache files or deleted |
-| Drafts | 64 globally, at most 2 MiB content; each draft at most 8192 UTF-8 bytes | Clear draft, confirmed send, or account logout |
+| Drafts | 64 globally, at most 2 MiB content; each draft at most 16,032 UTF-8 bytes (4,000 Unicode characters plus the silent prefix) | Clear draft, confirmed send, or account logout |
 | Appearance | One application-wide SQLite row: Light or Dark; absent means System | Select System to remove the override; retained across account logout |
 | Reading/layout | One application-wide SQLite row with eight bounded scalar fields | Reset reading and layout removes only this override; retained across account logout |
 | Theme preset | One application-wide SQLite row (`theme_variant`, ≤32-byte key such as `onyx`); absent means Default | Select Default to remove it; unknown keys are ignored; retained across account logout |
@@ -710,7 +746,7 @@ Archived-thread pages share the same exclusive read/result slot with search and 
 
 Pinned-message summaries share search's single session-only 25-item / 64 KiB result slot and 512 KiB response limit. Manual older-page navigation replaces that slot instead of accumulating results; two optional fixed-size timestamp cursors track the request and next page. Failed older requests can be retried deliberately, with no background retry. Opening a result uses ordinary bounded history caching; pin snapshots/cursors are not written to SQLite. PR screenshots are synthetic development evidence and are excluded from packaged documentation.
 
-Uploads do not persist local source paths, signed staging targets or file bytes. Pending filename/size labels remain bounded session metadata; existing recovery drafts retain only composed text, so retrying an attachment requires selecting the source again. Files are opened for reading and checked for observable size/modification changes; this is not an immutable snapshot guarantee. Cancellation stops the local job, but bytes already uploaded to Discord staging may remain there without a created message; no remote cleanup or retention guarantee is claimed. Completed messages and their returned attachment metadata can enter the existing bounded history cache. The OS file picker may retain OS-managed recent-location history. No new application log or hidden upload recovery store is introduced.
+Uploads do not persist local source paths, signed staging targets or file bytes. Optional pasted-image thumbnails admit at most two process-wide jobs and 32 MiB of source bytes before retaining a source or reading it; larger files still attach but skip the thumbnail. Removed previews cancel pending reads, while running decoders keep their admission permits until completion. Pending filename/size labels remain bounded session metadata; existing recovery drafts retain only composed text, so retrying an attachment requires selecting the source again. Files are opened for reading and checked for observable size/modification changes; this is not an immutable snapshot guarantee. Cancellation stops the local job, but bytes already uploaded to Discord staging may remain there without a created message; no remote cleanup or retention guarantee is claimed. Completed messages and their returned attachment metadata can enter the existing bounded history cache. The OS file picker may retain OS-managed recent-location history. No new application log or hidden upload recovery store is introduced.
 
 Twemoji artwork is public bundled data, not an account cache: one 5,225,108-byte PNG
 and a fixed 4,009-entry Unicode index are embedded in the executable. A startup worker
@@ -967,7 +1003,7 @@ seeking replays decoding from the start instead of retaining the file.
 
 ## Screen sharing
 
-Screen/window labels, selected source identifiers, settings, raw pixels and encoded video exist only in session memory. They are not written to SQLite, diagnostics, previews or video files. Sources and video queues use the limits in [screen-sharing compatibility](discord-compatibility.md#outgoing-screen-sharing--september-11-2026). Stream credentials and DAVE identities are ephemeral and redacted; the signing key is shared with the active voice call and zeroized when its final owner drops. Native OS/driver capture surfaces are distinct from application-owned frame buffers. Synthetic PR screenshots are development evidence, excluded from runtime assets.
+Screen/window labels, selected source identifiers, per-share quality settings, raw pixels and encoded video exist only in session memory. They are not written to SQLite, diagnostics, previews or video files. Sources and video queues use the limits in [screen-sharing compatibility](discord-compatibility.md#outgoing-screen-sharing--september-11-2026). Stream credentials and DAVE identities are ephemeral and redacted; the signing key is shared with the active voice call and zeroized when its final owner drops. Native OS/driver capture surfaces are distinct from application-owned frame buffers. Synthetic PR screenshots are development evidence, excluded from runtime assets.
 
 An opened live-stream preview retains one URL of at most 2,048 bytes and one bounded still in
 the existing 512-pixel media working set. Preview responses are capped at 4 KiB, and a newer
@@ -1634,3 +1670,16 @@ confirmed call, recipient membership and current target eligibility; unrelated
 peer mute/camera state does not cancel an eligible target. Departure, replacement,
 access loss and target state changes retire obsolete work without an optimistic
 state or additional failure/retry queue.
+
+
+## Video backend preferences — October 5, 2026
+
+The bounded 16 KiB device-wide `app_preferences` row now stores two enums in
+`video_settings`: Stable/Experimental and H264/H265/Av1. Missing fields default to
+Stable/H264 without a schema migration. Stable with a non-H264 codec is rejected;
+the UI resets to H264 when Stable is selected. These choices survive logout and
+restart. The call and screen worker each retain one immutable settings snapshot;
+changing settings does not allocate another encoder or renegotiate an active stream.
+Camera previews stop on a settings change and require another explicit start.
+The existing camera/screen pixel, encoded-byte and packet/queue limits remain.
+No new capture files, media cache, driver installer or secrets are persisted.

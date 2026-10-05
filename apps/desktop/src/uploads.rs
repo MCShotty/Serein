@@ -4,11 +4,11 @@ use discord_api::upload::{Source, Status};
 use eframe::egui;
 use model::Id;
 use std::sync::{
-	Arc,
+	Arc, LazyLock,
 	atomic::{AtomicBool, Ordering},
 	mpsc,
 };
-use tokio::sync::watch;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 
 pub struct UploadRequest {
 	pub command: Command,
@@ -32,6 +32,53 @@ struct Chosen {
 /// Longest edge of the composer thumbnail; the full decode stays bounded by `image::Limits`.
 const PREVIEW_EDGE: u32 = 320;
 const PREVIEW_ALLOC: u64 = 64 * 1024 * 1024;
+const PREVIEW_JOBS: usize = 2;
+const PREVIEW_BYTES: usize = 32 * 1024 * 1024;
+static PREVIEW_BUDGET: LazyLock<PreviewBudget> =
+	LazyLock::new(|| PreviewBudget::new(PREVIEW_JOBS, PREVIEW_BYTES));
+
+struct PreviewBudget {
+	jobs: Arc<Semaphore>,
+	bytes: Arc<Semaphore>,
+	byte_limit: usize,
+}
+struct PreviewPermit {
+	_bytes: OwnedSemaphorePermit,
+	_job: OwnedSemaphorePermit,
+}
+impl PreviewBudget {
+	fn new(jobs: usize, bytes: usize) -> Self {
+		Self {
+			jobs: Arc::new(Semaphore::new(jobs)),
+			bytes: Arc::new(Semaphore::new(bytes)),
+			byte_limit: bytes,
+		}
+	}
+	fn admit(&self, source: &Source) -> Option<PreviewPermit> {
+		if !previewable(source.filename()) || source.size() > self.byte_limit as u64 {
+			return None;
+		}
+		Some(PreviewPermit {
+			_job: self.jobs.clone().try_acquire_owned().ok()?,
+			_bytes: self
+				.bytes
+				.clone()
+				.try_acquire_many_owned(u32::try_from(source.size()).ok()?)
+				.ok()?,
+		})
+	}
+}
+
+struct Previewing {
+	key: u64,
+	result: mpsc::Receiver<Option<egui::ColorImage>>,
+	cancelled: Arc<AtomicBool>,
+}
+impl Drop for Previewing {
+	fn drop(&mut self) {
+		self.cancelled.store(true, Ordering::Release);
+	}
+}
 const SHARE_BYTES: usize = 8 * 1024 * 1024;
 const EMOJI_EDGE: u32 = 48;
 const STICKER_EDGE: u32 = 160;
@@ -316,15 +363,36 @@ fn previewable(filename: &str) -> bool {
 	})
 }
 /// Downscaled pixels for the composer card, decoded on a blocking worker, never in a frame.
-async fn preview(source: &Source) -> Option<egui::ColorImage> {
-	if !previewable(source.filename()) {
+async fn preview(source: &Source, cancelled: Arc<AtomicBool>) -> Option<egui::ColorImage> {
+	let permit = PREVIEW_BUDGET.admit(source)?;
+	preview_admitted(source.clone(), permit, cancelled, decode_preview).await
+}
+
+async fn preview_admitted(
+	source: Source,
+	permit: PreviewPermit,
+	cancelled: Arc<AtomicBool>,
+	decode: impl FnOnce(&[u8]) -> Option<egui::ColorImage> + Send + 'static,
+) -> Option<egui::ColorImage> {
+	if cancelled.load(Ordering::Acquire) {
 		return None;
 	}
-	let bytes = source.preview_bytes(discord_api::upload::MAX_BYTES).await?;
-	tokio::task::spawn_blocking(move || decode_preview(&bytes))
-		.await
-		.ok()
-		.flatten()
+	let bytes = source.preview_bytes(PREVIEW_BYTES as u64).await?;
+	if cancelled.load(Ordering::Acquire) {
+		return None;
+	}
+	tokio::task::spawn_blocking(move || {
+		// Aborting the async waiter cannot retire a decoder which is already running.
+		let _permit = permit;
+		if cancelled.load(Ordering::Acquire) {
+			None
+		} else {
+			decode(&bytes)
+		}
+	})
+	.await
+	.ok()
+	.flatten()
 }
 fn decode_preview(bytes: &[u8]) -> Option<egui::ColorImage> {
 	if platform::heic::is_heic(bytes) {
@@ -378,7 +446,7 @@ pub struct Uploads {
 	selected: Vec<Chosen>,
 	next_key: u64,
 	/// Thumbnails still decoding for pasted files, by `Chosen::key`; at most `MAX_FILES`.
-	previewing: Vec<(u64, mpsc::Receiver<Option<egui::ColorImage>>)>,
+	previewing: Vec<Previewing>,
 	choosing: Option<Choosing>,
 	uploading: Option<Uploading>,
 	/// Progress of the batch in flight, and only ever a running state: terminal failures
@@ -559,6 +627,24 @@ impl Uploads {
 		runtime: &tokio::runtime::Handle,
 		context: &egui::Context,
 	) -> Result<(), &'static str> {
+		self.select_pasted_with_previews(
+			generation,
+			channel,
+			source,
+			runtime,
+			context,
+			&PREVIEW_BUDGET,
+		)
+	}
+	fn select_pasted_with_previews(
+		&mut self,
+		generation: u64,
+		channel: Id,
+		source: Vec<Source>,
+		runtime: &tokio::runtime::Handle,
+		context: &egui::Context,
+		budget: &PreviewBudget,
+	) -> Result<(), &'static str> {
 		if self.busy() {
 			return Err("Wait for the current attachment operation to finish");
 		}
@@ -566,20 +652,30 @@ impl Uploads {
 		self.scope = Some((generation, channel));
 		self.last = None;
 		for source in source {
+			// Optional thumbnails skip pressure before another source copy or task is admitted.
+			let permit = budget.admit(&source);
 			let key = self.push(source, None);
-			if previewable(self.selected.last().map_or("", |c| c.source.filename())) {
+			if let Some(permit) = permit {
 				let (send, receive) = mpsc::sync_channel(1);
 				let context = context.clone();
-				let copy = self.selected.last().map(|c| c.source.clone());
+				let copy = self
+					.selected
+					.last()
+					.expect("selected preview source")
+					.source
+					.clone();
+				let cancelled = Arc::new(AtomicBool::new(false));
+				let flag = cancelled.clone();
 				runtime.spawn(async move {
-					let thumbnail = match copy {
-						Some(source) => preview(&source).await,
-						None => None,
-					};
+					let thumbnail = preview_admitted(copy, permit, flag, decode_preview).await;
 					let _ = send.send(thumbnail);
 					context.request_repaint();
 				});
-				self.previewing.push((key, receive));
+				self.previewing.push(Previewing {
+					key,
+					result: receive,
+					cancelled,
+				});
 			}
 		}
 		Ok(())
@@ -658,6 +754,9 @@ impl Uploads {
 				let mut selected = Vec::with_capacity(paths.len());
 				let mut total = 0;
 				for path in paths {
+					if flag.load(Ordering::Acquire) {
+						return Ok(None);
+					}
 					let source = Source::inspect(path).await?;
 					total += source.size();
 					if total > discord_api::upload::MAX_TOTAL_BYTES {
@@ -665,7 +764,7 @@ impl Uploads {
 							"Attachments must total at most 500 MB; account limits may be lower",
 						);
 					}
-					let thumbnail = preview(&source).await;
+					let thumbnail = preview(&source, flag.clone()).await;
 					selected.push((source, thumbnail));
 				}
 				Ok(Some(selected))
@@ -709,8 +808,7 @@ impl Uploads {
 						&& let Some(key) = upload.key
 					{
 						self.selected.retain(|chosen| chosen.key != key);
-						self.previewing
-							.retain(|(preview_key, _)| *preview_key != key);
+						self.previewing.retain(|preview| preview.key != key);
 					}
 					self.public_result = Some(result);
 				}
@@ -749,9 +847,9 @@ impl Uploads {
 			}
 		}
 		self.previewing
-			.retain(|(key, receive)| match receive.try_recv() {
+			.retain(|preview| match preview.result.try_recv() {
 				Ok(thumbnail) => {
-					if let Some(chosen) = self.selected.iter_mut().find(|c| c.key == *key) {
+					if let Some(chosen) = self.selected.iter_mut().find(|c| c.key == preview.key) {
 						chosen.preview = thumbnail.map(Arc::new);
 					}
 					false
@@ -832,7 +930,7 @@ impl Uploads {
 	pub fn remove_at(&mut self, index: usize) {
 		if !self.busy() && index < self.selected.len() {
 			let removed = self.selected.remove(index);
-			self.previewing.retain(|(key, _)| *key != removed.key);
+			self.previewing.retain(|preview| preview.key != removed.key);
 		}
 	}
 
@@ -916,9 +1014,138 @@ impl Drop for Uploads {
 	}
 }
 
+#[cfg(all(debug_assertions, feature = "demo"))]
+pub(crate) fn debug_heic_check() {
+	#[cfg(target_os = "windows")]
+	{
+		let fixture = include_bytes!("../tests/fixtures/heic-large.heic");
+		let pixels = decode_preview(fixture)
+			.expect("synthetic HEIC must decode with installed HEIF/HEVC codecs");
+		assert_eq!(pixels.size, [320, 213]);
+		assert!(pixels.pixels.len() * 4 < PREVIEW_ALLOC as usize);
+		println!(
+			"WIC thumbnail first pixel: {:?}",
+			pixels.pixels[0].to_array()
+		);
+		for pixel in pixels.pixels.iter().step_by(1000) {
+			for (actual, expected) in pixel.to_array().into_iter().zip([64, 128, 192, 255]) {
+				assert!(actual.abs_diff(expected) <= 4, "{actual} != {expected}");
+			}
+		}
+		let (width, height, rgba) = platform::heic::decode(fixture, 8192, 128 * 1024 * 1024, 8192)
+			.expect("full-size WIC conversion");
+		assert_eq!((width, height), (6000, 4000));
+		assert_eq!(rgba.len(), 6000 * 4000 * 4);
+		assert_eq!(rgba[3], 255);
+		assert!(platform::heic::decode(fixture, 8192, PREVIEW_ALLOC, 8192).is_none());
+		assert!(platform::heic::decode(fixture, 1024, PREVIEW_ALLOC, 320).is_none());
+		assert!(platform::heic::decode(fixture, 8192, 100, 320).is_none());
+	}
+
+	assert!(previewable("photo.HEIC"));
+	assert!(previewable("photo.heif"));
+	assert!(decode_preview(b"\x00\x00\x00\x10ftypheic\x00\x00\x00\x00").is_none());
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[tokio::test]
+	async fn repeated_paste_removal_and_navigation_do_not_queue_thumbnail_workers() {
+		let context = egui::Context::default();
+		let runtime = tokio::runtime::Handle::current();
+		let budget = PreviewBudget::new(2, 16);
+		let mut uploads = Uploads::default();
+		for index in 0..200 {
+			uploads
+				.select_pasted_with_previews(
+					1,
+					Id(1),
+					vec![Source::pasted_png(vec![1; 8]).unwrap()],
+					&runtime,
+					&context,
+					&budget,
+				)
+				.unwrap();
+			assert!(uploads.previewing.len() <= 1);
+			if index % 2 == 0 {
+				uploads.remove_at(0);
+			} else {
+				uploads.revalidate_scope(1, Some(Id(2)), true);
+			}
+			assert!(uploads.files().is_empty());
+			assert!(!uploads.busy());
+		}
+		// No task has been polled yet: only the two admitted source copies survive.
+		assert_eq!(budget.jobs.available_permits(), 0);
+		assert_eq!(budget.bytes.available_permits(), 0);
+		tokio::task::yield_now().await;
+		assert_eq!(budget.jobs.available_permits(), 2);
+		assert_eq!(budget.bytes.available_permits(), 16);
+		assert!(uploads.previews().is_empty());
+	}
+
+	#[tokio::test]
+	async fn thumbnail_budget_survives_an_aborted_waiter_until_the_decoder_returns() {
+		let budget = PreviewBudget::new(1, 8);
+		let source = Source::pasted_png(vec![1; 8]).unwrap();
+		let permit = budget.admit(&source).unwrap();
+		let (started, entered) = tokio::sync::oneshot::channel();
+		let (release, blocked) = mpsc::sync_channel(1);
+		let task = tokio::spawn(preview_admitted(
+			source,
+			permit,
+			Arc::new(AtomicBool::new(false)),
+			move |_| {
+				let _ = started.send(());
+				blocked.recv().unwrap();
+				None
+			},
+		));
+		entered.await.unwrap();
+		task.abort();
+		assert!(task.await.unwrap_err().is_cancelled());
+		let next = Source::pasted_png(vec![2; 8]).unwrap();
+		assert!(budget.admit(&next).is_none());
+		assert_eq!(budget.bytes.available_permits(), 0);
+		release.send(()).unwrap();
+		tokio::time::timeout(std::time::Duration::from_secs(10), async {
+			while budget.jobs.available_permits() == 0 {
+				tokio::task::yield_now().await;
+			}
+		})
+		.await
+		.unwrap();
+		assert_eq!(budget.bytes.available_permits(), 8);
+		assert!(budget.admit(&next).is_some());
+	}
+
+	#[test]
+	fn thumbnail_admission_charges_source_bytes_before_a_job_starts() {
+		let budget = PreviewBudget::new(2, 8);
+		assert!(
+			budget
+				.admit(&Source::pasted_png(vec![1; 9]).unwrap())
+				.is_none()
+		);
+		let permit = budget
+			.admit(&Source::pasted_png(vec![1; 6]).unwrap())
+			.unwrap();
+		assert_eq!(budget.jobs.available_permits(), 1);
+		assert!(
+			budget
+				.admit(&Source::pasted_png(vec![1; 3]).unwrap())
+				.is_none()
+		);
+		assert_eq!(budget.jobs.available_permits(), 1);
+		drop(permit);
+		assert!(
+			budget
+				.admit(&Source::pasted_png(vec![1; 8]).unwrap())
+				.is_some()
+		);
+	}
+
 	#[tokio::test]
 	async fn public_host_consent_matches_selection_and_completion_is_session_scoped() {
 		let context = egui::Context::default();
@@ -1424,37 +1651,4 @@ mod tests {
 		assert!(!uploads.busy());
 		assert_eq!(uploads.take_notice(), None);
 	}
-}
-
-#[cfg(all(debug_assertions, feature = "demo"))]
-pub(crate) fn debug_heic_check() {
-	#[cfg(target_os = "windows")]
-	{
-		let fixture = include_bytes!("../tests/fixtures/heic-large.heic");
-		let pixels = decode_preview(fixture)
-			.expect("synthetic HEIC must decode with installed HEIF/HEVC codecs");
-		assert_eq!(pixels.size, [320, 213]);
-		assert!(pixels.pixels.len() * 4 < PREVIEW_ALLOC as usize);
-		println!(
-			"WIC thumbnail first pixel: {:?}",
-			pixels.pixels[0].to_array()
-		);
-		for pixel in pixels.pixels.iter().step_by(1000) {
-			for (actual, expected) in pixel.to_array().into_iter().zip([64, 128, 192, 255]) {
-				assert!(actual.abs_diff(expected) <= 4, "{actual} != {expected}");
-			}
-		}
-		let (width, height, rgba) = platform::heic::decode(fixture, 8192, 128 * 1024 * 1024, 8192)
-			.expect("full-size WIC conversion");
-		assert_eq!((width, height), (6000, 4000));
-		assert_eq!(rgba.len(), 6000 * 4000 * 4);
-		assert_eq!(rgba[3], 255);
-		assert!(platform::heic::decode(fixture, 8192, PREVIEW_ALLOC, 8192).is_none());
-		assert!(platform::heic::decode(fixture, 1024, PREVIEW_ALLOC, 320).is_none());
-		assert!(platform::heic::decode(fixture, 8192, 100, 320).is_none());
-	}
-
-	assert!(previewable("photo.HEIC"));
-	assert!(previewable("photo.heif"));
-	assert!(decode_preview(b"\x00\x00\x00\x10ftypheic\x00\x00\x00\x00").is_none());
 }
