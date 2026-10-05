@@ -492,9 +492,10 @@ mod tests {
 		let mut ui = settings();
 		ui.video_capabilities = Some(initial_report());
 		ui.video_capabilities_loading = true;
+		let backend = discord_voice::video_capabilities::backends()[0];
 		let (send, receive) = mpsc::sync_channel(13);
 		send.try_send(Update::Driver(
-			HardwareBackend::Nvenc,
+			backend,
 			VideoCodec::Av1,
 			ProbeResult::Available,
 		))
@@ -521,7 +522,7 @@ mod tests {
 		});
 		assert_eq!(starts, [Operation::Discover]);
 		assert_eq!(
-			ui.video_capabilities.unwrap().codec(VideoCodec::Av1)[HardwareBackend::Nvenc.index()],
+			ui.video_capabilities.unwrap().codec(VideoCodec::Av1)[backend.index()],
 			ProbeResult::Failed
 		);
 	}
