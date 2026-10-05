@@ -21,6 +21,9 @@ that documentation directory. `nix develop` sets `FFMPEG_DIR` to this build.
 No system GPL FFmpeg is linked into this package.
 All native encoder dependencies use the Nix stdenv C/C++ compiler wrappers,
 including FFmpeg's explicit configure compiler options on macOS.
+The macOS encoder build uses nixpkgs' `darwin.sigtool` and `cctools` for
+ad-hoc signing after changing library install names; no host signing tools or
+Developer ID credentials are needed.
 Linux x64 includes pinned AMF headers and a static oneVPL dispatcher. libva/libdrm
 are Nix dependencies for Quick Sync device setup, while compatible Intel/AMD/NVIDIA
 GPU runtimes remain system-provided. Experimental FFmpeg's H264/HEVC/AV1 VA-API

@@ -90,7 +90,7 @@ class BundleTest(unittest.TestCase):
                 with patch.object(builder.platform, "system", return_value=system), \
                         patch.dict(os.environ, {"VSCMD_ARG_TGT_ARCH": "x86_64"}), \
                         patch.object(builder, "fetch") as fetch, patch.object(builder, "run") as run:
-                    self.assertEqual(builder.build(args), prefix)
+                    self.assertEqual(builder.build(args), prefix.resolve())
                     if system != "Windows":
                         for compiler in ("CC", "CXX"):
                             with patch.dict(os.environ, {compiler: "/different/compiler-wrapper"}):
@@ -111,7 +111,7 @@ class BundleTest(unittest.TestCase):
                         alias = prefix / aliases[0]
                         alias.unlink()
                         alias.symlink_to(Path(libraries[0]).name)
-                        self.assertEqual(builder.build(args), prefix)
+                        self.assertEqual(builder.build(args), prefix.resolve())
                         (prefix / libraries[0]).unlink()
                         with self.assertRaisesRegex(ValueError, "Incomplete FFmpeg prefix"):
                             builder.build(args)
@@ -260,6 +260,78 @@ class BundleTest(unittest.TestCase):
         compilers = {"CC": "clang", "CXX": "clang++"}
         self.assertEqual(builder.toolchain_options("Windows", False, compilers),
                          ["--toolchain=msvc", "--target-os=win32", "--arch=x86_64"])
+
+    def test_windows_configure_selects_the_msys_shell_despite_system32_bash(self):
+        class ConfigureReached(Exception):
+            pass
+
+        for architecture in ("x64", "arm64"):
+            with self.subTest(architecture=architecture), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                msys_shell = root / "MSYS2 with spaces/usr/bin/bash.exe"
+                msys_shell.parent.mkdir(parents=True)
+                msys_shell.write_bytes(b"synthetic MSYS2 executable")
+                windows_shell = root / "Windows/System32/bash.exe"
+                windows_shell.parent.mkdir(parents=True)
+                windows_shell.write_bytes(b"synthetic WSL executable")
+                args = SimpleNamespace(prefix=root / "prefix", cache_dir=root / "cache",
+                                       work_dir=root / "work", jobs=1, offline=True)
+
+                def unpack(archive, destination):
+                    destination.mkdir(parents=True)
+                    (destination / "AMF").mkdir()
+                    return destination
+
+                def run(*arguments, **kwargs):
+                    if arguments[0] == "make" and "install-shared" in arguments:
+                        library = args.prefix / "lib/openh264_dll.lib"
+                        library.parent.mkdir(parents=True)
+                        library.write_bytes(b"synthetic import library")
+                    elif arguments[:2] == ("cmake", "--install"):
+                        pc = args.prefix / "lib/pkgconfig/vpl.pc"
+                        pc.parent.mkdir(parents=True)
+                        pc.write_text("Libs: -lvpl\n")
+                    elif len(arguments) > 1 and arguments[1] == "configure":
+                        raise ConfigureReached()
+
+                environment = {"VSCMD_ARG_TGT_ARCH": architecture,
+                               "PATH": str(windows_shell.parent) + os.pathsep + str(msys_shell.parent)}
+                with patch.object(builder.platform, "system", return_value="Windows"), \
+                        patch.dict(os.environ, environment), \
+                        patch.object(builder, "posix", side_effect=lambda path: str(path)), \
+                        patch.object(builder, "fetch", return_value=root / "source.tar"), \
+                        patch.object(builder, "openh264_source", return_value=root / "openh264.tar"), \
+                        patch.object(builder, "amf_headers", return_value=root / "amf.tar"), \
+                        patch.object(builder, "unpack", side_effect=unpack), \
+                        patch.object(builder, "patch_ffmpeg", return_value=""), \
+                        patch.object(builder.subprocess, "check_output", return_value=str(msys_shell) + "\n") as resolve, \
+                        patch.object(builder, "run", side_effect=run) as command:
+                    with self.assertRaises(ConfigureReached):
+                        builder.build(args)
+                self.assertEqual(command.call_args_list[-1].args[:2], (str(msys_shell), "configure"))
+                resolve.assert_called_once_with(["cygpath", "-w", "/usr/bin/bash.exe"], text=True,
+                                                env=resolve.call_args.kwargs["env"])
+                self.assertEqual(resolve.call_args.kwargs["env"]["PATH"], environment["PATH"])
+
+    def test_windows_configure_rejects_unavailable_msys_shell_without_path_fallback(self):
+        environment = {"PATH": "synthetic System32 before MSYS2"}
+        for error in (FileNotFoundError("cygpath"), subprocess.CalledProcessError(1, "cygpath")):
+            with self.subTest(error=type(error).__name__), \
+                    patch.object(builder.subprocess, "check_output", side_effect=error):
+                with self.assertRaisesRegex(ValueError, "requires MSYS2 cygpath and Bash"):
+                    builder.configure_shell("Windows", environment)
+        with tempfile.TemporaryDirectory() as directory:
+            for result in ("", "relative/bash.exe", str(Path(directory) / "missing/bash.exe")):
+                with self.subTest(result=result), \
+                        patch.object(builder.subprocess, "check_output", return_value=result):
+                    with self.assertRaisesRegex(ValueError, "existing absolute Bash"):
+                        builder.configure_shell("Windows", environment)
+
+    def test_unix_configure_keeps_the_existing_shell_lookup(self):
+        with patch.object(builder.subprocess, "check_output") as resolve:
+            for system in ("Linux", "Darwin"):
+                self.assertEqual(builder.configure_shell(system, {}), "bash")
+            resolve.assert_not_called()
 
     @unittest.skipUnless(os.environ.get("FFMPEG_DIR") and bundle.platform.system() == "Windows",
                          "Requires the native MSVC FFmpeg build and dumpbin")

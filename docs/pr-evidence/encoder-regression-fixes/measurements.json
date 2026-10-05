@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "baseline_commit": "8cd15690c060f8d2ffde2f04c736ab300d6cba84",
-  "after_revision": "fix/repository-bug-hunt working tree; final commit is reported in the pull request",
+  "after_revision": "b6a177b94a4b6b2ea0f64f79ce75e488208462fd",
   "environment": {
     "os": "Debian 13.7 container on Linux 6.18.44 x86_64",
     "cpu": "Intel Xeon Platinum 8573C",

@@ -74,6 +74,24 @@ def posix(path):
     return str(path)
 
 
+def configure_shell(system, env):
+    if system != "Windows":
+        return "bash"
+    # Native Windows Python's executable search may find System32's WSL bash
+    # before MSYS2, even when this script was launched from an MSYS2 shell.
+    # cygpath resolves /usr within that MSYS installation; use its absolute
+    # native path as one subprocess argument, including when it contains spaces.
+    try:
+        shell = subprocess.check_output(["cygpath", "-w", "/usr/bin/bash.exe"],
+                                        text=True, env=env).strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise ValueError("Windows FFmpeg configure requires MSYS2 cygpath and Bash; "
+                         "run the builder from an MSYS2 shell") from error
+    if not shell or not Path(shell).is_absolute() or not Path(shell).is_file():
+        raise ValueError("MSYS2 cygpath did not resolve an existing absolute Bash executable")
+    return shell
+
+
 def fetch(source, cache, offline):
     destination = cache / source["file"]
     if not destination.exists():
@@ -313,6 +331,7 @@ def build(args):
     # SONAME alone cannot prevent LIBAVCODEC_61/LIBAVUTIL_59 interposition.
     source_patch = patch_ffmpeg(trees["ffmpeg"])
     env = dict(os.environ)
+    shell = configure_shell(system, env)
     env["PKG_CONFIG_PATH"] = posix(prefix / "lib/pkgconfig") + os.pathsep + env.get("PKG_CONFIG_PATH", "")
     # MSYS pkgconf uses ':' even when driven by Windows Python.
     if system == "Windows":
@@ -372,7 +391,7 @@ def build(args):
         # no additional Visual C++ redistributable is needed for these DLLs.
         configure += [f"--extra-cflags=-I{posix(prefix / 'include')} -MT",
                       f"--extra-ldflags=-libpath:{(prefix / 'lib').as_posix()}"]
-    run("bash", "configure", *configure, cwd=trees["ffmpeg"], env=env)
+    run(shell, "configure", *configure, cwd=trees["ffmpeg"], env=env)
     configuration = (trees["ffmpeg"] / "config.h").read_text()
     if "#define CONFIG_GPL 0" not in configuration or "#define CONFIG_NONFREE 0" not in configuration:
         raise ValueError("FFmpeg build must remain LGPL without GPL/nonfree components")

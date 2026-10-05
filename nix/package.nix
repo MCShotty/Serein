@@ -4,6 +4,8 @@
     rustPlatform,
     pkg-config,
     cmake,
+    cctools,
+    darwin,
     makeWrapper,
     swift,
     swiftpm,
@@ -83,7 +85,9 @@
         pname = "serein-ffmpeg";
         version = "7.1.5";
         dontUnpack = true;
-        nativeBuildInputs = [python3 pkg-config nasm] ++ lib.optionals isLinux [cmake patchelf];
+        nativeBuildInputs = [python3 pkg-config nasm]
+            ++ lib.optionals isLinux [cmake patchelf]
+            ++ lib.optionals isDarwin [darwin.sigtool cctools];
         CC = "${stdenv.cc}/bin/cc";
         CXX = "${stdenv.cc}/bin/c++";
         buildInputs = lib.optionals isDarwin [apple-sdk_15]
