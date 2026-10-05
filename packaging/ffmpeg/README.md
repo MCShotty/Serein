@@ -8,14 +8,17 @@ VA-API/NVENC on Linux, with source-built Rust OpenH264 fallback.
 Experimental compiles this exact encoder set; hardware capabilities and runtime
 availability determine which can open:
 
-Experimental settings probe each hardware engine/codec with synthetic camera
-and screen-share pictures. These checks call the linked libraries in disposable
-Serein helper processes, not an FFmpeg CLI. Successful validated output is
-required, without software or another hardware fallback. A ten-second helper
-deadline makes driver hangs unknown; the parent kills and reaps canceled helpers.
-The settings expose separate camera/screen results and a manual Recheck. The
-report is process-local and does not guarantee other stream presets or peer
-negotiation; see [voice documentation](../../docs/voice.md).
+Experimental settings initially query each vendor's driver capability API for
+the compiled FFmpeg encoder paths, without initializing encoders or submitting
+pictures. Recheck repeats those queries. The separate, optional **Test encoder**
+action validates synthetic camera/screen output for the selected codec, without
+software or another-vendor fallback; its results never replace the driver report.
+Both use disposable Serein helpers, not an FFmpeg CLI, with a ten-second deadline
+per backend/codec. The parent kills/reaps cancelled helpers; reopening restarts
+cancelled discovery but never automatically repeats an encoder test. Reports are
+process-local, with inconclusive APIs/timeouts shown as Unknown. Driver-reported
+support is not a guarantee of a working encode or peer negotiation;
+see [voice documentation](../../docs/voice.md).
 
 | Platform | H264 | H265/HEVC | AV1 |
 |---|---|---|---|
@@ -71,7 +74,8 @@ arguments in `ffmpeg-source` (Linux: `share/doc/serein/ffmpeg-source`). OpenH264
 and NVENC headers retain their BSD/MIT notices. AMF 1.4.36 public headers retain
 AMD's MIT license and standards/patent notice. Intel oneVPL 2.14.0's MIT license,
 third-party notice and complete source archive accompany its statically linked
-PIC dispatcher; no Intel GPU runtime or AMD driver is redistributed. OpenH264 is compiled from source,
+PIC dispatcher, now also linked into the application for hardware capability
+enumeration; no Intel GPU runtime or AMD driver is redistributed. OpenH264 is compiled from source,
 without assuming Cisco binary-download patent coverage. Rebuilding a library
 requires the compiler/tool versions recorded by the distributor's build logs.
 Serein's MIT/Apache application sources remain available in the repository.

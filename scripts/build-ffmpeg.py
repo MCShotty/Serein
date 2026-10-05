@@ -316,10 +316,16 @@ def validate_completed_build(prefix, system, backends):
     if system == "Linux":
         provenance.append("serein-openh264.patch")
     if backends["nvenc"]:
+        required += ["include/ffnvcodec/nvEncodeAPI.h", "include/ffnvcodec/dynlink_cuda.h"]
         provenance += ["nv-codec-headers-README", "source/nv-codec-headers-12.2.72.0.tar.gz"]
     if backends["amf"]:
+        required += ["include/AMF/core/Factory.h", "include/AMF/components/ComponentCaps.h",
+                     "include/AMF/components/VideoEncoderVCE.h", "include/AMF/components/VideoEncoderHEVC.h",
+                     "include/AMF/components/VideoEncoderAV1.h"]
         provenance += ["AMF-LICENSE", "source/AMF-1.4.36-headers.tar"]
     if backends["qsv"]:
+        required += ["include/vpl/mfxdispatcher.h", "include/vpl/mfxstructures.h", "lib/pkgconfig/vpl.pc",
+                     "lib/vpl.lib" if system == "Windows" else "lib/libvpl.a"]
         provenance += ["oneVPL-LICENSE", "oneVPL-third-party-programs.txt", "source/libvpl-2.14.0.tar.gz"]
     required += ["share/serein-ffmpeg/" + name for name in provenance]
     for name in required:

@@ -92,7 +92,32 @@ pub struct HardwareSupport {
 	pub screen: ProbeResult,
 }
 
-/// A fixed codec/backend matrix bounds scan state independently of driver output.
+/// Driver-advertised codec support, queried without submitting frames to an encoder.
+/// A fixed codec/backend matrix bounds session-local state independently of driver output.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DriverCapabilities {
+	pub support: [[ProbeResult; 4]; 3],
+}
+
+impl DriverCapabilities {
+	pub fn codec(&self, codec: VideoCodec) -> &[ProbeResult; 4] {
+		&self.support[codec.index()]
+	}
+
+	pub fn set(&mut self, backend: HardwareBackend, codec: VideoCodec, value: ProbeResult) {
+		self.support[codec.index()][backend.index()] = value;
+	}
+
+	/// Only complete negative driver reports disable a codec. Query failures stay unknown.
+	pub fn confirmed_unavailable(&self, codec: VideoCodec) -> bool {
+		self.codec(codec)
+			.iter()
+			.all(|result| *result == ProbeResult::Unavailable)
+	}
+}
+
+/// Results of explicit synthetic encoder tests; distinct from driver-advertised support.
+/// The fixed codec/backend matrix bounds state independently of driver output.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct VideoCapabilities {
 	pub support: [[HardwareSupport; 4]; 3],
@@ -107,7 +132,7 @@ impl VideoCapabilities {
 		self.support[codec.index()][backend.index()] = value;
 	}
 
-	/// Only a complete negative scan can disable a codec; failed/timed-out checks are unknown.
+	/// A complete negative test matrix; this does not override driver-reported support.
 	pub fn confirmed_unavailable(&self, codec: VideoCodec) -> bool {
 		self.codec(codec).iter().all(|support| {
 			support.camera == ProbeResult::Unavailable && support.screen == ProbeResult::Unavailable
