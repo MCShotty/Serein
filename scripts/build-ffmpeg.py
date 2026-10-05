@@ -237,6 +237,38 @@ def patch_ffmpeg(tree):
     return "".join(patches)
 
 
+def validate_completed_build(prefix, system, backends):
+    """A recipe stamp is insufficient if a restored build lost required files."""
+    required = [f"include/{name}" for name in (
+        "libavcodec/avcodec.h", "libavutil/avutil.h", "libavutil/error.h", "libavutil/frame.h",
+        "libavutil/hwcontext.h", "libavutil/mem.h", "libavutil/opt.h")]
+    required += ["lib/pkgconfig/libavcodec-serein.pc", "lib/pkgconfig/libavutil-serein.pc"]
+    required += {
+        "Linux": ["lib/libavcodec-serein.so", "lib/libavcodec-serein.so.61",
+                  "lib/libavutil-serein.so", "lib/libavutil-serein.so.59", "lib/libopenh264.so.8"],
+        "Darwin": ["lib/libavcodec-serein.dylib", "lib/libavcodec-serein.61.dylib",
+                   "lib/libavutil-serein.dylib", "lib/libavutil-serein.59.dylib", "lib/libopenh264.8.dylib"],
+        "Windows": ["bin/avcodec-serein-61.dll", "bin/avutil-serein-59.dll", "bin/openh264.dll",
+                    "lib/avcodec-serein.lib", "lib/avutil-serein.lib"],
+    }[system]
+    provenance = ["build-ffmpeg.py", "configure.json", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE",
+                  "source/ffmpeg-7.1.5.tar.xz", "source/openh264-2.6.0-source.tar.bz2"]
+    if backends["nvenc"]:
+        provenance += ["nv-codec-headers-README", "source/nv-codec-headers-12.2.72.0.tar.gz"]
+    if backends["amf"]:
+        provenance += ["AMF-LICENSE", "source/AMF-1.4.36-headers.tar"]
+    if backends["qsv"]:
+        provenance += ["oneVPL-LICENSE", "oneVPL-third-party-programs.txt", "source/libvpl-2.14.0.tar.gz"]
+    required += ["share/serein-ffmpeg/" + name for name in provenance]
+    for name in required:
+        path = prefix / name
+        # Installed library aliases are symlinks; is_file/stat validate their
+        # actual targets too, including a broken alias after partial cache restore.
+        if not path.is_file() or path.stat().st_size == 0:
+            raise ValueError(f"Incomplete FFmpeg prefix (missing/empty {name}); "
+                             "choose fresh --prefix and --work-dir paths")
+
+
 def build(args):
     system = platform.system()
     if system.startswith(("MSYS", "MINGW", "CYGWIN")):
@@ -258,6 +290,7 @@ def build(args):
               hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     stamp = prefix / "share/serein-ffmpeg/build.json"
     if stamp.is_file() and json.loads(stamp.read_text()) == recipe:
+        validate_completed_build(prefix, system, backends)
         print(f"Reusing verified FFmpeg build: {prefix}")
         return prefix
     if prefix.exists() and any(prefix.iterdir()):

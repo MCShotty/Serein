@@ -23,6 +23,8 @@ const MAX_DECODERS: usize = 8;
 const QUEUE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_WIDTH: u32 = 1920;
 const MAX_PIXELS: u64 = 1920 * 1080;
+// A normal 1080p SPS stores 1088 coded rows and crops the final eight.
+const MAX_CODED_PIXELS: u64 = 1920 * 1088;
 const START_CODE: [u8; 4] = [0, 0, 0, 1];
 const MAX_DECODE_AGE: Duration = Duration::from_millis(150);
 
@@ -346,9 +348,14 @@ impl Receivers {
 		}
 		if let Some(entry) = self.sources.iter_mut().find(|(s, _, _)| *s == ssrc) {
 			if entry.1 != user {
+				let previous = entry.1;
 				entry.1 = user;
 				entry.2 = Assembler::default();
 				self.rtx.retain(|(_, media)| *media != ssrc);
+				if !self.sources.iter().any(|(_, owner, _)| *owner == previous) {
+					self.awaiting_keyframe.retain(|owner| *owner != previous);
+				}
+				self.require_keyframe(user);
 			}
 			return Ok(());
 		}
@@ -405,7 +412,10 @@ impl Receivers {
 	}
 	/// A dropped or undecodable picture invalidates every later prediction until an IDR.
 	pub fn require_keyframe(&mut self, user: u64) {
-		if !self.awaiting_keyframe.contains(&user) {
+		if self.sources.iter().any(|(_, owner, _)| *owner == user)
+			&& !self.awaiting_keyframe.contains(&user)
+			&& self.awaiting_keyframe.len() < MAX_SOURCES
+		{
 			self.awaiting_keyframe.push(user);
 		}
 	}
@@ -525,7 +535,17 @@ pub(crate) fn pli(sender: u32, media: u32) -> ([u8; 8], [u8; 4]) {
 /// Queue a frame without blocking the transport. `Ok(false)` means the queue was full and
 /// the frame dropped, so the caller must wait for the next keyframe.
 pub(crate) fn offer(sender: &DecoderQueue, frame: Encoded) -> Result<bool, &'static str> {
-	if frame.data.len() > MAX_FRAME_BYTES || frame.data.capacity() > QUEUE_BYTES {
+	if frame.data.len() > MAX_FRAME_BYTES
+		|| frame.data.capacity() > QUEUE_BYTES
+		|| crate::video_sps::validate_dimensions(&frame.data, |dimensions| {
+			let (width, height) = dimensions.coded;
+			width <= MAX_WIDTH as usize
+				&& height <= MAX_WIDTH as usize
+				&& width as u64 * height as u64 <= MAX_CODED_PIXELS
+				&& bounded(dimensions.visible.0, dimensions.visible.1).is_ok()
+		})
+		.is_err()
+	{
 		return Ok(false);
 	}
 	let Ok(permit) = sender
@@ -844,6 +864,40 @@ fn bounded(width: usize, height: usize) -> Result<(u32, u32), ()> {
 mod tests {
 	use super::*;
 
+	#[test]
+	fn removed_source_ignores_late_decoder_losses() {
+		let mut receivers = Receivers::default();
+		let lost: Lost = Arc::default();
+		for user in 1..=MAX_SOURCES as u64 + 4 {
+			receivers.announce(user, 700).unwrap();
+			receivers.remove(user);
+			// A decode already running when cancellation occurred can report failure afterward.
+			lost.lock().unwrap().push(user);
+			receivers.absorb(&lost);
+			assert!(!receivers.awaiting());
+			assert_eq!(receivers.keyframe_requests().count(), 0);
+		}
+	}
+
+	#[test]
+	fn reassigned_ssrc_requests_new_owner_keyframe_and_forgets_departed_owner() {
+		let mut receivers = Receivers::default();
+		receivers.announce(7, 700).unwrap();
+		receivers.announce(8, 800).unwrap();
+		assert!(receivers.accept(8, true));
+		receivers.announce(8, 700).unwrap();
+		assert!(!receivers.accept(8, false));
+		assert_eq!(receivers.awaiting_keyframe, vec![8]);
+		assert_eq!(receivers.keyframe_requests().collect::<Vec<_>>(), vec![700]);
+		// An owner who still has another SSRC keeps its independent recovery request.
+		receivers.announce(9, 700).unwrap();
+		assert_eq!(receivers.awaiting_keyframe, vec![8, 9]);
+		assert_eq!(
+			receivers.keyframe_requests().collect::<Vec<_>>(),
+			vec![800, 700]
+		);
+	}
+
 	fn decoder_cleanup_queue(capacity: usize) -> (DecoderQueue, Receiver<Decode>) {
 		let (send, receive) = sync_channel(capacity);
 		(
@@ -878,6 +932,97 @@ mod tests {
 		let (send, receive) = sync_channel(1);
 		assert!(queue.send.send(Decode::Barrier(send)).is_ok());
 		receive.recv_timeout(Duration::from_secs(10)).unwrap()
+	}
+
+	#[test]
+	fn receiver_admission_rejects_oversized_sps_before_native_decode() {
+		let data = decoder_cleanup_keyframe(2048, 1152);
+		assert!(data.len() < MAX_FRAME_BYTES);
+		assert!(has_parameter_sets(&data) && is_keyframe(&data));
+		// Verify this is a decodable frame, rather than malformed bytes rejected incidentally.
+		let mut decoder = openh264::decoder::Decoder::new().unwrap();
+		let decoded = decoder.decode(&data).unwrap().unwrap();
+		assert_eq!(
+			openh264::formats::YUVSource::dimensions(&decoded),
+			(2048, 1152)
+		);
+		let (queue, receive) = decoder_cleanup_queue(1);
+		assert!(
+			!offer(
+				&queue,
+				Encoded {
+					user: 7,
+					data,
+					keyframe: true,
+				},
+			)
+			.unwrap()
+		);
+		assert!(receive.try_recv().is_err());
+		assert!(queue.active.lock().unwrap().is_empty());
+		assert_eq!(queue.bytes.available_permits(), QUEUE_BYTES);
+	}
+
+	#[test]
+	fn receiver_admission_accepts_1080p_and_rejects_parameter_replacement() {
+		let (queue, receive) = decoder_cleanup_queue(1);
+		for (width, height) in [(1920, 1080), (1080, 1920)] {
+			let data = decoder_cleanup_keyframe(width, height);
+			assert!(
+				offer(
+					&queue,
+					Encoded {
+						user: 7,
+						data,
+						keyframe: true
+					}
+				)
+				.unwrap()
+			);
+			assert!(matches!(receive.try_recv(), Ok(Decode::Frame(..))));
+		}
+		let lifetime = queue.active.lock().unwrap()[&7].clone();
+		let data = decoder_cleanup_keyframe(2048, 1152);
+		assert!(
+			!offer(
+				&queue,
+				Encoded {
+					user: 7,
+					data,
+					keyframe: true
+				}
+			)
+			.unwrap()
+		);
+		assert!(lifetime.load(Ordering::Acquire));
+		assert!(receive.try_recv().is_err());
+		assert_eq!(queue.bytes.available_permits(), QUEUE_BYTES);
+		// Malformed SPS and SPS without its body must also stay outside the queue.
+		for data in [vec![0, 0, 1, 0x67], vec![0, 0, 1, 0x67, 66, 0, 52, 0x80]] {
+			assert!(
+				!offer(
+					&queue,
+					Encoded {
+						user: 7,
+						data,
+						keyframe: true
+					}
+				)
+				.unwrap()
+			);
+		}
+		let data = decoder_cleanup_keyframe(32, 32);
+		assert!(
+			offer(
+				&queue,
+				Encoded {
+					user: 7,
+					data,
+					keyframe: true
+				}
+			)
+			.unwrap()
+		);
 	}
 
 	#[test]
@@ -1029,7 +1174,7 @@ mod tests {
 				&queue,
 				Encoded {
 					user: 7,
-					data: vec![0],
+					data: vec![0, 0, 1, 0x41, 0x80],
 					keyframe: true
 				}
 			)
@@ -1061,7 +1206,7 @@ mod tests {
 				&queue,
 				Encoded {
 					user: 8,
-					data: vec![0],
+					data: vec![0, 0, 1, 0x41, 0x80],
 					keyframe: true
 				}
 			)

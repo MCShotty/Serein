@@ -48,6 +48,7 @@ impl Handoff {
 pub struct CaptchaView {
 	view: webkit6::WebView,
 	window: gtk4::Window,
+	display: gtk4::gdk::Display,
 	manager: webkit6::UserContentManager,
 	state: Rc<Handoff>,
 	cancel: gio::Cancellable,
@@ -208,9 +209,11 @@ impl CaptchaView {
 		let _ = parent;
 		view.load_html(&html, Some(PAGE));
 		window.present();
+		let display = gtk4::prelude::WidgetExt::display(&window);
 		Ok(Self {
 			view,
 			window,
+			display,
 			manager,
 			state,
 			cancel,
@@ -243,6 +246,7 @@ impl CaptchaView {
 			}
 			context.iteration(false);
 		}
+		self.display.flush();
 		if !self.state.active()
 			|| self.state.delivered.get()
 			|| self.state.querying.get()
@@ -294,6 +298,7 @@ impl Drop for CaptchaView {
 		self.view.terminate_web_process();
 		self.window.set_child(None::<&gtk4::Widget>);
 		self.window.destroy();
+		self.display.flush();
 	}
 }
 

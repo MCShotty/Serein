@@ -1775,6 +1775,53 @@ mod tests {
 		assert_eq!(images.media.bytes(), 0);
 	}
 
+	#[test]
+	fn closing_viewer_releases_full_resolution_pixels_after_inline_repaint() {
+		let ctx = egui::Context::default();
+		let mut images = Avatars::default();
+		let media = model::EmbedMedia {
+			url: Some("https://cdn.discordapp.com/attachments/1/2/a.png".into()),
+			width: 4096,
+			height: 2048,
+			..Default::default()
+		};
+		let frame = |images: &mut Avatars, surface: Surface| {
+			ctx.run_ui(Default::default(), |ui| {
+				let size = if surface == Surface::Viewer {
+					egui::vec2(100.0, 80.0)
+				} else {
+					egui::vec2(40.0, 40.0)
+				};
+				images.show_media(ui, &media, size, false, surface);
+			})
+			.drop_without_applying_deltas();
+			images.take_requests()
+		};
+		// A viewer request can finish before the inline thumbnail already in flight.
+		let inline = frame(&mut images, Surface::Inline).pop().unwrap();
+		let viewer = frame(&mut images, Surface::Viewer).pop().unwrap();
+		assert_ne!(inline, viewer);
+		images.accept(
+			&ctx,
+			viewer.clone(),
+			Some(ColorImage::filled([4, 2], egui::Color32::WHITE)),
+		);
+		frame(&mut images, Surface::Viewer);
+		assert_eq!(images.media.bytes(), 4 * 2 * 4);
+		// The timeline paints its inline image before the closed viewer is swept.
+		frame(&mut images, Surface::Inline);
+		assert!(images.texture_id(&viewer).is_none());
+		assert_eq!(images.media.bytes(), 0);
+		images.accept(
+			&ctx,
+			inline.clone(),
+			Some(ColorImage::filled([2, 1], egui::Color32::WHITE)),
+		);
+		frame(&mut images, Surface::Inline);
+		assert!(images.texture_id(&inline).is_some());
+		assert_eq!(images.media.bytes(), 2 * 4);
+	}
+
 	/// Offline settled media frames; no window, GPU, network, or account access.
 	#[test]
 	#[ignore = "release media workload; one warmup and five measured batches"]

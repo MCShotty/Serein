@@ -4430,3 +4430,51 @@ and explicit codec negotiation; only H.264 has bundled software fallback and
 incoming decoding remains H.264. Physical GPUs/capture, official-client live
 compatibility (including AV1 DAVE framing), Windows/macOS, actual Nix/Flatpak
 packages, dedicated license CI and remote checks remain unverified.
+
+## Repository-wide lifecycle and state bug hunt — October 5, 2026
+
+Compare the verified local starting commit `b6c32b6ddfa3bef63f01bc9b101de5aa20203017`
+with the repository-wide bug-hunt fixes. The baseline and after binaries were built
+from isolated worktrees with locked dependencies. Testing used synthetic offline data
+and did not require an account, physical capture device or GPU. Raw samples, artifact
+identities and environment details are in the
+[bug-hunt measurements](pr-evidence/repository-bug-hunt/measurements.json).
+
+| Metric / method | Baseline | After | Delta |
+| --- | ---: | ---: | ---: |
+| Standard executable, bytes | 85,746,216 | 85,796,648 | 50,432 / +0.059% |
+| Installed regular files, bytes | 120,976,132 | 121,026,564 | 50,432 / +0.042% |
+| Compressed DEB, bytes | 70,795,724 | 70,809,936 | 14,212 / +0.020% |
+| Reducer replay median, 100,000 events | 79.729 ms | 80.958 ms | 1.229 ms / +1.54% |
+| Appearance idle mean CPU, one core | 360.955% | 347.380% | -13.575 percentage points / -3.76% |
+| Appearance idle sampled peak RSS | 192.594 MiB | 194.070 MiB | 1.477 MiB / +0.77% |
+
+The environment was Debian 13.7 on Linux 6.18.44 x86_64, Intel Xeon Platinum
+8573C, five visible logical CPUs, 18,882,699,264 bytes RAM and Rust 1.98.1.
+The standard `cargo xtask package` build used the normal release profile and
+passed the 248-file DEB smoke covering its executable, desktop entry, metadata,
+ownership, content and host shared-library closure. Installed size sums regular
+file content and excludes filesystem allocation and symlink overhead.
+
+The reducer benchmark replays 100,000 deterministic gateway events into a fresh
+process. After one warmup per revision, five baseline/after pairs alternated order.
+Baseline samples ranged from 73.512 to 111.762 ms and after samples from 75.801 to
+94.434 ms. Both revisions retained 500 records with an estimated timeline size of
+331,992 to 332,477 bytes. The overlapping ranges and 1.54% median difference are
+consistent with run-to-run noise, so no reducer regression or improvement is
+claimed.
+
+The native idle check used the release `profile_preview` example with demo data on
+the Appearance page at 1120×760 under Xvfb and Mesa lavapipe Vulkan. Each revision
+warmed for eight seconds, settled for three seconds after pointer movement, then
+recorded twenty one-second CPU and RSS samples. Neither process spawned children.
+After mean CPU was 13.575 percentage points lower and sampled RSS was 1,548,288
+bytes higher. This single software-renderer pair does not establish a performance
+change; frame timing, GPU memory and active media workloads remain unmeasured.
+
+`cargo xtask check` passed the full workspace tests, strict all-target Clippy,
+documentation, no-default-feature build and policy checks. Focused GStreamer,
+voice, packaging and repository-script tests also passed, followed by the standard
+package smoke. Native Windows/macOS builds, physical GPU and capture devices, live
+accounts, live Wayland compositor events and extended soak testing remain
+unverified.

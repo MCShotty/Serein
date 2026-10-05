@@ -42,9 +42,19 @@ Windows uses MSYS2 bash with make, pkgconf and nasm, native CMake/NMake, and an 
 developer environment matching the Rust target. Run the same builder through
 Windows Python, then set `FFMPEG_DIR` to its absolute native prefix for Cargo.
 The Windows CI jobs show the complete setup. Source archives have exact SHA-256
-pins. Builds reuse a matching completed prefix; a failed/incompatible build
+pins. Builds reuse a matching completed prefix after checking required SDK headers,
+link/runtime libraries and bundled source/provenance files are present and nonempty.
+Missing files, empty files and broken library aliases reject reuse; a failed/incompatible build
 requires fresh `--prefix` and `--work-dir` paths. `--offline` consumes previously
 downloaded archives in `--cache-dir` without network access.
+
+The retained Linux verification prefix predates this cache-validation-only change;
+its original builder SHA-256 is
+`3e6f390ecf333833313c7aaee760cd53ade18d741f535b17bdc32ee1d7538c59`.
+Its source recipe/provenance remains unchanged and accurately describes those libraries.
+This validation change does not alter native configure, compile or link settings.
+The current builder still hashes its complete file, so running it again requires
+a fresh prefix rather than relabelling the previously built libraries with a new hash.
 
 Packages contain replaceable shared libraries and the complete corresponding
 FFmpeg source archive, LGPL text, build recipe, source hashes, source patch and configure

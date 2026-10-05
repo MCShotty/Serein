@@ -84,6 +84,8 @@ jobs:
           bun-version: 1.4.2
       - run: bun tests/login-handoff.cjs
       - run: bun tests/xtask-workspace.cjs
+      - run: bun tests/xtask-package.cjs
+        if: runner.os == 'Linux'
       - run: cargo replay
       - run: cargo replay --soak 5
       - name: FFmpeg native libraries and packaging regression (offline)

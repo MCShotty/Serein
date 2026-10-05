@@ -12,6 +12,7 @@ import tempfile
 import subprocess
 import tarfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import bundle
@@ -33,6 +34,83 @@ def native_codec(prefix, system, mode=ctypes.DEFAULT_MODE):
 
 
 class BundleTest(unittest.TestCase):
+    def test_matching_stamp_rejects_incomplete_prefix_without_native_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prefix = root / "prefix"
+            notices = prefix / "share/serein-ffmpeg"
+            notices.mkdir(parents=True)
+            backends = builder.encoder_backends("Linux", False)
+            recipe = {"sources": builder.SOURCES, "system": "Linux", "architecture": "x86_64", **backends,
+                      "encoders": sorted(builder.encoder_names(backends)),
+                      "recipe_sha256": hashlib.sha256(Path(builder.__file__).read_bytes()).hexdigest()}
+            (notices / "build.json").write_text(json.dumps(recipe))
+            args = SimpleNamespace(prefix=prefix, cache_dir=root / "cache", work_dir=root / "work", jobs=1, offline=True)
+            with patch.object(builder.platform, "system", return_value="Linux"), \
+                    patch.dict(os.environ, {"VSCMD_ARG_TGT_ARCH": "x86_64"}), \
+                    patch.object(builder, "fetch") as fetch, patch.object(builder, "run") as run:
+                with self.assertRaisesRegex(ValueError, "Incomplete FFmpeg prefix"):
+                    builder.build(args)
+                fetch.assert_not_called()
+                run.assert_not_called()
+
+    def test_cached_build_requires_platform_artifacts_and_source_payload(self):
+        headers = ("libavcodec/avcodec.h", "libavutil/avutil.h", "libavutil/error.h", "libavutil/frame.h",
+                   "libavutil/hwcontext.h", "libavutil/mem.h", "libavutil/opt.h")
+        provenance = ("build-ffmpeg.py", "configure.json", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE",
+                      "source/ffmpeg-7.1.5.tar.xz", "source/openh264-2.6.0-source.tar.bz2",
+                      "nv-codec-headers-README", "source/nv-codec-headers-12.2.72.0.tar.gz", "AMF-LICENSE",
+                      "source/AMF-1.4.36-headers.tar", "oneVPL-LICENSE", "oneVPL-third-party-programs.txt",
+                      "source/libvpl-2.14.0.tar.gz")
+        for system in bundle.LIBRARIES:
+            with self.subTest(system=system), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                prefix = root / "prefix"
+                relative_files = ["include/" + name for name in headers]
+                relative_files += ["lib/pkgconfig/libavcodec-serein.pc", "lib/pkgconfig/libavutil-serein.pc"]
+                libraries = [str(Path("bin" if system == "Windows" else "lib") / name)
+                             for name in bundle.LIBRARIES[system]]
+                relative_files += libraries
+                aliases = {"Linux": ["lib/libavcodec-serein.so", "lib/libavutil-serein.so"],
+                           "Darwin": ["lib/libavcodec-serein.dylib", "lib/libavutil-serein.dylib"],
+                           "Windows": ["lib/avcodec-serein.lib", "lib/avutil-serein.lib"]}[system]
+                relative_files += aliases + ["share/serein-ffmpeg/" + name for name in provenance]
+                for name in relative_files:
+                    target = prefix / name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(b"synthetic required artifact")
+                backends = builder.encoder_backends(system, False)
+                recipe = {"sources": builder.SOURCES, "system": system, "architecture": "x86_64", **backends,
+                          "encoders": sorted(builder.encoder_names(backends)),
+                          "recipe_sha256": hashlib.sha256(Path(builder.__file__).read_bytes()).hexdigest()}
+                (prefix / "share/serein-ffmpeg/build.json").write_text(json.dumps(recipe))
+                args = SimpleNamespace(prefix=prefix, cache_dir=root / "cache", work_dir=root / "work", jobs=1, offline=True)
+                with patch.object(builder.platform, "system", return_value=system), \
+                        patch.dict(os.environ, {"VSCMD_ARG_TGT_ARCH": "x86_64"}), \
+                        patch.object(builder, "fetch") as fetch, patch.object(builder, "run") as run:
+                    self.assertEqual(builder.build(args), prefix)
+                    for name in ("include/libavcodec/avcodec.h", libraries[0], aliases[0],
+                                 "share/serein-ffmpeg/source/ffmpeg-7.1.5.tar.xz"):
+                        target = prefix / name
+                        original = target.read_bytes()
+                        target.unlink()
+                        with self.assertRaisesRegex(ValueError, "Incomplete FFmpeg prefix"):
+                            builder.build(args)
+                        target.write_bytes(b"")
+                        with self.assertRaisesRegex(ValueError, "Incomplete FFmpeg prefix"):
+                            builder.build(args)
+                        target.write_bytes(original)
+                    if system != "Windows":
+                        alias = prefix / aliases[0]
+                        alias.unlink()
+                        alias.symlink_to(Path(libraries[0]).name)
+                        self.assertEqual(builder.build(args), prefix)
+                        (prefix / libraries[0]).unlink()
+                        with self.assertRaisesRegex(ValueError, "Incomplete FFmpeg prefix"):
+                            builder.build(args)
+                    fetch.assert_not_called()
+                    run.assert_not_called()
+
     def test_openh264_subset_preserves_build_scripts_and_android_resources(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

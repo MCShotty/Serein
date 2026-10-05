@@ -760,8 +760,10 @@ impl Voice {
 				.effective()
 				.sensitivity_db
 				.unwrap_or(-70);
+			let capture_generation = live.audio.capture_generation();
 			live.controls.send_if_modified(|control| {
 				if control.muted == muted
+					&& control.capture_generation == capture_generation
 					&& control.deafened == deafened
 					&& control.user_volumes == user_volumes
 					&& control.stream_volume == stream_volume
@@ -770,6 +772,7 @@ impl Voice {
 					false
 				} else {
 					control.muted = muted;
+					control.capture_generation = capture_generation;
 					control.deafened = deafened;
 					control.user_volumes = user_volumes;
 					control.stream_volume = stream_volume;
@@ -838,6 +841,16 @@ impl Voice {
 					Notice::DeviceReady | Notice::RemoteAudio => {}
 				}
 			}
+			// Security notices above can advance privacy after the regular controls snapshot.
+			let capture_generation = live.audio.capture_generation();
+			live.controls.send_if_modified(|control| {
+				if control.capture_generation == capture_generation {
+					false
+				} else {
+					control.capture_generation = capture_generation;
+					true
+				}
+			});
 			if live.negotiation.is_none() && live.waiting_for_peer {
 				state.apply_voice(voice::Event::Progress {
 					channel: live.channel,
@@ -1408,6 +1421,8 @@ impl Voice {
 				wake.request_repaint();
 			},
 		)?;
+		audio.set_controls(listen_only || ui.voice_push_to_talk, false);
+		audio.set_input_enabled(input_enabled);
 		let (controls, control_receive) = watch::channel(Controls {
 			activity_threshold_db: ui
 				.voice_processing
@@ -1415,6 +1430,7 @@ impl Voice {
 				.sensitivity_db
 				.unwrap_or(-70),
 			muted: listen_only || ui.voice_push_to_talk,
+			capture_generation: audio.capture_generation(),
 			camera: 0,
 			video: pending.video_settings,
 			deafened: false,
@@ -1433,8 +1449,6 @@ impl Voice {
 				picture_wake.request_repaint();
 			}
 		});
-		audio.set_controls(listen_only || ui.voice_push_to_talk, false);
-		audio.set_input_enabled(input_enabled);
 		audio.set_processing(ui.voice_processing.effective());
 		audio.set_gain(ui.voice_gain.input_percent, ui.voice_gain.output_percent);
 		let session = Secret::new(
