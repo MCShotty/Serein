@@ -25,8 +25,11 @@ jobs:
         run: choco install nsis --no-progress -y
       - name: Install, upgrade and uninstall (synthetic/offline)
         run: python packaging/windows/test_installer.py
+      - name: Validate Windows update archive migration (offline)
+        run: python packaging/windows/test_update_archive.py
   native:
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    # Drafts need real native builds too; synthetic installer fixtures cannot
+    # validate the compiler, codec DLLs or platform-specific Rust paths.
     strategy:
       fail-fast: false
       matrix:
@@ -62,6 +65,14 @@ jobs:
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: python scripts/build-ffmpeg.py
+      - name: Preserve FFmpeg configure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: ffmpeg-configure-${{ runner.os }}-${{ runner.arch }}
+          path: target/ffmpeg/build/**/ffbuild/config.log
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Make encoder DLLs available to offline tests
         if: runner.os == 'Windows'
         shell: pwsh
@@ -95,6 +106,14 @@ jobs:
         run: PYTHONDONTWRITEBYTECODE=1 python3 packaging/linux/test_package.py
       - name: Package app without demo or developer features
         run: cargo xtask package
+      - name: Validate the real Windows update ZIP (offline)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "serein-v0.0.0-Windows-${env:RUNNER_ARCH}-media-v2.zip"
+          Compress-Archive -Path "dist/*" -DestinationPath $archive
+          python packaging/windows/check_update_archive.py $archive
+          if ($LASTEXITCODE -ne 0) { throw "Windows media update archive validation failed" }
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: serein-${{ runner.os }}-${{ runner.arch }}-unsigned

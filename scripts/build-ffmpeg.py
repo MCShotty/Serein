@@ -173,9 +173,13 @@ def unpack(archive, destination):
     return destination / roots.pop()
 
 
-def toolchain_options(system, arm64):
+def toolchain_options(system, arm64, env=None):
     if system != "Windows":
-        return []
+        # FFmpeg's configure ignores the conventional uppercase CC/CXX
+        # variables and otherwise defaults to gcc/g++. In particular, Nix's
+        # Darwin stdenv provides compiler wrappers as cc/c++, not gcc/g++.
+        env = os.environ if env is None else env
+        return [f"--cc={env.get('CC') or 'cc'}", f"--cxx={env.get('CXX') or 'c++'}"]
     options = ["--toolchain=msvc", "--target-os=win32", f"--arch={'aarch64' if arm64 else 'x86_64'}"]
     if arm64:
         # FFmpeg 7's MSVC ARM assembly needs gas-preprocessor.pl, which our
@@ -280,13 +284,14 @@ def build(args):
     if architecture not in {"x86_64", "amd64", "x64", "arm64", "aarch64"}:
         raise ValueError(f"Unsupported native FFmpeg architecture: {architecture}")
     backends = encoder_backends(system, arm64)
+    toolchain = toolchain_options(system, arm64)
     nvenc = backends["nvenc"]
     prefix = args.prefix.resolve()
     cache = args.cache_dir.resolve()
     work = args.work_dir.resolve()
     cache.mkdir(parents=True, exist_ok=True)
     recipe = {"sources": SOURCES, "system": system, "architecture": architecture,
-              **backends, "encoders": sorted(encoder_names(backends)), "recipe_sha256":
+              **backends, "encoders": sorted(encoder_names(backends)), "toolchain": toolchain, "recipe_sha256":
               hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     stamp = prefix / "share/serein-ffmpeg/build.json"
     if stamp.is_file() and json.loads(stamp.read_text()) == recipe:
@@ -315,6 +320,12 @@ def build(args):
     openh264_args = [f"PREFIX={posix(prefix)}", f"ARCH={'arm64' if arm64 else 'x86_64'}"]
     if system == "Windows":
         openh264_args += ["OS=msvc", "USE_ASM=No" if arm64 else "USE_ASM=Yes"]
+    else:
+        # Command-line assignments override GNU make's built-in CXX=g++, and
+        # the same environment selects oneVPL's CMake compiler wrappers.
+        env["CC"] = env.get("CC") or "cc"
+        env["CXX"] = env.get("CXX") or "c++"
+        openh264_args += [f"CC={env['CC']}", f"CXX={env['CXX']}"]
     run("make", f"-j{args.jobs}", *openh264_args, "install-shared", cwd=trees["openh264-source"], env=env)
     if system == "Windows":
         # FFmpeg/pkgconf's -lopenh264 must select the shared import library.
@@ -354,7 +365,7 @@ def build(args):
         f"--extra-ldflags=-L{posix(prefix / 'lib')}" + (" -Wl,-z,defs" if system == "Linux" else ""),
     ]
     configure += hardware_options(system, backends)
-    configure += toolchain_options(system, arm64)
+    configure += toolchain
     if system == "Windows":
         configure = [arg for arg in configure if not arg.startswith(("--extra-ldflags=", "--extra-cflags="))]
         # Match OpenH264's -MT and oneVPL's internal allocation/free ownership;

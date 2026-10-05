@@ -84,6 +84,8 @@
         version = "7.1.5";
         dontUnpack = true;
         nativeBuildInputs = [python3 pkg-config nasm] ++ lib.optionals isLinux [cmake patchelf];
+        CC = "${stdenv.cc}/bin/cc";
+        CXX = "${stdenv.cc}/bin/c++";
         buildInputs = lib.optionals isDarwin [apple-sdk_15]
             ++ lib.optionals (isLinux && stdenv.hostPlatform.isx86_64) [libva libdrm];
         dontUseCmakeConfigure = true;

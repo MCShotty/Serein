@@ -4478,3 +4478,38 @@ voice, packaging and repository-script tests also passed, followed by the standa
 package smoke. Native Windows/macOS builds, physical GPU and capture devices, live
 accounts, live Wayland compositor events and extended soak testing remain
 unverified.
+
+## Encoder build and Windows update regression fixes — October 5, 2026
+
+Compare the verified package from starting commit
+`8cd15690c060f8d2ffde2f04c736ab300d6cba84` with the compiler, Flatpak dependency,
+Windows migration and CI fixes. Artifact identities and local validation results
+are in the [regression measurements](pr-evidence/encoder-regression-fixes/measurements.json).
+The baseline is the retained, verified standard package from the preceding stage.
+
+| Metric / method | Baseline | After | Delta |
+| --- | ---: | ---: | ---: |
+| Standard executable, bytes | 85,796,648 | 85,796,648 | 0 / 0% |
+| Installed regular files, bytes | 121,026,564 | 121,029,988 | 3,424 / +0.0028% |
+| Compressed DEB, bytes | 70,809,936 | 70,810,788 | 852 / +0.0012% |
+
+Both packages contain 248 regular files. Measurement uses one normal
+voice-enabled `cargo xtask package` release build per revision, with locked
+dependencies, fat LTO, one codegen unit and stripping. Installed bytes sum
+regular-file sizes from `dpkg-deb --fsys-tarfile`, excluding symlinks and filesystem
+allocation. The environment matches the preceding Debian 13.7 measurement.
+The final package passed executable, metadata, ownership, content and host
+shared-library closure checks. These tiny size differences establish no runtime
+performance change.
+
+`cargo xtask check` passed 1,235 test executions (27 ignored), strict all-target
+Clippy, formatting, documentation, no-default-features and policy checks. Debug
+symbols were disabled for the dev/test profiles to fit the workspace; the release
+profile remained unchanged. The pinned FFmpeg compiler probe, real Linux bundle,
+release smoke, Flatpak preparation and Windows archive fixtures passed. The exact
+pinned patchelf source passed 54 upstream checks, with two skips.
+
+These fixes change building and updater package selection, with no visible UI or
+encoder algorithm change. CPU/RSS/frame timing were not remeasured. Full native
+Windows/macOS and Nix/Flatpak validation requires CI. Physical GPU encoding,
+capture devices, live interoperability and extended soak testing remain unverified.

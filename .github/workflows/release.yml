@@ -161,11 +161,15 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path "$env:PACKAGE_ROOT/*" -DestinationPath "release-assets/$env:ASSET.zip"
-          $installer = Get-ChildItem -Path "dist-installer/*-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($installer) {
-            Copy-Item -LiteralPath $installer.FullName -Destination "release-assets/$env:ASSET-Setup.exe"
-          }
+          python packaging/windows/test_update_archive.py
+          if ($LASTEXITCODE -ne 0) { throw "Windows update archive tests failed" }
+          $archive = "release-assets/${env:ASSET}-media-v2.zip"
+          Compress-Archive -Path "$env:PACKAGE_ROOT/*" -DestinationPath $archive
+          python packaging/windows/check_update_archive.py $archive
+          if ($LASTEXITCODE -ne 0) { throw "Windows media update archive is incomplete or incorrectly named" }
+          $installers = @(Get-ChildItem -Path "dist-installer/*-setup.exe" -File -ErrorAction SilentlyContinue)
+          if ($installers.Count -ne 1) { throw "The Windows migration requires exactly one Setup.exe" }
+          Copy-Item -LiteralPath $installers[0].FullName -Destination "release-assets/${env:ASSET}-Setup.exe"
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: ${{ env.ASSET }}

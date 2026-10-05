@@ -43,6 +43,7 @@ class BundleTest(unittest.TestCase):
             backends = builder.encoder_backends("Linux", False)
             recipe = {"sources": builder.SOURCES, "system": "Linux", "architecture": "x86_64", **backends,
                       "encoders": sorted(builder.encoder_names(backends)),
+                      "toolchain": builder.toolchain_options("Linux", False),
                       "recipe_sha256": hashlib.sha256(Path(builder.__file__).read_bytes()).hexdigest()}
             (notices / "build.json").write_text(json.dumps(recipe))
             args = SimpleNamespace(prefix=prefix, cache_dir=root / "cache", work_dir=root / "work", jobs=1, offline=True)
@@ -82,6 +83,7 @@ class BundleTest(unittest.TestCase):
                 backends = builder.encoder_backends(system, False)
                 recipe = {"sources": builder.SOURCES, "system": system, "architecture": "x86_64", **backends,
                           "encoders": sorted(builder.encoder_names(backends)),
+                          "toolchain": builder.toolchain_options(system, False),
                           "recipe_sha256": hashlib.sha256(Path(builder.__file__).read_bytes()).hexdigest()}
                 (prefix / "share/serein-ffmpeg/build.json").write_text(json.dumps(recipe))
                 args = SimpleNamespace(prefix=prefix, cache_dir=root / "cache", work_dir=root / "work", jobs=1, offline=True)
@@ -89,6 +91,11 @@ class BundleTest(unittest.TestCase):
                         patch.dict(os.environ, {"VSCMD_ARG_TGT_ARCH": "x86_64"}), \
                         patch.object(builder, "fetch") as fetch, patch.object(builder, "run") as run:
                     self.assertEqual(builder.build(args), prefix)
+                    if system != "Windows":
+                        for compiler in ("CC", "CXX"):
+                            with patch.dict(os.environ, {compiler: "/different/compiler-wrapper"}):
+                                with self.assertRaisesRegex(ValueError, "prefix contains another build"):
+                                    builder.build(args)
                     for name in ("include/libavcodec/avcodec.h", libraries[0], aliases[0],
                                  "share/serein-ffmpeg/source/ffmpeg-7.1.5.tar.xz"):
                         target = prefix / name
@@ -205,8 +212,54 @@ class BundleTest(unittest.TestCase):
         self.assertIn("--arch=aarch64", builder.toolchain_options("Windows", True))
         self.assertIn("--disable-asm", builder.toolchain_options("Windows", True))
         self.assertNotIn("--disable-asm", builder.toolchain_options("Windows", False))
-        self.assertEqual(builder.toolchain_options("Linux", True), [])
-        self.assertEqual(builder.toolchain_options("Darwin", True), [])
+        self.assertEqual(builder.toolchain_options("Linux", True, {}), ["--cc=cc", "--cxx=c++"])
+        self.assertEqual(builder.toolchain_options("Darwin", True, {}), ["--cc=cc", "--cxx=c++"])
+
+    def test_unix_build_propagates_compiler_wrappers_to_all_dependencies(self):
+        class ConfigureReached(Exception):
+            pass
+
+        for system in ("Linux", "Darwin"):
+            with self.subTest(system=system), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                args = SimpleNamespace(prefix=root / "prefix", cache_dir=root / "cache",
+                                       work_dir=root / "work", jobs=1, offline=True)
+                compilers = {"CC": "/nix/store/compiler/bin/cc", "CXX": "/nix/store/compiler/bin/c++"}
+
+                def unpack(archive, destination):
+                    destination.mkdir(parents=True)
+                    (destination / "AMF").mkdir()
+                    return destination
+
+                def run(*arguments, **kwargs):
+                    if arguments[:2] == ("bash", "configure"):
+                        raise ConfigureReached()
+
+                with patch.object(builder.platform, "system", return_value=system), \
+                        patch.dict(os.environ, {**compilers, "VSCMD_ARG_TGT_ARCH": "x86_64"}), \
+                        patch.object(builder, "fetch", return_value=root / "source.tar"), \
+                        patch.object(builder, "openh264_source", return_value=root / "openh264.tar"), \
+                        patch.object(builder, "amf_headers", return_value=root / "amf.tar"), \
+                        patch.object(builder, "unpack", side_effect=unpack), \
+                        patch.object(builder, "patch_ffmpeg", return_value=""), \
+                        patch.object(builder, "run", side_effect=run) as command:
+                    with self.assertRaises(ConfigureReached):
+                        builder.build(args)
+                calls = command.call_args_list
+                self.assertIn("CC=" + compilers["CC"], calls[0].args)
+                self.assertIn("CXX=" + compilers["CXX"], calls[0].args)
+                self.assertIn("--cc=" + compilers["CC"], calls[-1].args)
+                self.assertIn("--cxx=" + compilers["CXX"], calls[-1].args)
+                for call in calls:
+                    for name, compiler in compilers.items():
+                        self.assertEqual(call.kwargs["env"][name], compiler)
+                if system == "Linux":
+                    self.assertTrue(any(call.args[:2] == ("cmake", "-S") for call in calls))
+
+    def test_environment_compilers_do_not_override_explicit_msvc_toolchain(self):
+        compilers = {"CC": "clang", "CXX": "clang++"}
+        self.assertEqual(builder.toolchain_options("Windows", False, compilers),
+                         ["--toolchain=msvc", "--target-os=win32", "--arch=x86_64"])
 
     @unittest.skipUnless(os.environ.get("FFMPEG_DIR") and bundle.platform.system() == "Windows",
                          "Requires the native MSVC FFmpeg build and dumpbin")

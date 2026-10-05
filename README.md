@@ -135,10 +135,17 @@ Download the `Windows-X64-Setup.exe` or `Windows-ARM64-Setup.exe` asset for your
 - Installs per-user to `%LOCALAPPDATA%\Programs\Serein` without requiring administrator/UAC elevation.
 - Automatically registers Start Menu shortcuts and configures AppUserModelID (`cz.viceverse.serein`) for native Windows toast notifications.
 - Registers in Windows Settings (Installed Apps / Add or Remove Programs) with full uninstall support.
-- Fully compatible with in-app self-updates: updates automatically synchronize the registered version.
+- After installing this version, in-app self-updates automatically synchronize the registered version.
+
+**Upgrading a Windows build from before the FFmpeg migration:** close Serein and
+run the new matching `-Setup.exe` once over the existing installation. Its old
+in-app updater cannot install the new codec DLLs. Portable users should extract
+the complete new archive into a new folder and launch it there. Settings and
+credentials remain in their existing per-user storage. See the
+[Windows migration guide](packaging/windows/README.md) for details.
 
 #### 2. Standalone PowerShell Setup
-Extract the `Windows-X64.zip` or `Windows-ARM64.zip` asset for your system and run:
+Extract the `Windows-X64-media-v2.zip` or `Windows-ARM64-media-v2.zip` asset for your system and run:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\setup.ps1
 ```
@@ -148,7 +155,7 @@ powershell -ExecutionPolicy Bypass -File .\setup.ps1 -Uninstall
 ```
 
 #### 3. Portable Archive
-Extract the `Windows-X64.zip` or `Windows-ARM64.zip` asset for your system anywhere and launch `serein.exe`. To enable native desktop notifications:
+Extract the `Windows-X64-media-v2.zip` or `Windows-ARM64-media-v2.zip` asset for your system anywhere and launch `serein.exe`. To enable native desktop notifications:
 ```powershell
 powershell -File .\install-notifications.ps1
 ```

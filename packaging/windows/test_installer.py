@@ -139,6 +139,14 @@ def main():
             running.terminate()
             running.wait(timeout=10)
             running = None
+            # A pre-FFmpeg install has no media DLLs; a manual installer upgrade
+            # must replace its executable and deliver the entire new runtime.
+            installed.mkdir()
+            (installed / "serein.exe").write_bytes(b"legacy synthetic client; never executed")
+            (installed / "LICENSE-MIT").write_text("Legacy installer fixture")
+            for name in ("install-notifications.ps1", "setup.ps1"):
+                (installed / name).write_text("legacy fixture")
+            assert not (installed / "avcodec-serein-61.dll").exists()
             for _ in range(3):
                 start = time.perf_counter()
                 subprocess.run(f'"{setup}" /S /D={installed}', check=True, timeout=30)
@@ -177,7 +185,7 @@ def main():
                 pass
             print(json.dumps({"fixture": "synthetic/offline", "architecture": os.environ.get("PROCESSOR_ARCHITECTURE"),
                               "installer_bytes": setup.stat().st_size, "install_ms": timings,
-                              "checks": "running guard, Unicode paths, payload, shortcut target/working directory/AUMID, upgrade, uninstall"}))
+                              "checks": "running guard, Unicode paths, pre-FFmpeg manual migration, payload, shortcut target/working directory/AUMID, upgrade, uninstall"}))
         finally:
             if running is not None:
                 running.terminate()

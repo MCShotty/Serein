@@ -4,7 +4,10 @@ Build on native Linux with Python 3.11+, Git, rustup and the repository's pinned
 Rust 1.98.1 toolchain installed. GNOME SDK/Platform 49 supplies GTK4/WebKit6 and
 native media/build libraries. The toolchain is copied into build-only sources;
 no moving Rust SDK extension or compiler is shipped in the application.
-The preceding FFmpeg module builds checksum-pinned LGPL-only avcodec/avutil and
+The build first compiles checksum-pinned patchelf 0.18.0 inside the sandbox so
+FFmpeg can set sibling-library RPATHs. This build tool is removed during cleanup;
+it is not shipped in the application. The following FFmpeg module builds
+checksum-pinned LGPL-only avcodec/avutil and
 OpenH264 sources without network access; shared libraries, the build recipe and
 complete FFmpeg corresponding source ship with the application. The module also
 uses pinned AMF public headers and a static oneVPL dispatcher for x64 Quick Sync.

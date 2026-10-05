@@ -19,6 +19,8 @@ source recipe as native releases, as a separate Nix store dependency. FFmpeg's
 complete corresponding source and build recipe ship under `ffmpeg-source` in
 that documentation directory. `nix develop` sets `FFMPEG_DIR` to this build.
 No system GPL FFmpeg is linked into this package.
+All native encoder dependencies use the Nix stdenv C/C++ compiler wrappers,
+including FFmpeg's explicit configure compiler options on macOS.
 Linux x64 includes pinned AMF headers and a static oneVPL dispatcher. libva/libdrm
 are Nix dependencies for Quick Sync device setup, while compatible Intel/AMD/NVIDIA
 GPU runtimes remain system-provided. Experimental FFmpeg's H264/HEVC/AV1 VA-API

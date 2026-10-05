@@ -144,6 +144,19 @@ class PreparationTest(unittest.TestCase):
             self.assertIn('directory = "cargo-vendor"', config)
             self.assertEqual(json.loads((destination / "cz.viceverse.serein.json").read_text()), manifest)
             prepared = json.loads((destination / "cz.viceverse.serein.json").read_text())
+            modules = prepared["modules"]
+            names = [module["name"] for module in modules]
+            # ELF rewriting must use a tool built inside the sandbox; host
+            # patchelf is unavailable to flatpak-builder's build commands.
+            self.assertLess(names.index("patchelf"), names.index("serein-ffmpeg"))
+            patchelf = modules[names.index("patchelf")]
+            self.assertEqual(patchelf["buildsystem"], "autotools")
+            self.assertEqual(patchelf["cleanup"], ["*"])
+            self.assertEqual(patchelf["sources"], [{
+                "type": "archive",
+                "url": "https://github.com/NixOS/patchelf/releases/download/0.18.0/patchelf-0.18.0.tar.bz2",
+                "sha256": "1952b2a782ba576279c211ee942e341748fdb44997f704dd53def46cd055470b",
+            }])
             encoders = next(module for module in prepared["modules"] if module["name"] == "serein-ffmpeg")
             archives = {item["dest-filename"]: item for item in encoders["sources"] if "dest-filename" in item}
             self.assertEqual(set(archives), {"ffmpeg-7.1.5.tar.xz", "openh264-2.6.0.tar.gz",
