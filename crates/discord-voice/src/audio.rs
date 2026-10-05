@@ -95,6 +95,19 @@ impl Default for Gate {
 	}
 }
 impl Gate {
+	fn check_input_open(&self, revision: u64) -> Result<(), &'static str> {
+		// Device opening precedes acknowledgement; requiring is_ready here would
+		// prevent the worker from ever priming the first transport-ready revision.
+		if self.stopped.load(Ordering::Acquire)
+			|| !self.ready.load(Ordering::Acquire)
+			|| !self.input_enabled.load(Ordering::Acquire)
+			|| self.revision.load(Ordering::Acquire) != revision
+		{
+			Err("Call changed before microphone could open")
+		} else {
+			Ok(())
+		}
+	}
 	fn is_ready(&self) -> bool {
 		let revision = self.revision.load(Ordering::Acquire);
 		self.ready.load(Ordering::Acquire)
@@ -713,8 +726,10 @@ fn open_input_stream(
 	gate: &Arc<Gate>,
 	revision: u64,
 ) -> Result<(cpal::Stream, rtrb::Consumer<CapturedFrame>, Option<String>), &'static str> {
+	gate.check_input_open(revision)?;
 	#[cfg(target_os = "macos")]
 	permission_macos::authorize(gate, revision)?;
+	gate.check_input_open(revision)?;
 	let input = choose(host, settings.input.as_deref(), true)?;
 	let input_id = input.id().ok().map(|id| id.to_string());
 	let input_config = config(&input, true)?;
@@ -731,6 +746,7 @@ fn open_input_stream(
 	};
 	let (input_write, input_read) = rtrb::RingBuffer::new(8);
 	let capture = Capture::new(input_config.sample_rate(), input_write);
+	gate.check_input_open(revision)?;
 	let stream = match input_config.sample_format() {
 		cpal::SampleFormat::F32 => {
 			input_stream::<f32>(&input, &stream_config, capture, gate.clone(), revision)
@@ -746,9 +762,11 @@ fn open_input_stream(
 		}
 		_ => Err("Microphone sample format is not supported"),
 	}?;
+	gate.check_input_open(revision)?;
 	stream
 		.play()
 		.map_err(|_| "Could not start microphone; check system microphone permission")?;
+	gate.check_input_open(revision)?;
 	Ok((stream, input_read, input_id))
 }
 fn choose(host: &cpal::Host, id: Option<&str>, input: bool) -> Result<cpal::Device, &'static str> {
@@ -1170,6 +1188,39 @@ mod tests {
 			processing,
 			thread: std::thread::current(),
 			done: None,
+		}
+	}
+
+	#[test]
+	fn shutdown_retains_a_stalled_workers_actual_completion() {
+		let mut audio = audio_without_devices();
+		let gate = audio.gate.clone();
+		let (finished, completion) = mpsc::sync_channel(1);
+		audio.done = Some(completion);
+		audio.gate.ready.store(true, Ordering::Release);
+		let closed = audio.shutdown();
+		assert!(gate.stopped.load(Ordering::Acquire));
+		assert!(!gate.ready.load(Ordering::Acquire));
+		assert_eq!(closed.try_recv(), Err(mpsc::TryRecvError::Empty));
+		finished.send(()).unwrap();
+		closed.recv_timeout(Duration::from_secs(1)).unwrap();
+	}
+
+	#[test]
+	fn microphone_open_checks_cancellation_without_requiring_device_acknowledgement() {
+		for change in 0..4 {
+			let gate = Gate::default();
+			gate.ready.store(true, Ordering::Release);
+			let revision = gate.revision.load(Ordering::Acquire);
+			assert!(!gate.is_ready()); // Device acknowledgement happens after opening.
+			assert!(gate.check_input_open(revision).is_ok());
+			match change {
+				0 => gate.stopped.store(true, Ordering::Release),
+				1 => gate.ready.store(false, Ordering::Release),
+				2 => gate.revision.store(revision + 1, Ordering::Release),
+				_ => gate.input_enabled.store(false, Ordering::Release),
+			}
+			assert!(gate.check_input_open(revision).is_err());
 		}
 	}
 

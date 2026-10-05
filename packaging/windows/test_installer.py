@@ -142,6 +142,12 @@ def main():
             # A pre-FFmpeg install has no media DLLs; a manual installer upgrade
             # must replace its executable and deliver the entire new runtime.
             installed.mkdir()
+            unrelated = installed / "unrelated.txt"
+            unrelated.write_text("Owner data must survive install, upgrade and uninstall")
+            unrelated_directory = installed / "owner-data"
+            unrelated_directory.mkdir()
+            unrelated_nested = unrelated_directory / "keep.txt"
+            unrelated_nested.write_text("Unrelated nested owner data")
             (installed / "serein.exe").write_bytes(b"legacy synthetic client; never executed")
             (installed / "LICENSE-MIT").write_text("Legacy installer fixture")
             for name in ("install-notifications.ps1", "setup.ps1"):
@@ -155,6 +161,8 @@ def main():
                 for name in ("avcodec-serein-61.dll", "avutil-serein-59.dll", "openh264.dll", "ffmpeg-source/source/ffmpeg-7.1.5.tar.xz"):
                     assert (installed / name).read_bytes() == (payload / name).read_bytes()
                 assert uninstaller.is_file()
+                assert unrelated.read_text() == "Owner data must survive install, upgrade and uninstall"
+                assert unrelated_nested.read_text() == "Unrelated nested owner data"
                 assert not (installed / "install-notifications.ps1").exists()
                 assert not (installed / "setup.ps1").exists()
                 check_shortcut(shortcut, installed / "serein.exe")
@@ -175,7 +183,10 @@ def main():
             running.wait(timeout=10)
             running = None
             uninstall().check_returncode()
-            wait_for(lambda: not installed.exists())
+            wait_for(lambda: not uninstaller.exists())
+            assert unrelated.read_text() == "Owner data must survive install, upgrade and uninstall"
+            assert unrelated_nested.read_text() == "Unrelated nested owner data"
+            assert sorted(path.relative_to(installed).as_posix() for path in installed.rglob("*") if path.is_file()) == ["owner-data/keep.txt", "unrelated.txt"]
             assert not shortcut.exists()
             try:
                 with winreg.OpenKey(winreg.HKEY_CURRENT_USER, uninstall_key, 0,
@@ -185,14 +196,14 @@ def main():
                 pass
             print(json.dumps({"fixture": "synthetic/offline", "architecture": os.environ.get("PROCESSOR_ARCHITECTURE"),
                               "installer_bytes": setup.stat().st_size, "install_ms": timings,
-                              "checks": "running guard, Unicode paths, pre-FFmpeg manual migration, payload, shortcut target/working directory/AUMID, upgrade, uninstall"}))
+                              "checks": "running guard, Unicode paths, pre-FFmpeg manual migration, payload, shortcut target/working directory/AUMID, upgrade, owned-only uninstall, unrelated file preservation"}))
         finally:
             if running is not None:
                 running.terminate()
                 running.wait(timeout=10)
             if uninstaller.exists():
                 uninstall().check_returncode()
-                wait_for(lambda: not installed.exists())
+                wait_for(lambda: not uninstaller.exists())
             if shortcut.exists():
                 shortcut.unlink()
 

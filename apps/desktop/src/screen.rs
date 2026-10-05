@@ -179,7 +179,8 @@ impl Screen {
 				};
 				let Some(endpoint) = endpoint.take() else {
 					let _ = token.take();
-					self.request_stop("Discord screen-share server is unavailable");
+					// Discord can send null while allocating the stream server.
+					pending.server = None;
 					return;
 				};
 				let Some(token) = token.take() else {
@@ -611,6 +612,52 @@ mod tests {
 			)),
 			started: Instant::now(),
 		}
+	}
+
+	#[test]
+	fn null_server_allocation_waits_for_a_valid_endpoint_without_stopping_share() {
+		let state = State::default();
+		let context = Context {
+			generation: state.generation,
+			channel: Id(20),
+			request: 7,
+			stream_request: 8,
+		};
+		let mut share = Screen {
+			pending: Some(pending(
+				context,
+				Settings {
+					source: screen::SourceId::Display(1),
+					width: 1280,
+					height: 720,
+					fps: 30,
+					cursor: true,
+					audio: false,
+				},
+			)),
+			..Screen::default()
+		};
+		let started = share.pending.as_ref().unwrap().started;
+		let server = |endpoint| {
+			Event::Voice(voice::Event::Stream {
+				channel: context.channel,
+				request: context.request,
+				stream_request: context.stream_request,
+				event: screen::Event::Server {
+					token: Some(voice::Secret::new("synthetic-token".into()).unwrap()),
+					endpoint,
+				},
+			})
+		};
+		share.observe(&state, &mut server(None));
+		assert!(share.pending.as_ref().unwrap().server.is_none());
+		assert!(share.closing.is_none() && share.command.is_none());
+		assert_eq!(share.pending.as_ref().unwrap().started, started);
+		share.observe(&state, &mut server(Some("voice.discord.media:443".into())));
+		let pending = share.pending.as_ref().unwrap();
+		assert!(pending.server.is_some() && pending.rtc.is_some());
+		assert_eq!(pending.started, started);
+		assert!(share.closing.is_none() && share.command.is_none());
 	}
 
 	#[test]
