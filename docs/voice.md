@@ -564,6 +564,13 @@ remain resource/transport requirements. OpenH264 2.6 only accepts camera-real-ti
 and screen-real-time usage types; selecting its advertised non-real-time types
 fails initialization, so its supported usage types remain in software fallback.
 
+Linux keeps the Rust static OpenH264 and FFmpeg's shared OpenH264 symbols private.
+The shared encoder uses `libopenh264-serein.so.8` and prefixed public APIs; native
+static archive symbols are hidden in the desktop and voice-test executables.
+Host GStreamer plugins must use their own OpenH264 ABI, including Ubuntu's older
+2.4 parameter structures. The library patch is included with packaged rebuild
+sources; see [the encoder recipe](../packaging/ffmpeg/README.md).
+
 Quick Sync receives NV12 from bounded I420 input. AMF restarts its context for
 requested screen keyframes after producing output because FFmpeg 7.1 does not
 forward forced picture types; camera GOP 1 does not restart per frame. The pinned

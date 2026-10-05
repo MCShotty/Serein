@@ -4618,3 +4618,23 @@ Standard release executable, installed-package and compressed-distribution
 sizes remain unavailable; complete workspace/packaging validation is a CI
 requirement. The development preview sizes above must not be treated as shipped
 package sizes.
+
+## Linux OpenH264 isolation verification — October 5, 2026
+
+The upstream sync and PR #3 merge preparation exposed an Ubuntu GStreamer
+2.4/OpenH264 2.6 ABI collision. The corrected native linkage passes the exact
+crash reproduction and all 92 voice tests with each of the older Ubuntu and
+newer Debian plugins (four intentionally ignored per suite). The current voice
+crate, build script and C shim were compiled afresh using exact cached Rust
+dependency artifacts and real native runtime libraries extracted into scratch.
+[Build hashes and reproduction details](pr-evidence/openh264-isolation/README.md)
+describe this local verification separately from a workspace Cargo build.
+
+The fresh full Linux FFmpeg recipe passes all 20 encoder configuration checks;
+both 330-frame software streams decode and are byte-identical to the previous
+output. Executable-relative portable library staging and the Debian private
+SONAME closure check pass. These are correctness checks. CPU/RSS, physical GPU
+performance and standard release executable/installed/compressed package deltas
+were not measured for this linkage fix. The current `cargo xtask check` attempt
+still fails at missing `glib-2.0.pc`; native development prerequisites and full
+application packaging remain CI requirements.

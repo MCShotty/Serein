@@ -22,7 +22,7 @@ class NativePackageTest(unittest.TestCase):
             shutil.copyfile("/bin/true", staged / "serein")
             (staged / "lib").mkdir()
             # Exercise the actual private SONAME closure without any media APIs.
-            for name, symbol in (("libavutil-serein.so.59", "synthetic_util"), ("libopenh264.so.8", "synthetic_h264")):
+            for name, symbol in (("libavutil-serein.so.59", "synthetic_util"), ("libopenh264-serein.so.8", "synthetic_h264")):
                 source = root / (symbol + ".c")
                 source.write_text(f"int {symbol}(void) {{ return 0; }}\n")
                 subprocess.run(["cc", "-shared", "-fPIC", "-Wl,-soname," + name,
@@ -32,14 +32,14 @@ class NativePackageTest(unittest.TestCase):
                               "int synthetic_codec(void) { return synthetic_util() + synthetic_h264(); }\n")
             subprocess.run(["cc", "-shared", "-fPIC", "-Wl,-soname,libavcodec-serein.so.61", "-Wl,-rpath,$ORIGIN",
                             "-o", str(staged / "lib/libavcodec-serein.so.61"), str(source), "-L" + str(staged / "lib"),
-                            "-l:libavutil-serein.so.59", "-l:libopenh264.so.8"], check=True)
+                            "-l:libavutil-serein.so.59", "-l:libopenh264-serein.so.8"], check=True)
             source = root / "main.c"
             source.write_text("int synthetic_codec(void); int main(void) { return synthetic_codec(); }\n")
             subprocess.run(["cc", "-o", str(staged / "serein"), str(source), "-L" + str(staged / "lib"),
                             "-Wl,-rpath,$ORIGIN/lib:$ORIGIN/../lib/serein", "-Wl,-rpath-link," + str(staged / "lib"),
                             "-l:libavcodec-serein.so.61"], check=True)
             (staged / "ffmpeg-source/source").mkdir(parents=True)
-            for name in ("build.json", "configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE",
+            for name in ("build.json", "configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "serein-openh264.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE",
                          "nv-codec-headers-README", "source/ffmpeg-7.1.5.tar.xz", "source/openh264-2.6.0-source.tar.bz2",
                          "source/nv-codec-headers-12.2.72.0.tar.gz", "AMF-LICENSE", "source/AMF-1.4.36-headers.tar",
                          "oneVPL-LICENSE", "oneVPL-third-party-programs.txt", "source/libvpl-2.14.0.tar.gz"):

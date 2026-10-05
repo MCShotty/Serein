@@ -205,6 +205,12 @@ subset is identified separately from its original SDK archive. See `packaging/ff
 MIT OR Apache-2.0. No separately installed GPL FFmpeg library is linked into
 official packages.
 
+Linux shared OpenH264 uses a private SONAME and prefixed, versioned API symbols
+to avoid incompatible host GStreamer bindings. Its source modifications are
+retained as `ffmpeg-source/serein-openh264.patch` beside the original source
+subset; the supplied build recipe applies them automatically. The Cisco license
+text remains unchanged.
+
 Incoming software H.264 decoding retains **openh264 0.9.8** and
 **openh264-sys2 0.9.8** (BSD-2-Clause, Ralf Biedert), built locally with the
 `source` feature. The sys crate bundles **Cisco OpenH264 2.6.0**, as identified

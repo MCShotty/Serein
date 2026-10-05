@@ -76,6 +76,8 @@ class BundleTest(unittest.TestCase):
                            "Darwin": ["lib/libavcodec-serein.dylib", "lib/libavutil-serein.dylib"],
                            "Windows": ["lib/avcodec-serein.lib", "lib/avutil-serein.lib"]}[system]
                 relative_files += aliases + ["share/serein-ffmpeg/" + name for name in provenance]
+                if system == "Linux":
+                    relative_files.append("share/serein-ffmpeg/serein-openh264.patch")
                 for name in relative_files:
                     target = prefix / name
                     target.parent.mkdir(parents=True, exist_ok=True)
@@ -141,6 +143,63 @@ class BundleTest(unittest.TestCase):
                 script = archive.getmember("openh264-2.6.0/codec/common/generate_version.sh")
                 self.assertEqual(script.mode, 0o775)
                 self.assertEqual((script.mtime, script.uid, script.gid), (0, 0, 0))
+
+    @unittest.skipUnless(os.name == "posix" and bundle.platform.system() == "Linux",
+                         "ELF symbol isolation requires Linux")
+    def test_private_openh264_api_and_internal_symbols_coexist_with_host_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "codec/api/wels").mkdir(parents=True)
+            (root / "build").mkdir()
+            (root / "codec/api/wels/codec_api.h").write_text(
+                "#ifndef WELS_VIDEO_CODEC_SVC_API_H__\n#define WELS_VIDEO_CODEC_SVC_API_H__\n#endif\n")
+            (root / "build/platform-gnu-chain.mk").write_text(
+                "SHLDFLAGS = -Wl,-soname,$(LIBPREFIX)$(PROJECT_NAME).$(SHAREDLIBSUFFIXMAJORVER)\n"
+                "LDFLAGS += -lpthread\n")
+            source_patch = builder.patch_openh264(root)
+            (root / "private.c").write_text('#include "codec/api/wels/codec_api.h"\n'
+                                           "int codec_internal(void) { return 26; }\n" + "".join(
+                                               f"int {name}(void) {{ return codec_internal(); }}\n"
+                                               for name in builder.OPENH264_APIS))
+            (root / "host.c").write_text("int codec_internal(void) { return 24; }\n" + "".join(
+                f"int {name}(void) {{ return codec_internal(); }}\n" for name in builder.OPENH264_APIS))
+            subprocess.run(["cc", "-shared", "-fPIC", "-Wl,-soname,libopenh264.so.8",
+                            str(root / "host.c"), "-o", str(root / "libopenh264.so.8")], check=True)
+            (root / "Makefile").write_text(
+                "SRC_PATH=./\nLIBPREFIX=lib\nPROJECT_NAME=openh264\nSHAREDLIBSUFFIXMAJORVER=so.8\n"
+                "include build/platform-gnu-chain.mk\nall:\n"
+                "\t$(CC) -shared -fPIC private.c -o libopenh264-serein.so.8 $(LDFLAGS) $(SHLDFLAGS)\n")
+            subprocess.run(["make", "--no-print-directory", "all"], cwd=root, check=True)
+            (root / "plugin.c").write_text("int WelsCreateSVCEncoder(void);\n"
+                                           "int host_codec_version(void) { return WelsCreateSVCEncoder(); }\n")
+            subprocess.run(["cc", "-shared", "-fPIC", "-Wl,-rpath,$ORIGIN", str(root / "plugin.c"),
+                            "-L" + str(root), "-l:libopenh264.so.8", "-o", str(root / "plugin.so")], check=True)
+            # Keep global fixtures out of this runner and later native checks.
+            subprocess.run([os.sys.executable, "-c",
+                            "import ctypes,sys; from pathlib import Path; r=Path(sys.argv[1]); "
+                            "host=ctypes.CDLL(str(r/'libopenh264.so.8'), mode=ctypes.RTLD_GLOBAL); "
+                            "private=ctypes.CDLL(str(r/'libopenh264-serein.so.8'), mode=ctypes.RTLD_GLOBAL); "
+                            "plugin=ctypes.CDLL(str(r/'plugin.so')); "
+                            "assert plugin.host_codec_version()==24; "
+                            "assert all(getattr(private, 'serein_'+n)()==26 for n in sys.argv[2:]); "
+                            "exports=__import__('subprocess').check_output(['nm','-D','--defined-only',"
+                            "str(r/'libopenh264-serein.so.8')],text=True); "
+                            "assert 'codec_internal' not in exports; "
+                            "assert all((' '+n+'@') not in exports and (' '+n+'\\n') not in exports for n in sys.argv[2:])",
+                            str(root), *builder.OPENH264_APIS], check=True)
+            # Private first must not satisfy the host plugin's dependency even
+            # if both OpenH264 builds have upstream ABI major eight.
+            subprocess.run([os.sys.executable, "-c",
+                            "import ctypes,sys; from pathlib import Path; r=Path(sys.argv[1]); "
+                            "private=ctypes.CDLL(str(r/'libopenh264-serein.so.8'), mode=ctypes.RTLD_GLOBAL); "
+                            "plugin=ctypes.CDLL(str(r/'plugin.so')); "
+                            "assert plugin.host_codec_version()==24; "
+                            "assert private.serein_WelsCreateSVCEncoder()==26",
+                            str(root)], check=True)
+            self.assertIn("serein-openh264.map", source_patch)
+            self.assertIn("LDFLAGS += -lpthread", (root / "build/platform-gnu-chain.mk").read_text())
+            with self.assertRaisesRegex(ValueError, "unpatched OpenH264"):
+                builder.patch_openh264(root)
 
     def test_hardware_build_options_keep_vaapi_encoder_disabled(self):
         for system in ("Linux", "Windows", "Darwin"):
@@ -232,6 +291,10 @@ class BundleTest(unittest.TestCase):
                     return destination
 
                 def run(*arguments, **kwargs):
+                    if arguments[0] == "make" and "install-shared" in arguments and system == "Linux":
+                        library = args.prefix / "lib/libopenh264.so.8"
+                        library.parent.mkdir(parents=True)
+                        library.write_bytes(b"synthetic shared library")
                     if arguments[:2] == ("bash", "configure"):
                         raise ConfigureReached()
 
@@ -242,6 +305,7 @@ class BundleTest(unittest.TestCase):
                         patch.object(builder, "amf_headers", return_value=root / "amf.tar"), \
                         patch.object(builder, "unpack", side_effect=unpack), \
                         patch.object(builder, "patch_ffmpeg", return_value=""), \
+                        patch.object(builder, "patch_openh264", return_value=""), \
                         patch.object(builder, "run", side_effect=run) as command:
                     with self.assertRaises(ConfigureReached):
                         builder.build(args)
@@ -400,6 +464,8 @@ class BundleTest(unittest.TestCase):
                              "source/nv-codec-headers-12.2.72.0.tar.gz", "AMF-LICENSE", "source/AMF-1.4.36-headers.tar",
                              "oneVPL-LICENSE", "oneVPL-third-party-programs.txt", "source/libvpl-2.14.0.tar.gz"):
                     (notices / name).write_text("synthetic source/notice")
+                if system == "Linux":
+                    (notices / "serein-openh264.patch").write_text("synthetic private ABI patch")
                 (notices / "private.log").write_text("must not ship")
                 stage = root / "dist"
                 with patch.object(bundle.platform, "system", return_value=system):
@@ -407,6 +473,7 @@ class BundleTest(unittest.TestCase):
                 names = {p.name for p in stage.rglob("*") if p.is_file()}
                 self.assertTrue(set(bundle.LIBRARIES[system]).issubset(names))
                 self.assertIn("ffmpeg-7.1.5.tar.xz", names)
+                self.assertEqual("serein-openh264.patch" in names, system == "Linux")
                 self.assertNotIn("private.log", names)
                 self.assertNotIn("unrelated-private-log", names)
                 self.assertEqual("nv-codec-headers-12.2.72.0.tar.gz" in names, nvenc)
