@@ -312,6 +312,13 @@ class BundleTest(unittest.TestCase):
                 resolve.assert_called_once_with(["cygpath", "-w", "/usr/bin/bash.exe"], text=True,
                                                 env=resolve.call_args.kwargs["env"])
                 self.assertEqual(resolve.call_args.kwargs["env"]["PATH"], environment["PATH"])
+                # The dispatcher archive and FFmpeg must both use the static
+                # MSVC runtime, including on the first CMake configuration.
+                if architecture == "x64":
+                    vpl = next(call.args for call in command.call_args_list if call.args[:2] == ("cmake", "-S"))
+                    self.assertIn("-DUSE_MSVC_STATIC_RUNTIME=ON", vpl)
+                    self.assertIn("-DCMAKE_POLICY_DEFAULT_CMP0091=NEW", vpl)
+                    self.assertTrue(any(arg.endswith(" -MT") for arg in command.call_args_list[-1].args))
 
     def test_windows_configure_rejects_unavailable_msys_shell_without_path_fallback(self):
         environment = {"PATH": "synthetic System32 before MSYS2"}

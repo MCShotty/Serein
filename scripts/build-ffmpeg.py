@@ -357,13 +357,17 @@ def build(args):
         vpl_build = work / "onevpl-cmake"
         # vpl.pc advertises dl/pthread/C++ dependencies in Libs on Linux.
         # Build only the PIC static dispatcher, which loads the system GPU runtime.
+        # oneVPL 2.14 checks MSVC before its first project(), so its CMP0091
+        # setup misses fresh builds. Select NEW before compiler detection to
+        # make the upstream static-runtime option produce /MT instead of /MD.
         run("cmake", "-S", trees["onevpl"], "-B", vpl_build,
             "-G", "NMake Makefiles" if system == "Windows" else "Unix Makefiles",
             f"-DCMAKE_INSTALL_PREFIX={prefix.as_posix()}", "-DCMAKE_INSTALL_LIBDIR=lib",
             "-DCMAKE_BUILD_TYPE=Release", "-DBUILD_SHARED_LIBS=OFF", "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
             "-DBUILD_TESTS=OFF", "-DBUILD_EXAMPLES=OFF", "-DINSTALL_DEV=ON", "-DINSTALL_LIB=ON",
             "-DCMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP=ON",
-            f"-DUSE_MSVC_STATIC_RUNTIME={'ON' if system == 'Windows' else 'OFF'}", env=env)
+            f"-DUSE_MSVC_STATIC_RUNTIME={'ON' if system == 'Windows' else 'OFF'}",
+            *(["-DCMAKE_POLICY_DEFAULT_CMP0091=NEW"] if system == "Windows" else []), env=env)
         run("cmake", "--build", vpl_build, "--parallel", str(args.jobs), env=env)
         run("cmake", "--install", vpl_build, env=env)
         if system == "Windows":
