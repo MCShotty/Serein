@@ -1529,6 +1529,12 @@ Synthetic tests exercise UI actions, bounds, coalescing, clearing and reconnect.
 
 ### Inline attachment video (September 12, 2026)
 
+macOS retries native format/decode failures once through the optional installed FFmpeg
+helper, including failures after opening and sources requiring downscaling to the
+1080p preview bound. Playback resumes from its last displayed position. Native AAC
+also accepts media timescales distinct from the PCM sample rate. This does not imply
+support for every MOV/MP4 codec or live-service verification.
+
 MOV/MP4 attachments, plus WebM/Matroska where the platform provides codecs, play
 inside the message with Discord-style overlay controls: a
 centered play button on the picture, and a translucent bar over its lower edge with seek,
