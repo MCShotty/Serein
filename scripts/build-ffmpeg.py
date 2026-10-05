@@ -62,6 +62,11 @@ SOURCES = {
     },
 }
 
+OPENH264_APIS = (
+    "WelsCreateSVCEncoder", "WelsDestroySVCEncoder", "WelsGetDecoderCapability",
+    "WelsCreateDecoder", "WelsDestroyDecoder", "WelsGetCodecVersion", "WelsGetCodecVersionEx",
+)
+
 
 def run(*args, cwd=None, env=None):
     subprocess.run([str(arg) for arg in args], cwd=cwd, env=env, check=True)
@@ -259,6 +264,39 @@ def patch_ffmpeg(tree):
     return "".join(patches)
 
 
+def patch_openh264(tree):
+    """Isolate the Linux encoder from host GStreamer's incompatible OpenH264 ABI."""
+    patches = []
+    api_guard = "#define WELS_VIDEO_CODEC_SVC_API_H__\n"
+    macros = "\n/* Private Serein ABI; never satisfy a host plugin's Wels imports. */\n" + "".join(
+        f"#define {name} serein_{name}\n" for name in OPENH264_APIS)
+    soname = "SHLDFLAGS = -Wl,-soname,$(LIBPREFIX)$(PROJECT_NAME).$(SHAREDLIBSUFFIXMAJORVER)"
+    replacements = [
+        ("codec/api/wels/codec_api.h", api_guard, api_guard + macros),
+        ("build/platform-gnu-chain.mk", soname,
+         soname.replace("$(PROJECT_NAME).", "$(PROJECT_NAME)-serein.") +
+         "\nSHLDFLAGS += -Wl,--version-script,$(SRC_PATH)serein-openh264.map"),
+    ]
+    for relative, old, new in replacements:
+        path = tree / relative
+        before = path.read_text()
+        if before.count(old) != 1 or "serein_" in before:
+            raise ValueError(f"Expected exactly one unpatched OpenH264 source target: {relative}")
+        after = before.replace(old, new)
+        patches.extend(difflib.unified_diff(before.splitlines(keepends=True), after.splitlines(keepends=True),
+                                           fromfile="a/" + relative, tofile="b/" + relative))
+        path.write_text(after)
+    # Hide internal C++ and assembly symbols too; they otherwise interpose even
+    # when the seven public entry points have distinct names and a private SONAME.
+    exports = "SEREIN_OPENH264_8 {\n  global:\n" + "".join(
+        f"    serein_{name};\n" for name in OPENH264_APIS) + "  local: *;\n};\n"
+    relative = "serein-openh264.map"
+    (tree / relative).write_text(exports)
+    patches.extend(difflib.unified_diff([], exports.splitlines(keepends=True),
+                                       fromfile="/dev/null", tofile="b/" + relative))
+    return "".join(patches)
+
+
 def validate_completed_build(prefix, system, backends):
     """A recipe stamp is insufficient if a restored build lost required files."""
     required = [f"include/{name}" for name in (
@@ -267,7 +305,7 @@ def validate_completed_build(prefix, system, backends):
     required += ["lib/pkgconfig/libavcodec-serein.pc", "lib/pkgconfig/libavutil-serein.pc"]
     required += {
         "Linux": ["lib/libavcodec-serein.so", "lib/libavcodec-serein.so.61",
-                  "lib/libavutil-serein.so", "lib/libavutil-serein.so.59", "lib/libopenh264.so.8"],
+                  "lib/libavutil-serein.so", "lib/libavutil-serein.so.59", "lib/libopenh264-serein.so.8"],
         "Darwin": ["lib/libavcodec-serein.dylib", "lib/libavcodec-serein.61.dylib",
                    "lib/libavutil-serein.dylib", "lib/libavutil-serein.59.dylib", "lib/libopenh264.8.dylib"],
         "Windows": ["bin/avcodec-serein-61.dll", "bin/avutil-serein-59.dll", "bin/openh264.dll",
@@ -275,6 +313,8 @@ def validate_completed_build(prefix, system, backends):
     }[system]
     provenance = ["build-ffmpeg.py", "configure.json", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE",
                   "source/ffmpeg-7.1.5.tar.xz", "source/openh264-2.6.0-source.tar.bz2"]
+    if system == "Linux":
+        provenance.append("serein-openh264.patch")
     if backends["nvenc"]:
         provenance += ["nv-codec-headers-README", "source/nv-codec-headers-12.2.72.0.tar.gz"]
     if backends["amf"]:
@@ -330,6 +370,7 @@ def build(args):
     # Keep host GStreamer's FFmpeg in its own ELF symbol namespace. A distinct
     # SONAME alone cannot prevent LIBAVCODEC_61/LIBAVUTIL_59 interposition.
     source_patch = patch_ffmpeg(trees["ffmpeg"])
+    openh264_patch = patch_openh264(trees["openh264-source"]) if system == "Linux" else None
     env = dict(os.environ)
     shell = configure_shell(system, env)
     env["PKG_CONFIG_PATH"] = posix(prefix / "lib/pkgconfig") + os.pathsep + env.get("PKG_CONFIG_PATH", "")
@@ -346,6 +387,12 @@ def build(args):
         env["CXX"] = env.get("CXX") or "c++"
         openh264_args += [f"CC={env['CC']}", f"CXX={env['CXX']}"]
     run("make", f"-j{args.jobs}", *openh264_args, "install-shared", cwd=trees["openh264-source"], env=env)
+    if system == "Linux":
+        # Retain the upstream development linker alias/pkg-config name, but give
+        # the runtime dependency its own SONAME and packaged filename. A host
+        # OpenH264 2.6 plugin must still load its own libopenh264.so.8.
+        library = prefix / "lib/libopenh264.so.8"
+        (prefix / "lib/libopenh264-serein.so.8").symlink_to(library.resolve().name)
     if system == "Windows":
         # FFmpeg/pkgconf's -lopenh264 must select the shared import library.
         shutil.copyfile(prefix / "lib/openh264_dll.lib", prefix / "lib/openh264.lib")
@@ -449,6 +496,8 @@ def build(args):
     shutil.copyfile(Path(__file__), notices / "build-ffmpeg.py")
     (notices / "configure.json").write_text(json.dumps(configure, indent=2) + "\n")
     (notices / "serein-ffmpeg.patch").write_text(source_patch)
+    if openh264_patch is not None:
+        (notices / "serein-openh264.patch").write_text(openh264_patch)
     shutil.copyfile(trees["ffmpeg"] / "COPYING.LGPLv2.1", notices / "COPYING.LGPLv2.1")
     shutil.copyfile(trees["openh264-source"] / "LICENSE", notices / "OpenH264-LICENSE")
     if nvenc:

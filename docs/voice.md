@@ -523,7 +523,8 @@ The native demo (`cargo run --locked -p serein -- --demo --demo-voice`) exposes 
 
 ### Video backend and codec settings
 
-Voice & Video → Video encoding saves a device-local backend and codec. Stable is the
+Voice & Video → Video encoding, at the bottom of the page, saves a device-local
+backend and codec. Stable is the
 new-install and migration default, using the original Media Foundation (Windows),
 VideoToolbox (macOS), or GStreamer VA/NV encoders (Linux), with direct OpenH264
 software fallback. Stable supports H.264. Experimental selects the shared FFmpeg
@@ -551,6 +552,24 @@ failure retires the failed backend before trying the next compatible encoder.
 Bitrate restarts retain the active backend and do not retry earlier failed GPUs;
 H.264 software fallback stays software. Native SDK calls and teardown may block;
 the bounded queue is not a driver-call deadline. Hardware remains unverified here.
+
+Neither backend requests an explicit low-latency video mode. Experimental uses
+NVENC P4 with high-quality tuning, AMF balanced transcoding for H.264/AV1 and
+high-quality usage with the highest `quality` preset for H.265, without a latency
+requirement, and Quick Sync's medium preset with its default four-task
+parallelism. VideoToolbox's real-time hint is disabled in both backends; Stable
+does not request Media Foundation low-latency or GStreamer zero-latency operation.
+Frame ordering, disabled lookahead/preanalysis and the four-picture pending cap
+remain resource/transport requirements. OpenH264 2.6 only accepts camera-real-time
+and screen-real-time usage types; selecting its advertised non-real-time types
+fails initialization, so its supported usage types remain in software fallback.
+
+Linux keeps the Rust static OpenH264 and FFmpeg's shared OpenH264 symbols private.
+The shared encoder uses `libopenh264-serein.so.8` and prefixed public APIs; native
+static archive symbols are hidden in the desktop and voice-test executables.
+Host GStreamer plugins must use their own OpenH264 ABI, including Ubuntu's older
+2.4 parameter structures. The library patch is included with packaged rebuild
+sources; see [the encoder recipe](../packaging/ffmpeg/README.md).
 
 Quick Sync receives NV12 from bounded I420 input. AMF restarts its context for
 requested screen keyframes after producing output because FFmpeg 7.1 does not

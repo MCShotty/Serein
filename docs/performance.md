@@ -4513,3 +4513,128 @@ These fixes change building and updater package selection, with no visible UI or
 encoder algorithm change. CPU/RSS/frame timing were not remeasured. Full native
 Windows/macOS and Nix/Flatpak validation requires CI. Physical GPU encoding,
 capture devices, live interoperability and extended soak testing remain unverified.
+
+## Normal video encoder modes — October 5, 2026
+
+Compared application commit `f87aa5db9df9acb3eedbe288e2b2ef1c2a5d8740` with the
+removal of explicit low-latency video modes. The
+[C ABI workload](pr-evidence/video-normal-modes/encoder-check.c) compiles the real
+FFmpeg shim and checks all 20 available Linux encoder/codec/profile option
+configurations without opening GPUs. It also encodes camera and screen pictures
+through OpenH264, checks camera independence, forced screen keyframes and malformed
+input rejection. The configuration check does not establish working GPU encoding.
+
+Environment: Debian 13 x86-64, Intel Xeon Platinum 8573C, five visible CPUs,
+17 GiB RAM, pinned FFmpeg 7.1.5/OpenH264 2.6.0, GCC `-O2`. Software input is
+640x480 limited-range BT.601 I420, 15 fps and 600 kbps. Each run warms up with 30
+pictures then measures 300; one run per revision is discarded, followed by five
+alternating baseline/after runs. RSS is sampled every 10 ms for the C process.
+There is no renderer, display, audio device, desktop capture or network connection.
+[Raw samples and bitstream hashes](pr-evidence/video-normal-modes/measurements.json)
+record the workload and actual baseline revision.
+
+| Metric / method | Baseline | After | Delta |
+| --- | ---: | ---: | ---: |
+| Median 300 camera pictures | 891.491 ms | 860.949 ms | -30.542 ms / -3.43% |
+| Median 300 screen pictures | 223.383 ms | 218.711 ms | -4.672 ms / -2.09% |
+| Median sampled peak C-process RSS | 9,805,824 bytes | 9,891,840 bytes | +86,016 bytes / +0.88% |
+
+The before/after bitstreams are byte-identical for both profiles. All 330 camera
+and 330 screen pictures decode with `ffmpeg -v error -xerror -i <stream> -f null -`.
+These small timing/RSS differences measure software noise, not hardware quality or
+latency improvements. Physical GPUs are unavailable; GPU buffering, quality and
+latency remain unmeasured. Native demo CPU/RSS and executable/installed/compressed
+package sizes could not be measured: `cargo xtask check` and both baseline/after
+`cargo xtask package` attempts fail on the inherited, read-only
+`target/debug/.cargo-build-lock`. The environment also lacks GTK4/WebKit6 runtime
+libraries and native development headers. A focused Cargo-only voice test rebuild
+hits the existing `winit` platform-feature error. Formatting and the strict C
+compiler checks pass; complete native validation remains a CI requirement.
+
+To reproduce the C checks with the pinned FFmpeg prefix in `FFMPEG_DIR`:
+
+```bash
+cc -std=c11 -O2 -Wall -Wextra -Werror -DNORMAL=1 -DHEVC_MAX_QUALITY=1 \
+  "-DSHIM=\"$PWD/crates/discord-voice/src/video_encode_ffmpeg.c\"" \
+  -Icrates/discord-voice/src -I"$FFMPEG_DIR/include" \
+  docs/pr-evidence/video-normal-modes/encoder-check.c \
+  -L"$FFMPEG_DIR/lib" -Wl,-rpath,"$FFMPEG_DIR/lib" \
+  -lavcodec-serein -lavutil-serein -o /tmp/serein-encoder-check
+/tmp/serein-encoder-check /tmp/serein-camera.h264 /tmp/serein-screen.h264
+```
+
+For the baseline, extract its shim with `git show f87aa5d:crates/discord-voice/src/video_encode_ffmpeg.c`
+into a temporary file, select that file with `SHIM`, and compile with `-DNORMAL=0`.
+The current H.265 AMF policy is selected with `HEVC_MAX_QUALITY=1`; use `0` to
+check the earlier all-balanced AMF policy from the initial normal-modes change.
+
+## AMD quality and responsive native controls — October 5, 2026
+
+UI baseline `be644d9064e0b53caf6db103037c8a48a5c7baa8` already contains the normal
+encoder modes above. This change keeps AMF AV1 balanced and selects HEVC
+`usage=high_quality, quality=quality`, while fixing responsive native controls
+and moving video encoding below the camera settings. The pinned FFmpeg shim
+passes its strict C compilation and 20 actual AVOption configurations. Both
+330-picture software streams decode without errors. Physical GPU encoding,
+driver compatibility, quality and throughput remain unverified; software checks
+do not measure the HEVC preset's hardware cost.
+
+[Raw samples and source hashes](pr-evidence/amd-quality-ui/measurements.json) and
+[reproduction scripts](pr-evidence/amd-quality-ui/README.md) record a fresh native
+before/after comparison. Environment: Debian 13 x86-64, Xeon Platinum 8573C,
+five visible CPUs, 17 GiB RAM, Rust 1.98.1, eframe/wgpu under Xvfb with
+`WGPU_BACKEND=gl` and Mesa software output. Both builds use the same isolated
+native preview, `dev` profile with optimization level 1 and no debug info, actual
+UI code, synthetic long-name reply fixture, dark appearance, 1120x760 pixels
+and 100% zoom. Tray/startup availability is fixed to false; the helper contains
+no service or capture adapters. These are development preview measurements,
+not standard release/package measurements.
+
+Compilation stopped before sampling. One run per revision warms up for three
+seconds, then samples process RSS once per second for 15 seconds and computes
+aggregate CPU time over that interval. Neither process had children.
+
+| Metric / method | Baseline | After | Delta |
+| --- | ---: | ---: | ---: |
+| Idle CPU, percentage of one core | 0.00% | 0.00% | Below process-timer resolution |
+| Post-warmup sampled peak/settled RSS | 192,663,552 bytes | 191,758,336 bytes | -905,216 bytes / -0.47% |
+| Isolated development preview executable | 83,176,272 bytes | 83,183,560 bytes | +7,288 bytes / +0.009% |
+
+The small RSS difference is noise from one short paired sample; no memory or
+speed improvement is claimed. Startup peak, frame/startup latency, sustained
+load, leak soaks and GPU memory remain unmeasured. Native screenshots were
+inspected at 1120x760/100% dark and 760x520/150% light/dark, including scrolling
+to the encoding card and the last Add Friend action. The reply/edit regression
+test also verifies that context controls leave the message input inside the
+viewport. All 417 UI library tests pass (five benchmark tests ignored), and
+strict UI Clippy across all targets passes.
+
+The default workspace-check/package commands hit the inherited read-only debug
+cache. Retrying the workspace check and standard release package in an owned
+target directory reaches the native dependency build and fails because
+`glib-sys` cannot find `glib-2.0.pc`.
+The environment also lacks GTK4/WebKit6 development/runtime dependencies.
+Standard release executable, installed-package and compressed-distribution
+sizes remain unavailable; complete workspace/packaging validation is a CI
+requirement. The development preview sizes above must not be treated as shipped
+package sizes.
+
+## Linux OpenH264 isolation verification — October 5, 2026
+
+The upstream sync and PR #3 merge preparation exposed an Ubuntu GStreamer
+2.4/OpenH264 2.6 ABI collision. The corrected native linkage passes the exact
+crash reproduction and all 92 voice tests with each of the older Ubuntu and
+newer Debian plugins (four intentionally ignored per suite). The current voice
+crate, build script and C shim were compiled afresh using exact cached Rust
+dependency artifacts and real native runtime libraries extracted into scratch.
+[Build hashes and reproduction details](pr-evidence/openh264-isolation/README.md)
+describe this local verification separately from a workspace Cargo build.
+
+The fresh full Linux FFmpeg recipe passes all 20 encoder configuration checks;
+both 330-frame software streams decode and are byte-identical to the previous
+output. Executable-relative portable library staging and the Debian private
+SONAME closure check pass. These are correctness checks. CPU/RSS, physical GPU
+performance and standard release executable/installed/compressed package deltas
+were not measured for this linkage fix. The current `cargo xtask check` attempt
+still fails at missing `glib-2.0.pc`; native development prerequisites and full
+application packaging remain CI requirements.

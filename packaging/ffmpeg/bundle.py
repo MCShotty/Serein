@@ -9,7 +9,7 @@ import shutil
 
 
 LIBRARIES = {
-    "Linux": ("libavcodec-serein.so.61", "libavutil-serein.so.59", "libopenh264.so.8"),
+    "Linux": ("libavcodec-serein.so.61", "libavutil-serein.so.59", "libopenh264-serein.so.8"),
     "Darwin": ("libavcodec-serein.61.dylib", "libavutil-serein.59.dylib", "libopenh264.8.dylib"),
     "Windows": ("avcodec-serein-61.dll", "avutil-serein-59.dll", "openh264.dll"),
 }
@@ -43,6 +43,8 @@ def bundle(root, prefix=None):
         shutil.copyfile(origin, libraries / name)
     for name in ("build.json", "configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE"):
         shutil.copyfile(provenance / name, source / name)
+    if system == "Linux":
+        shutil.copyfile(provenance / "serein-openh264.patch", source / "serein-openh264.patch")
     (source / "source").mkdir(exist_ok=True)
     for name in ("ffmpeg-7.1.5.tar.xz", "openh264-2.6.0-source.tar.bz2"):
         shutil.copyfile(provenance / "source" / name, source / "source" / name)

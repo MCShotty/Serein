@@ -89,9 +89,7 @@ impl Encoder {
 			attributes
 				.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1)
 				.map_err(|_| UNAVAILABLE)?;
-			let _ = attributes.SetUINT32(&MF_LOW_LATENCY, 1);
 			let codec: ICodecAPI = transform.cast().map_err(|_| UNAVAILABLE)?;
-			let _ = codec.SetValue(&CODECAPI_AVLowLatencyMode, &VARIANT::from(true));
 			let _ = codec.SetValue(
 				&CODECAPI_AVEncCommonRateControlMode,
 				&VARIANT::from(eAVEncCommonRateControlMode_CBR.0 as u32),

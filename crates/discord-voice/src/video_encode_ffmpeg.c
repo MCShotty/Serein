@@ -68,17 +68,18 @@ static int configure_backend(SereinAvc *encoder, int backend)
     if (backend == 1) {
         /* AV1 NVENC has no private profile option; the context requests Main. */
         return (av1 || set_option(codec, "profile", h264 && encoder->baseline ? "baseline" : "main")) &&
-               set_option(codec, "preset", "p4") && set_option(codec, "tune", "ull") &&
+               set_option(codec, "preset", "p4") && set_option(codec, "tune", "hq") &&
                set_option(codec, "rc", "cbr") && set_option(codec, "rc-lookahead", "0") &&
-               set_option(codec, "zerolatency", "1") && set_option(codec, "forced-idr", "1") &&
-               set_option(codec, "surfaces", "4") && set_option(codec, "delay", "0");
+               set_option(codec, "forced-idr", "1") && set_option(codec, "surfaces", "4");
     }
     if (backend == 3) {
+        const int hevc = encoder->kind == 1;
         if (!set_option(codec, "profile", h264 && encoder->baseline ? "constrained_baseline" : "main") ||
-            !set_option(codec, "usage", "ultralowlatency") || !set_option(codec, "quality", "speed") ||
+            !set_option(codec, "usage", hevc ? "high_quality" : "transcoding") ||
+            !set_option(codec, "quality", hevc ? "quality" : "balanced") ||
             !set_option(codec, "rc", "cbr") || !set_option(codec, "preanalysis", "0") ||
             !set_option(codec, "preencode", "0") ||
-            !set_option(codec, "latency", av1 ? "lowest_latency" : "1"))
+            !set_option(codec, "latency", av1 ? "none" : "0"))
             return 0;
         if (h264)
             return set_option(codec, "frame_skipping", "0") && set_option(codec, "bf", "0") &&
@@ -92,7 +93,7 @@ static int configure_backend(SereinAvc *encoder, int backend)
     }
     if (backend == 4) {
         if (!set_option(codec, "profile", h264 && encoder->baseline ? "baseline" : "main") ||
-            !set_option(codec, "preset", "veryfast") || !set_option(codec, "async_depth", "1") ||
+            !set_option(codec, "preset", "medium") ||
             !set_option(codec, "look_ahead_depth", "0") || !set_option(codec, "forced_idr", "1") ||
             av_opt_set_int(codec->priv_data, "max_frame_size", (int64_t)encoder->max_bytes, 0) < 0)
             return 0;
@@ -104,7 +105,7 @@ static int configure_backend(SereinAvc *encoder, int backend)
                           set_option(codec, "cavlc", encoder->baseline ? "1" : "0"));
     }
     return !av1 && set_option(codec, "profile", h264 && encoder->baseline ? "baseline" : "main") &&
-           set_option(codec, "realtime", "1") && set_option(codec, "allow_sw", "0") &&
+           set_option(codec, "realtime", "0") && set_option(codec, "allow_sw", "0") &&
            set_option(codec, "max_ref_frames", "1");
 }
 
@@ -233,8 +234,9 @@ void *serein_avc_open(int width, int height, int fps, int bitrate, int baseline,
     codec->refs = 1;
     codec->profile = kind == 0 ? (baseline ? AV_PROFILE_H264_BASELINE : AV_PROFILE_H264_MAIN) :
                      kind == 1 ? AV_PROFILE_HEVC_MAIN : AV_PROFILE_AV1_MAIN;
-    codec->flags = (int)((unsigned int)codec->flags |
-                        AV_CODEC_FLAG_LOW_DELAY | AV_CODEC_FLAG_CLOSED_GOP);
+    /* Frame order and the pending-picture cap are transport/resource contracts,
+     * independent of the encoder's quality tuning or low-latency modes. */
+    codec->flags = (int)((unsigned int)codec->flags | AV_CODEC_FLAG_CLOSED_GOP);
     /* The pinned FFmpeg encoders repeat parameter sets on IDRs without
      * GLOBAL_HEADER. VideoToolbox's wrapper converts native AVCC to Annex B
      * and prepends its CMSampleBuffer's current SPS/PPS, so no out-of-band or
@@ -462,8 +464,9 @@ int serein_avc_encode(void *opaque, const uint8_t *input, size_t length,
     encoder->frame->pict_type = (force_keyframe || encoder->baseline) ?
                                AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
     status = avcodec_send_frame(encoder->codec, encoder->frame);
-    /* We drain output on every submission and forbid B frames/lookahead. An
-     * unexpected send-side EAGAIN would mean this input was not accepted; the
+    /* We drain output on every submission. Normal hardware modes can retain
+     * pictures up to the bounded in-flight limit. An unexpected send-side
+     * EAGAIN would mean this input was not accepted; the
      * ABI cannot ambiguously return an older packet while losing that input. */
     if (status < 0)
         goto failed;

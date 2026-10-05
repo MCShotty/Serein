@@ -77,6 +77,18 @@ upstream 7.1.5 omits from that encoder's configure dependencies; no decoder is
 enabled. Linux shared-library linking uses `-z defs`, rejecting unresolved
 symbols before installation.
 
+Linux also isolates bundled OpenH264 from host GStreamer plugins. Its runtime
+SONAME is `libopenh264-serein.so.8`; its seven public entry points use the
+`serein_Wels` prefix and all internal symbols are hidden. The installed headers
+retain the original source API through macros. `serein-openh264.patch` accompanies
+the original source subset and is applied automatically by the shipped recipe.
+Desktop and voice-test executables hide native static archive symbols with
+`--exclude-libs,ALL`, including OpenH264 bundled in Rust's hashed archives.
+Both steps are required: Ubuntu's OpenH264 2.4 GStreamer plugin otherwise binds
+to our 2.6 implementation and overwrites its smaller encoder parameter structure.
+A private SONAME also lets newer host plugins load their own ABI-major-8 library.
+Windows and macOS retain their existing library names and linking rules.
+
 Packages include FFmpeg, NVENC-header and oneVPL archives for the enabled
 platform, a deterministic 1,198,914-byte OpenH264 source archive, and a
 deterministic 620 KiB AMF public-header archive. The OpenH264 subset omits only

@@ -4,6 +4,9 @@ fn main() {
 	println!("cargo:rerun-if-changed=src/video_encode_ffmpeg.h");
 	let target = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
 	if target == "linux" {
+		// Test executables also link static OpenH264 from hashed Rust rlibs.
+		// They must not export it into host GStreamer's different native ABI.
+		println!("cargo:rustc-link-arg=-Wl,--exclude-libs,ALL");
 		println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/lib");
 		println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/../lib/serein");
 	} else if target == "macos" {

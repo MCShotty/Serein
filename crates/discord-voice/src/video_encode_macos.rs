@@ -149,7 +149,7 @@ impl Encoder {
 		// SAFETY: Property keys and the profile level are static CFStrings exported by
 		// VideoToolbox; each value has the documented type for its key.
 		unsafe {
-			self.set(kVTCompressionPropertyKey_RealTime, CFBoolean::new(true))?;
+			self.set(kVTCompressionPropertyKey_RealTime, CFBoolean::new(false))?;
 			self.set(
 				kVTCompressionPropertyKey_AllowFrameReordering,
 				CFBoolean::new(false),

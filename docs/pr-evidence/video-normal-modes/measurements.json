@@ -1,0 +1,74 @@
+{
+  "baseline_commit": "f87aa5db9df9acb3eedbe288e2b2ef1c2a5d8740",
+  "method": "C ABI, 640x480 limited-range BT.601 I420, 15fps/600kbps, 30 frame warmup, 300 measured frames, 1 discarded run then 5 alternating baseline/after runs, RSS sampled each 10ms; software only; no capture/network",
+  "samples": {
+    "baseline": [
+      {
+        "camera": 998.172,
+        "screen": 223.383,
+        "peak_rss_bytes": 9777152
+      },
+      {
+        "camera": 941.455,
+        "screen": 363.739,
+        "peak_rss_bytes": 9777152
+      },
+      {
+        "camera": 891.491,
+        "screen": 235.549,
+        "peak_rss_bytes": 9859072
+      },
+      {
+        "camera": 838.604,
+        "screen": 200.63,
+        "peak_rss_bytes": 9805824
+      },
+      {
+        "camera": 875.891,
+        "screen": 203.843,
+        "peak_rss_bytes": 9891840
+      }
+    ],
+    "after": [
+      {
+        "camera": 1456.61,
+        "screen": 218.711,
+        "peak_rss_bytes": 9908224
+      },
+      {
+        "camera": 860.949,
+        "screen": 233.533,
+        "peak_rss_bytes": 9891840
+      },
+      {
+        "camera": 973.484,
+        "screen": 200.342,
+        "peak_rss_bytes": 9826304
+      },
+      {
+        "camera": 850.804,
+        "screen": 202.283,
+        "peak_rss_bytes": 9891840
+      },
+      {
+        "camera": 844.252,
+        "screen": 223.154,
+        "peak_rss_bytes": 9801728
+      }
+    ]
+  },
+  "medians": {
+    "baseline": {
+      "camera": 891.491,
+      "screen": 223.383,
+      "peak_rss_bytes": 9805824
+    },
+    "after": {
+      "camera": 860.949,
+      "screen": 218.711,
+      "peak_rss_bytes": 9891840
+    }
+  },
+  "camera_bitstream_sha256": "338a23239b6bf05719bcf50bae137b4b49d2294cb2a8c75a3859d6662f4f7bf4",
+  "screen_bitstream_sha256": "52ffecd3c1db6873053dc5ba73105a3842b67ec1ab20b581e7356a5593575d30"
+}

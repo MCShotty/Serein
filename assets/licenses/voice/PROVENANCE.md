@@ -33,6 +33,13 @@ The existing `openh264-sys2-upstream-LICENSE` preserves the Cisco codec notice;
 the separately compiled shared library also carries its upstream LICENSE in
 `ffmpeg-source/OpenH264-LICENSE`.
 
+On Linux, the shared OpenH264 recipe prefixes the seven public APIs, hides
+internal exports and sets `libopenh264-serein.so.8` as its private SONAME.
+`ffmpeg-source/serein-openh264.patch` records those modifications alongside the
+unchanged source subset and license; the shipped recipe reapplies the patch.
+The Rust static codec sources remain unchanged, with their native archive
+symbols hidden when linking desktop and voice-test executables.
+
 Shared libraries remain replaceable. The OpenH264 source build does not inherit
 the patent-license terms of separately downloaded Cisco binaries. This change
 does not change the application's MIT/Apache source license or claim to finish
