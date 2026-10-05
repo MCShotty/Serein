@@ -21,8 +21,11 @@ Quick Sync packs chroma into the allocated NV12 frame; it retains no extra
 conversion vector. At most four submitted pictures can lack output; no B frames or
 lookahead are enabled. Software uses at most two camera/four screen threads; NVENC
 requests four surfaces. Codec/driver reference and scratch storage is additional
-and is not a whole-process memory cap. AMF reopens Main-profile encoding for
-requested IDRs after output has started; camera GOP 1 avoids a per-frame reopen.
+and is not a whole-process memory cap. The encoders do not request explicit
+low-latency modes; NVENC and Quick Sync can use normal buffered output within the
+four-picture cap. Disabling lookahead/preanalysis keeps that cap enforceable.
+AMF reopens Main-profile encoding for requested IDRs after output has started;
+camera GOP 1 avoids a per-frame reopen.
 SDK startup/polling/shutdown can still block, retaining the worker retirement
 barrier. Queue bounds do not imply bounded driver-call time.
 

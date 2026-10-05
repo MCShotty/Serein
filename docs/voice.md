@@ -552,6 +552,16 @@ Bitrate restarts retain the active backend and do not retry earlier failed GPUs;
 H.264 software fallback stays software. Native SDK calls and teardown may block;
 the bounded queue is not a driver-call deadline. Hardware remains unverified here.
 
+Neither backend requests an explicit low-latency video mode. Experimental uses
+NVENC P4 with high-quality tuning, AMF transcoding with balanced quality and no
+latency requirement, and Quick Sync's medium preset with its default four-task
+parallelism. VideoToolbox's real-time hint is disabled in both backends; Stable
+does not request Media Foundation low-latency or GStreamer zero-latency operation.
+Frame ordering, disabled lookahead/preanalysis and the four-picture pending cap
+remain resource/transport requirements. OpenH264 2.6 only accepts camera-real-time
+and screen-real-time usage types; selecting its advertised non-real-time types
+fails initialization, so its supported usage types remain in software fallback.
+
 Quick Sync receives NV12 from bounded I420 input. AMF restarts its context for
 requested screen keyframes after producing output because FFmpeg 7.1 does not
 forward forced picture types; camera GOP 1 does not restart per frame. The pinned

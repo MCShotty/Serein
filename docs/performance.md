@@ -4513,3 +4513,55 @@ These fixes change building and updater package selection, with no visible UI or
 encoder algorithm change. CPU/RSS/frame timing were not remeasured. Full native
 Windows/macOS and Nix/Flatpak validation requires CI. Physical GPU encoding,
 capture devices, live interoperability and extended soak testing remain unverified.
+
+## Normal video encoder modes — October 5, 2026
+
+Compared application commit `f87aa5db9df9acb3eedbe288e2b2ef1c2a5d8740` with the
+removal of explicit low-latency video modes. The
+[C ABI workload](pr-evidence/video-normal-modes/encoder-check.c) compiles the real
+FFmpeg shim and checks all 20 available Linux encoder/codec/profile option
+configurations without opening GPUs. It also encodes camera and screen pictures
+through OpenH264, checks camera independence, forced screen keyframes and malformed
+input rejection. The configuration check does not establish working GPU encoding.
+
+Environment: Debian 13 x86-64, Intel Xeon Platinum 8573C, five visible CPUs,
+17 GiB RAM, pinned FFmpeg 7.1.5/OpenH264 2.6.0, GCC `-O2`. Software input is
+640x480 limited-range BT.601 I420, 15 fps and 600 kbps. Each run warms up with 30
+pictures then measures 300; one run per revision is discarded, followed by five
+alternating baseline/after runs. RSS is sampled every 10 ms for the C process.
+There is no renderer, display, audio device, desktop capture or network connection.
+[Raw samples and bitstream hashes](pr-evidence/video-normal-modes/measurements.json)
+record the workload and actual baseline revision.
+
+| Metric / method | Baseline | After | Delta |
+| --- | ---: | ---: | ---: |
+| Median 300 camera pictures | 891.491 ms | 860.949 ms | -30.542 ms / -3.43% |
+| Median 300 screen pictures | 223.383 ms | 218.711 ms | -4.672 ms / -2.09% |
+| Median sampled peak C-process RSS | 9,805,824 bytes | 9,891,840 bytes | +86,016 bytes / +0.88% |
+
+The before/after bitstreams are byte-identical for both profiles. All 330 camera
+and 330 screen pictures decode with `ffmpeg -v error -xerror -i <stream> -f null -`.
+These small timing/RSS differences measure software noise, not hardware quality or
+latency improvements. Physical GPUs are unavailable; GPU buffering, quality and
+latency remain unmeasured. Native demo CPU/RSS and executable/installed/compressed
+package sizes could not be measured: `cargo xtask check` and both baseline/after
+`cargo xtask package` attempts fail on the inherited, read-only
+`target/debug/.cargo-build-lock`. The environment also lacks GTK4/WebKit6 runtime
+libraries and native development headers. A focused Cargo-only voice test rebuild
+hits the existing `winit` platform-feature error. Formatting and the strict C
+compiler checks pass; complete native validation remains a CI requirement.
+
+To reproduce the C checks with the pinned FFmpeg prefix in `FFMPEG_DIR`:
+
+```bash
+cc -std=c11 -O2 -Wall -Wextra -Werror -DNORMAL=1 \
+  "-DSHIM=\"$PWD/crates/discord-voice/src/video_encode_ffmpeg.c\"" \
+  -Icrates/discord-voice/src -I"$FFMPEG_DIR/include" \
+  docs/pr-evidence/video-normal-modes/encoder-check.c \
+  -L"$FFMPEG_DIR/lib" -Wl,-rpath,"$FFMPEG_DIR/lib" \
+  -lavcodec-serein -lavutil-serein -o /tmp/serein-encoder-check
+/tmp/serein-encoder-check /tmp/serein-camera.h264 /tmp/serein-screen.h264
+```
+
+For the baseline, extract its shim with `git show f87aa5d:crates/discord-voice/src/video_encode_ffmpeg.c`
+into a temporary file, select that file with `SHIM`, and compile with `-DNORMAL=0`.

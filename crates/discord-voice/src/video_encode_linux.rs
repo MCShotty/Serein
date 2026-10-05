@@ -73,7 +73,6 @@ impl Encoder {
 		set_number(&encoder, "max-bframes", 0);
 		set_number(&encoder, "bframes", 0);
 		set_number(&encoder, "rc-lookahead", 0);
-		set_flag(&encoder, "zerolatency", true);
 
 		let source = gst_app::AppSrc::builder()
 			.caps(
@@ -329,16 +328,6 @@ fn set_number(element: &gst::Element, name: &str, value: i64) {
 		element.set_property(name, value);
 	} else if kind == glib::Type::U64
 		&& let Ok(value) = u64::try_from(value)
-	{
-		element.set_property(name, value);
-	}
-}
-
-/// Sets a boolean property when the element declares it as one.
-fn set_flag(element: &gst::Element, name: &str, value: bool) {
-	if element
-		.find_property(name)
-		.is_some_and(|spec| spec.value_type() == glib::Type::BOOL)
 	{
 		element.set_property(name, value);
 	}
