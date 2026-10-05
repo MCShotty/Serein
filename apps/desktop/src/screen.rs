@@ -42,6 +42,7 @@ struct Context {
 	stream_request: u64,
 }
 struct Pending {
+	video_settings: model::voice_settings::VideoSettings,
 	context: Context,
 	settings: Settings,
 	user: Id,
@@ -352,6 +353,7 @@ impl Screen {
 							stream_request: self.sequence,
 						};
 						self.pending = Some(Pending {
+							video_settings: ui.video_settings,
 							context,
 							settings,
 							user: call.user,
@@ -493,7 +495,9 @@ impl Screen {
 			request: pending.context.stream_request,
 		};
 		let wake = ctx.clone();
-		let (worker, video) = Worker::start(pending.settings, move || wake.request_repaint())?;
+		let (worker, video) = Worker::start(pending.settings, pending.video_settings, move || {
+			wake.request_repaint()
+		})?;
 		let (send, events) = watch::channel(None);
 		let wake = ctx.clone();
 		let identity = pending.identity;
@@ -593,6 +597,7 @@ mod tests {
 
 	fn pending(context: Context, settings: Settings) -> Pending {
 		Pending {
+			video_settings: Default::default(),
 			context,
 			settings,
 			user: Id(1),

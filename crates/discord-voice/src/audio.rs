@@ -1,7 +1,7 @@
 //! Device I/O starts only for an explicit call or a user-started local microphone preview.
 //! CPAL callbacks use preallocated lock-free rings; codecs and channels stay off them.
-use crate::Frame;
 use crate::diagnostics::{Metrics, Scope, Stage};
+use crate::{CapturedFrame, Frame};
 mod echo;
 use model::voice_settings::{NoiseSuppression, Processing, VoiceProcessing};
 #[cfg(target_os = "macos")]
@@ -138,6 +138,9 @@ impl Gate {
 			&& !self.muted.load(Ordering::Acquire)
 			&& !self.stopped.load(Ordering::Acquire)
 	}
+	fn capture_in_generation(&self, generation: u64) -> bool {
+		self.capture() && self.media_generation.load(Ordering::Acquire) == generation
+	}
 	fn playback(&self) -> bool {
 		self.is_ready()
 			&& !self.deafened.load(Ordering::Acquire)
@@ -154,7 +157,7 @@ pub struct Audio {
 impl Audio {
 	pub fn start(
 		settings: Devices,
-		capture: mpsc::SyncSender<Frame>,
+		capture: mpsc::SyncSender<CapturedFrame>,
 		playback: mpsc::Receiver<Frame>,
 		emit: impl Fn(Result<(), &'static str>) + Send + 'static,
 	) -> Result<Self, &'static str> {
@@ -177,7 +180,7 @@ impl Audio {
 	}
 	fn start_inner(
 		settings: Devices,
-		capture: mpsc::SyncSender<Frame>,
+		capture: mpsc::SyncSender<CapturedFrame>,
 		playback: mpsc::Receiver<Frame>,
 		emit: impl Fn(Result<(), &'static str>) + Send + 'static,
 		preview: bool,
@@ -361,9 +364,9 @@ impl Audio {
 						let Ok(frame) = active.reference.pop() else {
 							break;
 						};
-						if worker_gate.capture() {
+						if worker_gate.capture_in_generation(frame.generation) {
 							let start = metrics.start();
-							let result = echo.render(&frame);
+							let result = echo.render(&frame.pcm);
 							metrics.finish(Stage::EchoRender, start);
 							if let Err(error) = result {
 								emit(Err(error));
@@ -372,10 +375,11 @@ impl Audio {
 						}
 					}
 					for _ in 0..8 {
-						let Ok(mut frame) = active.input.pop() else {
+						let Ok(captured) = active.input.pop() else {
 							break;
 						};
-						if worker_gate.capture() {
+						if worker_gate.capture_in_generation(captured.generation) {
+							let mut frame = captured.pcm;
 							let start = metrics.start();
 							let result = echo.capture(&mut frame, start.is_some());
 							metrics.finish(Stage::EchoCapture, start);
@@ -392,7 +396,7 @@ impl Audio {
 							for sample in &mut frame {
 								*sample = amplify(*sample, gain);
 							}
-							if worker_gate.capture()
+							if worker_gate.capture_in_generation(captured.generation)
 								&& !worker_gate.echo_reset.load(Ordering::Acquire)
 							{
 								worker_gate.preview_level.store(
@@ -405,7 +409,14 @@ impl Audio {
 								if preview {
 									drops += u64::from(active.output.push(frame).is_err());
 								} else if audible {
-									drops += u64::from(capture.try_send(frame).is_err());
+									drops += u64::from(
+										capture
+											.try_send(CapturedFrame {
+												generation: captured.generation,
+												pcm: frame,
+											})
+											.is_err(),
+									);
 								}
 							}
 						}
@@ -467,6 +478,9 @@ impl Audio {
 	/// Permission-driven microphone availability, independent of mute and push-to-talk.
 	pub fn set_input_enabled(&self, enabled: bool) {
 		if self.gate.input_enabled.swap(enabled, Ordering::AcqRel) != enabled {
+			// Permission may disappear and return before the callback/transport runs.
+			self.gate.media_generation.fetch_add(1, Ordering::AcqRel);
+			self.gate.echo_reset.store(true, Ordering::Release);
 			self.gate.revision.fetch_add(1, Ordering::AcqRel);
 			self.thread.unpark();
 		}
@@ -490,6 +504,10 @@ impl Audio {
 			self.gate.media_generation.fetch_add(1, Ordering::AcqRel);
 			self.gate.echo_reset.store(true, Ordering::Release);
 		}
+	}
+	/// Privacy generation, independent of the worker's device-recovery revision.
+	pub fn capture_generation(&self) -> u64 {
+		self.gate.media_generation.load(Ordering::Acquire)
 	}
 	/// Changes are coalesced and applied on the worker, never in device callbacks.
 	pub fn set_processing(&self, mut settings: Processing) {
@@ -534,9 +552,9 @@ struct Streams {
 	input_activity: Instant,
 	_input: Option<cpal::Stream>,
 	_output: cpal::Stream,
-	input: rtrb::Consumer<Frame>,
+	input: rtrb::Consumer<CapturedFrame>,
 	output: rtrb::Producer<Frame>,
-	reference: rtrb::Consumer<Frame>,
+	reference: rtrb::Consumer<CapturedFrame>,
 	/// Devices actually opened, so a changed system default can be followed.
 	output_id: Option<String>,
 	input_id: Option<String>,
@@ -694,7 +712,7 @@ fn open_input_stream(
 	settings: &Devices,
 	gate: &Arc<Gate>,
 	revision: u64,
-) -> Result<(cpal::Stream, rtrb::Consumer<Frame>, Option<String>), &'static str> {
+) -> Result<(cpal::Stream, rtrb::Consumer<CapturedFrame>, Option<String>), &'static str> {
 	#[cfg(target_os = "macos")]
 	permission_macos::authorize(gate, revision)?;
 	let input = choose(host, settings.input.as_deref(), true)?;
@@ -900,7 +918,7 @@ struct Capture {
 	step: f64,
 	frame: Frame,
 	index: usize,
-	output: rtrb::Producer<Frame>,
+	output: rtrb::Producer<CapturedFrame>,
 	overrun: bool,
 }
 impl Capture {
@@ -926,7 +944,7 @@ impl Capture {
 			gate.echo_reset.store(true, Ordering::Release);
 		}
 	}
-	fn new(rate: u32, output: rtrb::Producer<Frame>) -> Self {
+	fn new(rate: u32, output: rtrb::Producer<CapturedFrame>) -> Self {
 		Self {
 			media_generation: 0,
 			previous: None,
@@ -950,7 +968,13 @@ impl Capture {
 				self.frame[self.index] = previous + (sample - previous) * self.phase as f32;
 				self.index += 1;
 				if self.index == 960 {
-					self.overrun |= self.output.push(self.frame).is_err();
+					self.overrun |= self
+						.output
+						.push(CapturedFrame {
+							generation: self.media_generation,
+							pcm: self.frame,
+						})
+						.is_err();
 					self.index = 0;
 				}
 				self.phase += self.step;
@@ -983,6 +1007,7 @@ impl Playback {
 			self.media_generation = generation;
 			self.reset();
 		}
+		self.reference.media_generation = generation;
 		if !gate.playback() {
 			self.reset();
 			data.fill(T::from_sample(0.0));
@@ -1002,7 +1027,11 @@ impl Playback {
 			gate.echo_reset.store(true, Ordering::Release);
 		}
 	}
-	fn new(rate: u32, input: rtrb::Consumer<Frame>, reference: rtrb::Producer<Frame>) -> Self {
+	fn new(
+		rate: u32,
+		input: rtrb::Consumer<Frame>,
+		reference: rtrb::Producer<CapturedFrame>,
+	) -> Self {
 		Self {
 			media_generation: 0,
 			input,
@@ -1233,7 +1262,7 @@ mod tests {
 				let (send, mut receive) = rtrb::RingBuffer::new(8);
 				let mut capture = Capture::new(48_000, send);
 				capture.process(&[sample; 961], 1, &audio.gate);
-				assert!(receive.pop().unwrap().iter().all(|s| *s == sample));
+				assert!(receive.pop().unwrap().pcm.iter().all(|s| *s == sample));
 				assert_eq!(
 					amplify(sample, f32::from(percent.min(200)) / 100.0),
 					expected
@@ -1251,7 +1280,7 @@ mod tests {
 			let (send, mut receive) = rtrb::RingBuffer::new(8);
 			let mut capture = Capture::new(48_000, send);
 			capture.process(&[invalid; 961], 1, &audio.gate);
-			assert_eq!(receive.pop().unwrap(), [0.0; 960]);
+			assert_eq!(receive.pop().unwrap().pcm, [0.0; 960]);
 			let (mut send, receive) = rtrb::RingBuffer::new(8);
 			send.push([invalid; 960]).unwrap();
 			let mut playback = Playback::new(48_000, receive, rtrb::RingBuffer::new(8).0);
@@ -1290,12 +1319,12 @@ mod tests {
 		assert_eq!(rendered, [0.0, 0.25]);
 		audio.set_gain(200, 0);
 		capture.process(&[0.25; 961], 1, &audio.gate);
-		assert_eq!(captured.pop().unwrap(), [0.25; 960]);
+		assert_eq!(captured.pop().unwrap().pcm, [0.25; 960]);
 		playback.render(&mut rendered, 1, &audio.gate);
 		assert_eq!(rendered, [0.0; 2]);
 		audio.set_gain(0, 200);
 		capture.process(&[0.25; 960], 1, &audio.gate);
-		let frame = captured.pop().unwrap();
+		let frame = captured.pop().unwrap().pcm;
 		assert_eq!(frame, [0.25; 960]); // Microphone gain now follows AEC on the worker.
 		playback.render(&mut rendered, 1, &audio.gate);
 		assert_eq!(rendered, [0.5; 2]);
@@ -1314,7 +1343,7 @@ mod tests {
 		audio.set_controls(false, false);
 		audio.set_gain(100, 100);
 		capture.process(&[0.25; 961], 1, &audio.gate);
-		assert_eq!(captured.pop().unwrap(), [0.25; 960]);
+		assert_eq!(captured.pop().unwrap().pcm, [0.25; 960]);
 		playback.render(&mut rendered, 1, &audio.gate);
 		assert_eq!(rendered, [0.0; 2]);
 		audio.gate.stopped.store(true, Ordering::Release);
@@ -1344,7 +1373,7 @@ mod tests {
 			for _ in 0..rate {
 				capture.sample(0.25);
 				while let Ok(frame) = receive.pop() {
-					assert!(frame.iter().all(|s| (*s - 0.25).abs() < 0.0001));
+					assert!(frame.pcm.iter().all(|s| (*s - 0.25).abs() < 0.0001));
 					count += 960;
 				}
 			}
@@ -1361,6 +1390,55 @@ mod tests {
 		}
 		playback.reset();
 		assert_eq!(playback.sample(), 0.0);
+	}
+
+	#[test]
+	fn privacy_generation_rejects_late_pcm_and_survives_device_recovery() {
+		let audio = audio_without_devices();
+		audio.set_ready(true);
+		assert!(
+			audio
+				.gate
+				.acknowledge(audio.gate.revision.load(Ordering::Acquire))
+		);
+		let (send, mut received) = rtrb::RingBuffer::new(8);
+		let mut capture = Capture::new(48_000, send);
+		capture.process(&[0.25_f32; 961], 1, &audio.gate);
+		let old = received.pop().unwrap();
+		assert_eq!(old.generation, audio.capture_generation());
+		assert!(audio.gate.capture_in_generation(old.generation));
+		audio.set_controls(true, false);
+		audio.set_controls(false, false);
+		assert!(!audio.gate.capture_in_generation(old.generation));
+		capture.process(&[0.75_f32; 961], 1, &audio.gate);
+		let current = received.pop().unwrap();
+		assert_eq!(current.generation, audio.capture_generation());
+		assert!(audio.gate.capture_in_generation(current.generation));
+		assert_eq!(current.pcm, [0.75; 960]);
+		// Coalesced microphone permission changes invalidate already processed/channel PCM.
+		audio.set_input_enabled(false);
+		audio.set_input_enabled(true);
+		assert_ne!(current.generation, audio.capture_generation());
+		assert!(!audio.gate.capture_in_generation(current.generation));
+		assert!(
+			audio
+				.gate
+				.acknowledge(audio.gate.revision.load(Ordering::Acquire))
+		);
+		capture.process(&[0.5_f32; 961], 1, &audio.gate);
+		let current = received.pop().unwrap();
+		assert_eq!(current.generation, audio.capture_generation());
+		assert!(audio.gate.capture_in_generation(current.generation));
+		// The worker's recovery revision is independent of the UI privacy generation.
+		let revision = audio.gate.revision.fetch_add(1, Ordering::AcqRel) + 1;
+		assert!(!audio.gate.capture_in_generation(current.generation));
+		assert!(audio.gate.acknowledge(revision));
+		assert_eq!(audio.capture_generation(), current.generation);
+		assert!(audio.gate.capture_in_generation(current.generation));
+		// A lost encryption gate advances privacy even if restored between callbacks.
+		audio.set_ready(false);
+		audio.set_ready(true);
+		assert!(!audio.gate.capture_in_generation(current.generation));
 	}
 
 	#[test]

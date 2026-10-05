@@ -1,8 +1,8 @@
 //! Bounded Media Foundation hardware H.264 encoder for Windows screen sharing and camera video.
 #![allow(unsafe_code)]
 
+use super::i420_to_nv12;
 use super::{Config, Profile};
-use crate::screen::i420_to_nv12;
 use std::{
 	marker::PhantomData,
 	rc::Rc,

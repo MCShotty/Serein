@@ -2305,6 +2305,11 @@ impl MessagingUi {
 		let colors = design::palette(ui);
 		ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
 		ui.spacing_mut().item_spacing.y = if compact { 6.0 } else { 12.0 };
+		design::group(
+			ui,
+			&crate::i18n::translate("voice-video-settings-title"),
+			|ui| self.video_settings_controls(ui),
+		);
 		if !demo && !self.voice_available {
 			design::notice(
 				ui,
@@ -2370,6 +2375,50 @@ impl MessagingUi {
 				);
 			});
 		}
+	}
+
+	fn video_settings_controls(&mut self, ui: &mut egui::Ui) {
+		use model::voice_settings::{VideoBackend, VideoCodec};
+		let colors = design::palette(ui);
+		ui.label(crate::i18n::translate("voice-video-backend"));
+		ui.horizontal_wrapped(|ui| {
+			ui.selectable_value(
+				&mut self.video_settings.backend,
+				VideoBackend::Stable,
+				crate::i18n::translate("voice-video-backend-stable"),
+			);
+			ui.selectable_value(
+				&mut self.video_settings.backend,
+				VideoBackend::Experimental,
+				crate::i18n::translate("voice-video-backend-experimental"),
+			);
+		});
+		let experimental = self.video_settings.backend == VideoBackend::Experimental;
+		if !experimental {
+			self.video_settings.codec = VideoCodec::H264;
+		}
+		ui.label(
+			RichText::new(crate::i18n::translate(if experimental {
+				"voice-video-experimental-description"
+			} else {
+				"voice-video-stable-description"
+			}))
+			.size(12.0)
+			.color(colors.muted),
+		);
+		ui.label(crate::i18n::translate("voice-video-codec"));
+		ui.horizontal_wrapped(|ui| {
+			ui.selectable_value(&mut self.video_settings.codec, VideoCodec::H264, "H.264");
+			ui.add_enabled_ui(experimental, |ui| {
+				ui.selectable_value(&mut self.video_settings.codec, VideoCodec::H265, "H.265");
+				ui.selectable_value(&mut self.video_settings.codec, VideoCodec::Av1, "AV1");
+			});
+		});
+		ui.label(
+			RichText::new(crate::i18n::translate("voice-video-settings-apply"))
+				.size(12.0)
+				.color(colors.muted),
+		);
 	}
 
 	fn camera_settings_content(&mut self, ui: &mut egui::Ui, demo: bool) {
@@ -3048,7 +3097,7 @@ impl MessagingUi {
 				)) {
 					"Camera capture is unavailable on this platform"
 				} else if !self.voice_camera_available {
-					"Camera requires H264 support from the voice server"
+					"Camera requires support for the selected video codec from the voice server"
 				} else if !state.can_camera(channel) {
 					"Camera is unavailable with current channel permissions"
 				} else {
@@ -3709,7 +3758,7 @@ impl MessagingUi {
 						} else if state.demo {
 							"Camera is off in the offline preview"
 						} else if !self.voice_camera_available {
-							"Camera requires H264 support from the voice server"
+							"Camera requires support for the selected video codec from the voice server"
 						} else if !state.can_camera(channel_id) {
 							"Camera is unavailable with current channel permissions"
 						} else {
@@ -4496,6 +4545,70 @@ fn device_combo(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn video_settings_select_codecs_and_reset_when_returning_to_stable() {
+		use model::voice_settings::{VideoBackend, VideoCodec};
+		fn label_rect(shape: &egui::Shape, label: &str) -> Option<egui::Rect> {
+			match shape {
+				egui::Shape::Text(text) if text.galley.job.text == label => {
+					Some(text.visual_bounding_rect())
+				}
+				egui::Shape::Vec(shapes) => shapes.iter().find_map(|s| label_rect(s, label)),
+				_ => None,
+			}
+		}
+		let mut messaging = MessagingUi::default();
+		let ctx = egui::Context::default();
+		for label in ["H.265", "Experimental (FFmpeg)", "H.265", "AV1", "Stable"] {
+			let output = ctx.run_ui(Default::default(), |ui| {
+				messaging.video_settings_controls(ui)
+			});
+			let rect = output
+				.shapes
+				.iter()
+				.find_map(|s| label_rect(&s.shape, label))
+				.unwrap();
+			output.drop_without_applying_deltas();
+			for pressed in [true, false] {
+				let pos = rect.center();
+				ctx.run_ui(
+					egui::RawInput {
+						events: vec![
+							egui::Event::PointerMoved(pos),
+							egui::Event::PointerButton {
+								pos,
+								button: egui::PointerButton::Primary,
+								pressed,
+								modifiers: egui::Modifiers::NONE,
+							},
+						],
+						..Default::default()
+					},
+					|ui| messaging.video_settings_controls(ui),
+				)
+				.drop_without_applying_deltas();
+			}
+			match label {
+				"Experimental (FFmpeg)" => {
+					assert_eq!(messaging.video_settings.backend, VideoBackend::Experimental)
+				}
+				"H.265" => assert_eq!(
+					messaging.video_settings.codec,
+					if messaging.video_settings.backend == VideoBackend::Stable {
+						VideoCodec::H264
+					} else {
+						VideoCodec::H265
+					}
+				),
+				"AV1" => assert_eq!(messaging.video_settings.codec, VideoCodec::Av1),
+				"Stable" => assert_eq!(messaging.video_settings, Default::default()),
+				_ => unreachable!(),
+			}
+			assert!(messaging.video_settings.is_valid());
+		}
+		assert!(!messaging.voice_refresh_devices && !messaging.camera_test_requested);
+	}
 
 	#[test]
 	fn explicit_join_audio_waits_for_call_switch_and_survives_teardown() {

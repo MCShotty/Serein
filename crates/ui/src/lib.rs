@@ -419,6 +419,7 @@ pub struct MessagingUi {
 	pub voice_muted: bool,
 	pub voice_deafened: bool,
 	pub voice_processing: model::voice_settings::VoiceProcessing,
+	pub video_settings: model::voice_settings::VideoSettings,
 	pub voice_preview_requested: bool,
 	pub voice_preview_level: Option<f32>,
 	pub voice_preview_status: &'static str,

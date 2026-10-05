@@ -4516,3 +4516,11 @@ screen-macos-system-picker = Choose with the macOS system picker
 screen-macos-system-picker-kind = System content picker
 
 member-in-voice = In voice
+voice-video-settings-title = Video encoding
+voice-video-backend = Video backend
+voice-video-backend-stable = Stable
+voice-video-backend-experimental = Experimental (FFmpeg)
+voice-video-stable-description = Original platform encoders with H.264 software fallback.
+voice-video-experimental-description = FFmpeg hardware encoding with H.264 software fallback. H.265 and AV1 require compatible hardware and support from the call.
+voice-video-codec = Video codec
+voice-video-settings-apply = Camera changes apply on your next call or local preview. Screen sharing changes apply on your next share.

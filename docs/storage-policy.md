@@ -1,5 +1,38 @@
 # Local storage policy and audit
 
+## Experimental FFmpeg outgoing video (October 5, 2026)
+
+With Experimental selected, each camera/screen worker owns one FFmpeg codec context, frame and packet. The
+context cannot move between threads. Allowed backends are NVENC, AMD AMF, Intel
+Quick Sync, VideoToolbox and OpenH264; no capture, network or CLI process is opened
+by encoding. Hardware failure closes the old context before advancing to the next
+backend or H.264 software; H.265/AV1 have no bundled software fallback. Reconfiguration retains the active backend and excludes
+earlier failed GPUs. Secure-readiness loss
+closes the screen encoder and discards pending native output.
+
+Camera I420 input is 460,800 bytes; screen I420 is at most 3,110,400 bytes
+(1920×1080). Each encoder retains one reusable output buffer capped at 128 KiB
+(camera) or 2 MiB (screen), plus the actual current packet and returned bounded
+access unit. The native packet allocator rejects payloads exceeding the same cap
+before copying. The pinned Quick Sync wrapper is patched to use that allocator
+instead of allocating its driver-advised packet size directly. Returned packets
+must also fit their actual backing allocation before inspection/copy.
+Quick Sync packs chroma into the allocated NV12 frame; it retains no extra
+conversion vector. At most four submitted pictures can lack output; no B frames or
+lookahead are enabled. Software uses at most two camera/four screen threads; NVENC
+requests four surfaces. Codec/driver reference and scratch storage is additional
+and is not a whole-process memory cap. AMF reopens Main-profile encoding for
+requested IDRs after output has started; camera GOP 1 avoids a per-frame reopen.
+SDK startup/polling/shutdown can still block, retaining the worker retirement
+barrier. Queue bounds do not imply bounded driver-call time.
+
+Linux raw capture and preview each use one-item/byte-bounded appsinks; its worker
+retains at most one validated latest BGRA picture for static-desktop IDR recovery
+and a one-second keepalive. CPU readback, scaling and I420 conversion replace
+outgoing GPU-only GStreamer encoding. Transport queues, encryption gates, camera
+capture ceilings and persistent storage are unchanged. FFmpeg libraries, source
+and build recipes are installed package material; media is never recorded.
+
 ## Linux native live decoder admission (October 3, 2026)
 
 Each Linux live H.264 decoder now admits at most four queued compressed access
@@ -967,7 +1000,7 @@ seeking replays decoding from the start instead of retaining the file.
 
 ## Screen sharing
 
-Screen/window labels, selected source identifiers, settings, raw pixels and encoded video exist only in session memory. They are not written to SQLite, diagnostics, previews or video files. Sources and video queues use the limits in [screen-sharing compatibility](discord-compatibility.md#outgoing-screen-sharing--september-11-2026). Stream credentials and DAVE identities are ephemeral and redacted; the signing key is shared with the active voice call and zeroized when its final owner drops. Native OS/driver capture surfaces are distinct from application-owned frame buffers. Synthetic PR screenshots are development evidence, excluded from runtime assets.
+Screen/window labels, selected source identifiers, per-share quality settings, raw pixels and encoded video exist only in session memory. They are not written to SQLite, diagnostics, previews or video files. Sources and video queues use the limits in [screen-sharing compatibility](discord-compatibility.md#outgoing-screen-sharing--september-11-2026). Stream credentials and DAVE identities are ephemeral and redacted; the signing key is shared with the active voice call and zeroized when its final owner drops. Native OS/driver capture surfaces are distinct from application-owned frame buffers. Synthetic PR screenshots are development evidence, excluded from runtime assets.
 
 An opened live-stream preview retains one URL of at most 2,048 bytes and one bounded still in
 the existing 512-pixel media working set. Preview responses are capped at 4 KiB, and a newer
@@ -1634,3 +1667,16 @@ confirmed call, recipient membership and current target eligibility; unrelated
 peer mute/camera state does not cancel an eligible target. Departure, replacement,
 access loss and target state changes retire obsolete work without an optimistic
 state or additional failure/retry queue.
+
+
+## Video backend preferences — October 5, 2026
+
+The bounded 16 KiB device-wide `app_preferences` row now stores two enums in
+`video_settings`: Stable/Experimental and H264/H265/Av1. Missing fields default to
+Stable/H264 without a schema migration. Stable with a non-H264 codec is rejected;
+the UI resets to H264 when Stable is selected. These choices survive logout and
+restart. The call and screen worker each retain one immutable settings snapshot;
+changing settings does not allocate another encoder or renegotiate an active stream.
+Camera previews stop on a settings change and require another explicit start.
+The existing camera/screen pixel, encoded-byte and packet/queue limits remain.
+No new capture files, media cache, driver installer or secrets are persisted.

@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "baseline_commit": "8cd15690c060f8d2ffde2f04c736ab300d6cba84",
+  "after_revision": "b6a177b94a4b6b2ea0f64f79ce75e488208462fd",
+  "environment": {
+    "os": "Debian 13.7 container on Linux 6.18.44 x86_64",
+    "cpu": "Intel Xeon Platinum 8573C",
+    "logical_cpus": 5,
+    "ram_bytes": 18882699264,
+    "rust": "1.98.1",
+    "dependencies": "locked",
+    "data": "synthetic offline",
+    "accounts_or_devices": false
+  },
+  "standard_package": {
+    "command": "cargo xtask package",
+    "profile": "normal release: fat LTO, one codegen unit, stripped",
+    "format": "deb",
+    "baseline": {
+      "executable_bytes": 85796648,
+      "executable_sha256": "6b47855167ffe20a122319b69fe76ef0371350426cab2ddbe6de9ab215735058",
+      "installed_regular_file_bytes": 121026564,
+      "installed_regular_files": 248,
+      "compressed_bytes": 70809936,
+      "compressed_sha256": "233dde88a3bd7757f520771644a1337cefb9bfed8cbaab8702876f91e53aa5ed"
+    },
+    "after": {
+      "executable_bytes": 85796648,
+      "executable_sha256": "505d30e3388caf200f04a5c540c63aea83176defa00eb83f57985497a2558daa",
+      "installed_regular_file_bytes": 121029988,
+      "installed_regular_files": 248,
+      "compressed_bytes": 70810788,
+      "compressed_sha256": "5f185ee1010337e27b52a8a2a42049d8337e7e3b4d0dd6874a6441dc37c69d78"
+    },
+    "method": "One standard package per revision; installed bytes sum regular-file sizes from dpkg-deb --fsys-tarfile, excluding symlinks and allocation overhead",
+    "smoke": "passed executable, desktop entry, metadata, ownership, content and host shared-library closure"
+  },
+  "source_identity": {
+    "scripts/build-ffmpeg.py": "c5d8c245e71e3a75d8edd54bfd144f345ab1927cddfb1784d15dea9a5d7a5f47",
+    "apps/desktop/src/updater.rs": "141dd2bcfe0ad3da1330e2162412d2dcaba51a33ddb56c4ddc9ff58e7c49b0bf",
+    "apps/desktop/src/updater_install.rs": "830d12e0f9eeb279ea7a165d12b6ad04a25e1eaf1b20d030039189fe88359871"
+  },
+  "verification": {
+    "cargo_xtask_check": {"passed_test_executions": 1235, "failed": 0, "ignored": 27},
+    "check_environment": "CARGO_NET_OFFLINE=true, CARGO_PROFILE_DEV_DEBUG=0, CARGO_PROFILE_TEST_DEBUG=0, CARGO_INCREMENTAL=0; release profile unchanged",
+    "ffmpeg_bundle_tests": {"total": 16, "skipped": 1, "reason": "Windows DLL import validation requires Windows"},
+    "flatpak_preparation_tests": 4,
+    "windows_archive_tests": 5,
+    "patchelf_upstream_checks": {"passed": 54, "skipped": 2, "failed": 0},
+    "release_smoke": "passed",
+    "compiler_probe": "Pinned FFmpeg configure reproduced gcc failure with a failing gcc stub and working CC/CXX wrappers; explicit compiler options succeeded"
+  },
+  "unmeasured": [
+    "Windows and macOS execution and full Nix/Flatpak builds require native CI",
+    "CPU, RSS, frame timing and GPU memory were not remeasured for these build/updater-only fixes",
+    "Physical GPU encoding, capture, live Discord interoperability and extended soak testing"
+  ]
+}

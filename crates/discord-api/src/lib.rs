@@ -74,6 +74,19 @@ enum RequestContent {
 	Multipart { content_type: String, body: Vec<u8> },
 }
 
+struct ResponsePolicy<'a> {
+	max_bytes: usize,
+	missing: Option<&'a mut bool>,
+}
+impl ResponsePolicy<'_> {
+	fn required(max_bytes: usize) -> Self {
+		Self {
+			max_bytes,
+			missing: None,
+		}
+	}
+}
+
 fn stream_preview_url(bytes: &[u8], key: &str) -> Result<String, Failure> {
 	#[derive(serde::Deserialize)]
 	struct Preview {
@@ -274,11 +287,33 @@ impl DiscordApi {
 			method,
 			path,
 			body.map(RequestContent::Json),
-			max_bytes,
+			ResponsePolicy::required(max_bytes),
 			None,
 			None,
 		)
 		.await
+	}
+	/// Keep a missing optional GET distinct from malformed responses and other HTTP failures.
+	async fn request_optional_limited(
+		&self,
+		path: &str,
+		max_bytes: usize,
+	) -> Result<Option<Vec<u8>>, Failure> {
+		let mut missing = false;
+		let bytes = self
+			.request_with_content(
+				Method::GET,
+				path,
+				None,
+				ResponsePolicy {
+					max_bytes,
+					missing: Some(&mut missing),
+				},
+				None,
+				None,
+			)
+			.await?;
+		Ok((!missing).then_some(bytes))
 	}
 	async fn request_multipart_limited(
 		&self,
@@ -291,7 +326,7 @@ impl DiscordApi {
 			Method::POST,
 			path,
 			Some(RequestContent::Multipart { content_type, body }),
-			max_bytes,
+			ResponsePolicy::required(max_bytes),
 			None,
 			None,
 		)
@@ -311,7 +346,7 @@ impl DiscordApi {
 			method,
 			path,
 			body.map(RequestContent::Json),
-			max_bytes,
+			ResponsePolicy::required(max_bytes),
 			retry,
 			challenge,
 		)
@@ -322,10 +357,11 @@ impl DiscordApi {
 		method: Method,
 		path: &str,
 		body: Option<RequestContent>,
-		max_bytes: usize,
+		response: ResponsePolicy<'_>,
 		retry: Option<&client_core::captcha::Retry>,
 		mut challenge: Option<&mut Option<client_core::captcha::Challenge>>,
 	) -> Result<Vec<u8>, Failure> {
+		let ResponsePolicy { max_bytes, missing } = response;
 		// Only typed adapter methods construct paths. Never accept a URL or route from UI/content.
 		if !path.starts_with('/')
 			|| path.contains("://")
@@ -480,7 +516,14 @@ impl DiscordApi {
 					(*next).max(Instant::now() + safe_delay(error.retry_after.or(retry_header))?);
 				return Err(Failure::RateLimited);
 			}
-			// A missing private note is empty, not a missing user profile. No other 404 is converted.
+			if !write
+				&& status == StatusCode::NOT_FOUND
+				&& let Some(missing) = missing
+			{
+				*missing = true;
+				return Ok(Vec::new());
+			}
+			// Ordinary requests only convert a missing private note, never a missing user profile.
 			if !write && status == StatusCode::NOT_FOUND && path.starts_with("/users/@me/notes/") {
 				return Ok(br#"{"note":""}"#.to_vec());
 			}

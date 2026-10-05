@@ -1,0 +1,855 @@
+{
+  "recorded_at_utc": "2026-10-05T00:25:30.932440+00:00",
+  "baseline": {
+    "commit": "65811f20a7dea160ba4c78459c63dd339a794a5a",
+    "branch": "feat/ffmpeg-video-encoding",
+    "remote_base": "6313e27",
+    "artifacts": {
+      "serein_0.1.0-1_amd64.deb": {
+        "bytes": 70674624,
+        "sha256": "0d89da6c980fb0bd00a41d9848d023db2ef9f9d11a898a9a70297150c876722c"
+      },
+      "profile_preview": {
+        "bytes": 55650856,
+        "sha256": "a0b8166446419b7048feb087289f9506ac89bcb99be52c89613107a4397e0974"
+      },
+      "discord_voice-56b79be92354d8f2": {
+        "bytes": 7789728,
+        "sha256": "39a258e01c80488971592e551cf8893fcb2e48e8639a7a911183e73a7404f57b"
+      },
+      "serein": {
+        "bytes": 85704880,
+        "sha256": "cd428f541d5d3a2b0ca58833179bba74541be0801b3b09b5cf9b43a0f83847f5"
+      }
+    },
+    "installed": {
+      "path": "/workspace/scratch/serein-vendors-installed",
+      "regular_file_bytes": 120678267,
+      "regular_files": 248
+    }
+  },
+  "after_package": {
+    "executable": {
+      "bytes": 85746216,
+      "sha256": "a3fc2de789c88de7b94b07e2d49834b7bb183e3e37961cd75c578fd1ae4cd9f6"
+    },
+    "distribution": {
+      "bytes": 70795724,
+      "sha256": "df23ff10f56e4d99a8f2ce07fa2da62572a99ce0bc7a68c13caac1858fe0157c"
+    },
+    "installed": {
+      "regular_file_bytes": 120976132,
+      "regular_files": 248
+    },
+    "source_provenance": {
+      "recipe_sha256": "3e6f390ecf333833313c7aaee760cd53ade18d741f535b17bdc32ee1d7538c59",
+      "source_files_verified": 15,
+      "libraries": {
+        "libavutil-serein.so.59": {
+          "bytes": 1489977,
+          "sha256": "81e1a18b89ceee964d87de1953b674b323039151d43a3abc6a5d842c5194a025"
+        },
+        "libopenh264.so.8": {
+          "bytes": 1953481,
+          "sha256": "491c0d1ad1944c39c549258e6f5bd8ee09d31aa35e02a75c7a3b3cb0009a4098"
+        },
+        "libavcodec-serein.so.61": {
+          "bytes": 1217889,
+          "sha256": "d219c818f2696610b07c81da50e8df2e5035b6539a113b35389513be929f3bfc"
+        }
+      },
+      "notices_and_voice_provenance": "match current repository"
+    }
+  },
+  "environment": {
+    "os": "Linux-6.18.44-x86_64-with-glibc2.41",
+    "distribution": "PRETTY_NAME=\"Debian GNU/Linux 13 (trixie)\"\nNAME=\"Debian GNU/Linux\"\nVERSION_ID=\"13\"\nVERSION=\"13 (trixie)\"\nVERSION_CODENAME=trixie\nDEBIAN_VERSION_FULL=13.7\nID=debian\nHOME_URL=\"https://www.debian.org/\"\nSUPPORT_URL=\"https://www.debian.org/support\"\nBUG_REPORT_URL=\"https://bugs.debian.org/\"\n",
+    "cpu_model": "INTEL(R) XEON(R) PLATINUM 8573C",
+    "logical_cpus_visible": 5,
+    "ram_bytes": 18882699264,
+    "cpu_quota": "max 100000",
+    "cpuset": "0-4",
+    "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "preview_binary": {
+      "bytes": 55659560,
+      "sha256": "cd64cc0e5aa388f1dafca781b808bcc7a2d3143c370b7b430d78415f6ae45622"
+    },
+    "renderer": "Mesa lavapipe Vulkan, verified per idle run",
+    "display": {
+      "server": "Xvfb :88",
+      "scale": 1,
+      "viewport": [
+        1120,
+        760
+      ]
+    },
+    "release": "fat LTO, codegen-units=1, strip=symbols, voice enabled; preview example link only uses -C lto=off",
+    "media_devices": "No /dev/dri or NVIDIA devices; no camera, microphone or desktop capture opened"
+  },
+  "after_source_sha256": {
+    "Cargo.lock": "e95b6bdac4af6f0439019d8f87a1ef00b552ed51e708d5056f400c15a11dce79",
+    "crates/model/src/voice_settings.rs": "536d08375f328028ebce3f0bc6b5ea8bf9bc72491e314531898676bcb588b1ee",
+    "crates/local-store/src/lib.rs": "104fe37002af0c85d72e284bd700f61899245837456225bd43abdc98cb96d4c5",
+    "apps/desktop/src/voice.rs": "c55d5236df0dd51894b3eb729fc0d79eb5f13bcf28410c25c4669690a9d51ed0",
+    "apps/desktop/src/screen.rs": "0401c988b758220e808283e53a458346e200da6210566acd04a41a480c495152",
+    "crates/discord-voice/src/video_backend.rs": "1861a94eff66a889f9a5ee5ec237f28cc88c6586ed7e69ceedfffee001f2de08",
+    "crates/discord-voice/src/video_encode.rs": "99a281061144bf5df1e0c5a591d8e345c49907d5895f322939562dc61f6bdebd",
+    "crates/discord-voice/src/video_encode_ffmpeg.c": "43b5af7e7f144a8fd13bb1e6d570df5302a1774801b04ec51f7ff16b6e82401c",
+    "crates/discord-voice/src/video_encode_ffmpeg.h": "5d0b4ef2a9e9cef9e8970c0c70ea3a0c4fd92337e3478db0cc33be97e6b2034c",
+    "crates/discord-voice/src/video_bitstream.rs": "7854ca75db9ec36f03e853f473e8ce9eb9684c1f3775e7bfca5e0c2ec18d4523",
+    "crates/discord-voice/src/video.rs": "9ee97fe6ebf20712ec13e23032141a6595e89d5ef5787cb28773c3a625deee5f",
+    "crates/discord-voice/src/transport.rs": "464be898834b30eb6c1fe7a2d10912bbeecc143f3691fe3b426b3b36a734626a",
+    "crates/ui/src/voice.rs": "312e8025df813bc71fb1dd212a193a479237cde442d98e4b28ab3a12592d4672",
+    "scripts/build-ffmpeg.py": "3e6f390ecf333833313c7aaee760cd53ade18d741f535b17bdc32ee1d7538c59"
+  },
+  "camera_ffmpeg": {
+    "baseline_binary": {
+      "path": "/workspace/scratch/serein-video-settings-baseline/discord_voice-56b79be92354d8f2",
+      "bytes": 7789728,
+      "sha256": "39a258e01c80488971592e551cf8893fcb2e48e8639a7a911183e73a7404f57b"
+    },
+    "after_binary": {
+      "path": "target/release/deps/discord_voice-56b79be92354d8f2",
+      "bytes": 8040304,
+      "sha256": "1bdf2b9ba066e59709801ad809a366d7663f8bca41fe6e30a787334cf156e646"
+    },
+    "after_test": "camera::synthetic_camera_encode_workload",
+    "warmups": {
+      "baseline": {
+        "encode_300_frames_ms": 1285.959,
+        "packets": 300,
+        "encoded_bytes": 5831668,
+        "sampled_peak_rss_bytes": 20754432,
+        "rss_samples": 133
+      },
+      "after": {
+        "encode_300_frames_ms": 1059.524,
+        "packets": 300,
+        "encoded_bytes": 5831668,
+        "sampled_peak_rss_bytes": 21311488,
+        "rss_samples": 119
+      }
+    },
+    "baseline_samples": [
+      {
+        "encode_300_frames_ms": 981.882,
+        "packets": 300,
+        "encoded_bytes": 5831668,
+        "sampled_peak_rss_bytes": 20791296,
+        "rss_samples": 109
+      },
+      {
+        "encode_300_frames_ms": 1120.076,
+        "packets": 300,
+        "encoded_bytes": 5831668,
+        "sampled_peak_rss_bytes": 20905984,
+        "rss_samples": 125
+      },
+      {
+        "encode_300_frames_ms": 991.179,
+        "packets": 300,
+        "encoded_bytes": 5831668,
+        "sampled_peak_rss_bytes": 20819968,
+        "rss_samples": 111
+      },
+      {
+        "encode_300_frames_ms": 1011.017,
+        "packets": 300,
+        "encoded_bytes": 5831668,
+        "sampled_peak_rss_bytes": 20680704,
+        "rss_samples": 114
+      },
+      {
+        "encode_300_frames_ms": 993.07,
+        "packets": 300,
+        "encoded_bytes": 5831668,
+        "sampled_peak_rss_bytes": 21147648,
+        "rss_samples": 117
+      }
+    ],
+    "after_samples": [
+      {
+        "encode_300_frames_ms": 1000.103,
+        "packets": 300,
+        "encoded_bytes": 5831668,
+        "sampled_peak_rss_bytes": 21045248,
+        "rss_samples": 112
+      },
+      {
+        "encode_300_frames_ms": 1024.365,
+        "packets": 300,
+        "encoded_bytes": 5831668,
+        "sampled_peak_rss_bytes": 21495808,
+        "rss_samples": 115
+      },
+      {
+        "encode_300_frames_ms": 1013.713,
+        "packets": 300,
+        "encoded_bytes": 5831668,
+        "sampled_peak_rss_bytes": 21491712,
+        "rss_samples": 112
+      },
+      {
+        "encode_300_frames_ms": 1058.073,
+        "packets": 300,
+        "encoded_bytes": 5831668,
+        "sampled_peak_rss_bytes": 21213184,
+        "rss_samples": 118
+      },
+      {
+        "encode_300_frames_ms": 1079.431,
+        "packets": 300,
+        "encoded_bytes": 5831668,
+        "sampled_peak_rss_bytes": 21381120,
+        "rss_samples": 122
+      }
+    ],
+    "baseline_median_ms": 993.07,
+    "after_median_ms": 1024.365
+  },
+  "camera_default_stable": {
+    "baseline_binary": {
+      "path": "/workspace/scratch/serein-video-settings-baseline/discord_voice-56b79be92354d8f2",
+      "bytes": 7789728,
+      "sha256": "39a258e01c80488971592e551cf8893fcb2e48e8639a7a911183e73a7404f57b"
+    },
+    "after_binary": {
+      "path": "target/release/deps/discord_voice-56b79be92354d8f2",
+      "bytes": 8040304,
+      "sha256": "1bdf2b9ba066e59709801ad809a366d7663f8bca41fe6e30a787334cf156e646"
+    },
+    "after_test": "camera::synthetic_stable_camera_encode_workload",
+    "warmups": {
+      "baseline": {
+        "encode_300_frames_ms": 972.038,
+        "packets": 300,
+        "encoded_bytes": 5831668,
+        "sampled_peak_rss_bytes": 20848640,
+        "rss_samples": 110
+      },
+      "after": {
+        "encode_300_frames_ms": 971.229,
+        "packets": 300,
+        "encoded_bytes": 5830468,
+        "sampled_peak_rss_bytes": 23183360,
+        "rss_samples": 160
+      }
+    },
+    "baseline_samples": [
+      {
+        "encode_300_frames_ms": 1053.206,
+        "packets": 300,
+        "encoded_bytes": 5831668,
+        "sampled_peak_rss_bytes": 21094400,
+        "rss_samples": 119
+      },
+      {
+        "encode_300_frames_ms": 978.513,
+        "packets": 300,
+        "encoded_bytes": 5831668,
+        "sampled_peak_rss_bytes": 20815872,
+        "rss_samples": 109
+      },
+      {
+        "encode_300_frames_ms": 1070.348,
+        "packets": 300,
+        "encoded_bytes": 5831668,
+        "sampled_peak_rss_bytes": 21114880,
+        "rss_samples": 120
+      },
+      {
+        "encode_300_frames_ms": 1289.284,
+        "packets": 300,
+        "encoded_bytes": 5831668,
+        "sampled_peak_rss_bytes": 20926464,
+        "rss_samples": 120
+      },
+      {
+        "encode_300_frames_ms": 1074.87,
+        "packets": 300,
+        "encoded_bytes": 5831668,
+        "sampled_peak_rss_bytes": 20856832,
+        "rss_samples": 118
+      }
+    ],
+    "after_samples": [
+      {
+        "encode_300_frames_ms": 971.887,
+        "packets": 300,
+        "encoded_bytes": 5830468,
+        "sampled_peak_rss_bytes": 23150592,
+        "rss_samples": 129
+      },
+      {
+        "encode_300_frames_ms": 961.377,
+        "packets": 300,
+        "encoded_bytes": 5830468,
+        "sampled_peak_rss_bytes": 23609344,
+        "rss_samples": 129
+      },
+      {
+        "encode_300_frames_ms": 988.283,
+        "packets": 300,
+        "encoded_bytes": 5830468,
+        "sampled_peak_rss_bytes": 23404544,
+        "rss_samples": 130
+      },
+      {
+        "encode_300_frames_ms": 951.95,
+        "packets": 300,
+        "encoded_bytes": 5830468,
+        "sampled_peak_rss_bytes": 23220224,
+        "rss_samples": 129
+      },
+      {
+        "encode_300_frames_ms": 948.913,
+        "packets": 300,
+        "encoded_bytes": 5830468,
+        "sampled_peak_rss_bytes": 23162880,
+        "rss_samples": 124
+      }
+    ],
+    "baseline_median_ms": 1070.348,
+    "after_median_ms": 961.377
+  },
+  "native_voice_settings_idle": {
+    "baseline_binary": {
+      "path": "/workspace/scratch/serein-video-settings-baseline/profile_preview",
+      "bytes": 55650856,
+      "sha256": "a0b8166446419b7048feb087289f9506ac89bcb99be52c89613107a4397e0974"
+    },
+    "after_binary": {
+      "path": "target/release/examples/profile_preview",
+      "bytes": 55659560,
+      "sha256": "cd64cc0e5aa388f1dafca781b808bcc7a2d3143c370b7b430d78415f6ae45622"
+    },
+    "baseline_runs": [
+      {
+        "command": [
+          "/workspace/scratch/serein-video-settings-baseline/profile_preview",
+          "--demo",
+          "--interactive",
+          "--page=appearance",
+          "--width=1120",
+          "--height=760"
+        ],
+        "interaction": "Open Voice & Video via sidebar at (100, 412), then pointer (1100, 740)",
+        "warmup_seconds": 8,
+        "settle_seconds": 3,
+        "sample_interval_seconds": 1,
+        "renderer_libraries": [
+          "/usr/lib/x86_64-linux-gnu/libvulkan.so.1.4.309",
+          "/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so"
+        ],
+        "samples": [
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203436032,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203436032,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203436032,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203436032,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203436032,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203436032,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203436032,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203436032,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203436032,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203436032,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203436032,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203436032,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203436032,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203436032,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203436032,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203436032,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203436032,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203436032,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203436032,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203436032,
+            "children": []
+          }
+        ],
+        "cpu_mean_percent_one_core": 0.0,
+        "cpu_median_percent_one_core": 0.0,
+        "sampled_peak_rss_bytes": 203436032,
+        "settled_rss_bytes": 203436032
+      },
+      {
+        "command": [
+          "/workspace/scratch/serein-video-settings-baseline/profile_preview",
+          "--demo",
+          "--interactive",
+          "--page=appearance",
+          "--width=1120",
+          "--height=760"
+        ],
+        "interaction": "Open Voice & Video via sidebar at (100, 412), then pointer (1100, 740)",
+        "warmup_seconds": 8,
+        "settle_seconds": 3,
+        "sample_interval_seconds": 1,
+        "renderer_libraries": [
+          "/usr/lib/x86_64-linux-gnu/libvulkan.so.1.4.309",
+          "/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so"
+        ],
+        "samples": [
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 202526720,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 202526720,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 202526720,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 202526720,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 202526720,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 202526720,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 202526720,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 202526720,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 202526720,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 202526720,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 202526720,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 202526720,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 202526720,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 202526720,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 202526720,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 202526720,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 202526720,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 202526720,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 202526720,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 202526720,
+            "children": []
+          }
+        ],
+        "cpu_mean_percent_one_core": 0.0,
+        "cpu_median_percent_one_core": 0.0,
+        "sampled_peak_rss_bytes": 202526720,
+        "settled_rss_bytes": 202526720
+      }
+    ],
+    "after_runs": [
+      {
+        "command": [
+          "target/release/examples/profile_preview",
+          "--demo",
+          "--interactive",
+          "--page=appearance",
+          "--width=1120",
+          "--height=760"
+        ],
+        "interaction": "Open Voice & Video via sidebar at (100, 412), then pointer (1100, 740)",
+        "warmup_seconds": 8,
+        "settle_seconds": 3,
+        "sample_interval_seconds": 1,
+        "renderer_libraries": [
+          "/usr/lib/x86_64-linux-gnu/libvulkan.so.1.4.309",
+          "/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so"
+        ],
+        "samples": [
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 201850880,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 201850880,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 201850880,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 201850880,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 201850880,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 201850880,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 201850880,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 201850880,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 201850880,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 201850880,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 201850880,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 201850880,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 201850880,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 201850880,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 201850880,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 201850880,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 201850880,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 201850880,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 201850880,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 201850880,
+            "children": []
+          }
+        ],
+        "cpu_mean_percent_one_core": 0.0,
+        "cpu_median_percent_one_core": 0.0,
+        "sampled_peak_rss_bytes": 201850880,
+        "settled_rss_bytes": 201850880
+      },
+      {
+        "command": [
+          "target/release/examples/profile_preview",
+          "--demo",
+          "--interactive",
+          "--page=appearance",
+          "--width=1120",
+          "--height=760"
+        ],
+        "interaction": "Open Voice & Video via sidebar at (100, 412), then pointer (1100, 740)",
+        "warmup_seconds": 8,
+        "settle_seconds": 3,
+        "sample_interval_seconds": 1,
+        "renderer_libraries": [
+          "/usr/lib/x86_64-linux-gnu/libvulkan.so.1.4.309",
+          "/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so"
+        ],
+        "samples": [
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203071488,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203071488,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203071488,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203071488,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203071488,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203071488,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203071488,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203071488,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203071488,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203071488,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203071488,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203071488,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203071488,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203071488,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203071488,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203071488,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203071488,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203071488,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203071488,
+            "children": []
+          },
+          {
+            "cpu_percent_one_core": 0.0,
+            "rss_bytes": 203071488,
+            "children": []
+          }
+        ],
+        "cpu_mean_percent_one_core": 0.0,
+        "cpu_median_percent_one_core": 0.0,
+        "sampled_peak_rss_bytes": 203071488,
+        "settled_rss_bytes": 203071488
+      }
+    ],
+    "baseline": {
+      "cpu_mean_percent_one_core": 0.0,
+      "sampled_peak_rss_bytes": 203436032,
+      "settled_rss_bytes": 202981376
+    },
+    "after": {
+      "cpu_mean_percent_one_core": 0.0,
+      "sampled_peak_rss_bytes": 203071488,
+      "settled_rss_bytes": 202461184
+    }
+  },
+  "excluded_run": "An initial camera set overlapped the synthetic Linux screen workload; it was excluded and repeated after checks/compilers stopped. Preliminary data retained only in task scratch.",
+  "checks": {
+    "workspace": "cargo xtask check passed",
+    "passed_test_executions": 1183,
+    "ignored": 27,
+    "failed": 0,
+    "test_suites": 42,
+    "native_bundle": {
+      "passed": 11,
+      "windows_only_skipped": 1
+    },
+    "native_codec_options": "18 profile/backend combinations without opening devices",
+    "linux_screen": "Both ordinary and --niri-timestamps synthetic pipelines passed, using Stable/H264; no desktop capture",
+    "final_example": "Strict Clippy and workspace formatting passed after correcting diagnostic wording",
+    "standard_package": "248-file DEB smoke passed, source/notices/library hashes verified",
+    "license_coverage": "Dedicated CI only; not run locally"
+  },
+  "limits": "Software camera workloads only. No physical GPU/camera/desktop/microphone or live Discord session. Incoming remains H264. Other native platforms, actual Nix/Flatpak packages and remote CI unverified."
+}

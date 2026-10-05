@@ -55,6 +55,7 @@ pub struct AppPreferences {
 	/// Absent in older preferences; migrate using the legacy suppression setting.
 	#[serde(default)]
 	pub voice_processing: Option<model::voice_settings::VoiceProcessing>,
+	pub video_settings: model::voice_settings::VideoSettings,
 	pub voice_push_to_talk: bool,
 	pub voice_muted: bool,
 	pub voice_deafened: bool,
@@ -91,6 +92,7 @@ impl Default for AppPreferences {
 			blur: 50,
 			voice_noise_suppression: true,
 			voice_processing: Some(model::voice_settings::VoiceProcessing::default()),
+			video_settings: Default::default(),
 			voice_push_to_talk: false,
 			voice_muted: false,
 			voice_deafened: false,
@@ -122,6 +124,7 @@ impl AppPreferences {
 			&& self
 				.voice_processing
 				.is_none_or(|value| value.custom.is_valid())
+			&& self.video_settings.is_valid()
 			&& self.expanded_folders.len() <= 256
 			&& self.user_volumes.len() <= 64
 			&& self.user_volumes.iter().all(|(_, volume)| *volume <= 200)
@@ -2030,6 +2033,32 @@ mod tests {
 			Err(StoreError::Incompatible)
 		));
 	}
+	#[test]
+	fn video_preferences_migrate_round_trip_and_reject_invalid_backend_codec() {
+		use model::voice_settings::{VideoBackend, VideoCodec, VideoSettings};
+		let legacy: AppPreferences = serde_json::from_str("{}").unwrap();
+		assert_eq!(legacy.video_settings, VideoSettings::default());
+		let store = LocalStore::initialize(Connection::open_in_memory().unwrap()).unwrap();
+		for codec in [VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1] {
+			let value = AppPreferences {
+				video_settings: VideoSettings {
+					backend: VideoBackend::Experimental,
+					codec,
+				},
+				..Default::default()
+			};
+			store.save_app_preferences(&value).unwrap();
+			assert_eq!(store.app_preferences().unwrap(), value);
+		}
+		let mut invalid = store.app_preferences().unwrap();
+		invalid.video_settings.backend = VideoBackend::Stable;
+		assert!(store.save_app_preferences(&invalid).is_err());
+		assert_eq!(
+			store.app_preferences().unwrap().video_settings.codec,
+			VideoCodec::Av1
+		);
+	}
+
 	#[test]
 	fn app_preferences_round_trip_and_reject_invalid_replacement() {
 		let store = LocalStore::initialize(Connection::open_in_memory().unwrap()).unwrap();

@@ -1,0 +1,800 @@
+{
+  "date_utc": "2026-10-04",
+  "baseline_commit": "6313e271e9c34b39069eb20787afb1476741b21c",
+  "baseline_initial_state": "clean main, fetched and fast-forward checked; detached baseline worktree",
+  "after_branch": "feat/ffmpeg-video-encoding",
+  "after_source_sha256": {
+    ".github/workflows/ci.yml": "c0a4ca65e8ace9812b360ae003f564d497fffc78d5d4db92dbe6e0376e92021a",
+    ".github/workflows/linux-packages.yml": "22f58f48ccafb656148f35bdb0750db604387e90d4d8f98362449bd3b150f9b9",
+    ".github/workflows/nix.yml": "e7fa05efcefe07bb8a8b091c74516171bae832c0b559fddc76fc1f2d659b838f",
+    ".github/workflows/release.yml": "133b322715703d5dca0d3b91d1f8fb06e0d9ece1838516bbd676dd615dd72f4b",
+    "Cargo.lock": "bfbff946c2d0651c641851df7db254c5923e87c2e3646127ee34414fa27519ee",
+    "apps/desktop/build.rs": "074a012050e57d2e678dce8c1547f6684e850e77b3ca64a22c9c9f781bec1f93",
+    "apps/desktop/src/updater_install.rs": "56aafa1c8d8ddc6aada5b2acbef65f1f4d1a706a948b8f124ca03d1f52d90b6c",
+    "crates/discord-voice/Cargo.toml": "29f734aa41af639ff276a2ff67b31404f5a7e7d64ffe73be8d5db114b1e02aea",
+    "crates/discord-voice/build.rs": "36243b89ff086d62d25fd7030a76d44ee5bd8835e38eac1dabb9ed43d31c02d2",
+    "crates/discord-voice/examples/linux_screen.rs": "88dc3d7b83dcf902e1ffd31c864334e06a14bcb29c3bbad1d07246e0db4d8ddf",
+    "crates/discord-voice/src/camera.rs": "402f83b5ce9655ee1de378a1b53115e62f90e671487833728f70e21806eb20c4",
+    "crates/discord-voice/src/lib.rs": "1d641555bf7fa8bfe082c16d74a95aa5a1a1aa2001915f299312dbac32665c25",
+    "crates/discord-voice/src/screen.rs": "4f545830ab3fb818ee802a18d3bca0d010d8efd82904501059c7306c930c46d5",
+    "crates/discord-voice/src/screen/convert.rs": "b29761fb7bbee7669f7ba3f9800ceaaed10fd4df4d868c701667ab653559a2b7",
+    "crates/discord-voice/src/screen/gstreamer.rs": "b2a8de99d37d696ee3cb5ea011e1e6de42be11a80b4d91743ad1ebf8d01576ee",
+    "crates/discord-voice/src/screen/linux.rs": "06cbb6f16db9fe745a6b870d67b9e16b3fa3178c36d6e78877d4658d1cfa2278",
+    "crates/discord-voice/src/video_encode.rs": "c42d7ae9e53d46b40d7c63d1882b209430d9329f8aae4c637e46462b069751bd",
+    "crates/discord-voice/src/video_encode_ffmpeg.c": "60b755a4711d7db9f6db9e57e7a061bc6e5867f11229bdf01847441fc032154d",
+    "crates/discord-voice/src/video_encode_ffmpeg.h": "235a8f9d24f2a86bbc48233908bd0cb143f140b1d8e569ab109d1052b8238616",
+    "flake.nix": "50a767ec54047c4184c00601b77c3be24b743bfad8e27588665401e709a28915",
+    "nix/package.nix": "2fbc25bb315f752274a372e860feb422e2cfb43fa4e44a42328efb8e17459e04",
+    "packaging/ffmpeg/bundle.py": "fedbe5c317f901c1e1edfbb54af00babbba0a4c114586909c0b9e210a707818c",
+    "packaging/ffmpeg/test_bundle.py": "783b71d39a581893dd9cbe7298d9a909d96158cd694a3a9d6bc3e44748dc0d5d",
+    "packaging/flatpak/build.py": "7dd310f540ca72cf256c95c1504c54ff131e80eb1117e67db346737bca0c77c2",
+    "packaging/flatpak/cz.viceverse.serein.json": "4ee92cfadd0acbbd0681f31ca112bd149f31d63c80be2f2a2e6b5b3d006b9140",
+    "packaging/linux/install-build-deps.sh": "f2085e80add095862323a3afcb1e01c4f9fc11dae0f9b03012f416512fe75bfa",
+    "packaging/linux/package.py": "af69107f1a6c5f71171bef1709e6056b8c6e4638f2770e51bf17791bc29ba0be",
+    "packaging/linux/test_package.py": "98f67d5861f1076be5185572fdcef0b422509ccde593b39942f4f4e9680cb671",
+    "packaging/macos/sign-release.sh": "37d1a9e6b002244b96ffd4b2a603efac7244bc3f8be99cdf73401157471d89d3",
+    "packaging/macos/test_sign_release.sh": "8e29871e79b205622fc5cb346dc79eb0a69bad81138d2ee0329d74150aba446e",
+    "packaging/windows/test_installer.py": "c0745272ba0ff83d3f5582c20e75e28c8a1e9b29425a7866c08bdbb8f94a0573",
+    "scripts/build-ffmpeg.py": "e2449288bdbadf0b56c123b111c2487120d9938a160e1894b46f23f616c2d384",
+    "tools/xtask/src/main.rs": "583ee54ddd2bc1a93bca9af76b968134363e2bed138f628517be041b26dd6de3"
+  },
+  "environment": {
+    "os": "Debian 13 Linux x86_64 container",
+    "rust": "1.98.1 pinned toolchain and locked dependencies",
+    "cpu": "Intel Xeon Platinum 8573C",
+    "visible_logical_cpus": 5,
+    "visible_ram_bytes": 18882699264,
+    "gstreamer": "1.26.2",
+    "no_compile_during_measurement": true,
+    "capture_devices_or_accounts_used": false
+  },
+  "native_build_recipe": {
+    "sources": {
+      "ffmpeg": {
+        "file": "ffmpeg-7.1.5.tar.xz",
+        "url": "https://ffmpeg.org/releases/ffmpeg-7.1.5.tar.xz",
+        "sha256": "de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f"
+      },
+      "openh264": {
+        "file": "openh264-2.6.0.tar.gz",
+        "url": "https://codeload.github.com/cisco/openh264/tar.gz/refs/tags/v2.6.0",
+        "sha256": "558544ad358283a7ab2930d69a9ceddf913f4a51ee9bf1bfb9e377322af81a69"
+      },
+      "nv-codec-headers": {
+        "file": "nv-codec-headers-12.2.72.0.tar.gz",
+        "url": "https://codeload.github.com/FFmpeg/nv-codec-headers/tar.gz/refs/tags/n12.2.72.0",
+        "sha256": "dbeaec433d93b850714760282f1d0992b1254fc3b5a6cb7d76fc1340a1e47563"
+      }
+    },
+    "system": "Linux",
+    "architecture": "x86_64",
+    "nvenc": true,
+    "videotoolbox": false,
+    "recipe_sha256": "b6d02591d4da6afa8e16f11ae3db387e1dcfbf84ac3a63d85737e7dfc426eb5a"
+  },
+  "native_build_provenance_note": "Measured Linux binaries and package retain this exact native build recipe/source. The final builder SHA differs only by extracting the unchanged Windows toolchain options and adding --disable-asm on Windows ARM64, which avoids gas-preprocessor.pl. Linux configure options and generated native code are unchanged; metadata was not restamped. A new builder invocation must use a fresh prefix because recipe hashes are strict.",
+  "packages": {
+    "command": "cargo xtask package",
+    "features": "standard voice-inclusive production package; no default or demo features",
+    "release_profile": "fat LTO, codegen-units=1, stripped, line-tables-only debug information",
+    "installed_bytes_method": "sum of regular files after dpkg-deb --extract, excluding symlinks and filesystem allocation overhead",
+    "relocation": "All dependencies found; private avcodec/avutil/OpenH264 resolve in extracted usr/lib/serein via relative RPATH before development prefix fallback",
+    "baseline": {
+      "executable": {
+        "bytes": 85705128,
+        "sha256": "0774941c133c78d6ed440b3f8c309554e2b35a778d17b9857d8ce483f06c2156"
+      },
+      "distribution": {
+        "bytes": 44277080,
+        "sha256": "0d45b845514fecd30b8a1b65baf89da725750975d33497e63c7697f5cd5ff06b"
+      },
+      "installed_regular_file_bytes": 90219249,
+      "installed_regular_file_count": 225
+    },
+    "after": {
+      "executable": {
+        "bytes": 85702192,
+        "sha256": "fad1861242618660bfe6b0a9fe758baf8fa6c244882d97a135becf28821dc282"
+      },
+      "distribution": {
+        "bytes": 56252124,
+        "sha256": "850781acd868fb61f3148c7a55bb9720581c59019a948aed07230111c1eb0ff7"
+      },
+      "installed_regular_file_bytes": 104848408,
+      "installed_regular_file_count": 239
+    }
+  },
+  "camera_workload": {
+    "build_command": "cargo test --release --locked -p discord-voice -p platform --features winit/x11,winit/wayland --lib synthetic_camera_encode_workload --no-run",
+    "run_arguments": [
+      "--exact",
+      "camera::synthetic_camera_encode_workload",
+      "--ignored",
+      "--nocapture"
+    ],
+    "fixture": "640x480 deterministic RGB gradient, 15 fps configuration, 600000 bps target; all IDR frames, 128 KiB output cap; includes RGB clone/conversion and actual CameraEncoder encoding",
+    "baseline_overlay": "Identical test-only synthetic_camera_encode_workload appended after baseline standard package was built; production code unchanged",
+    "process_warmup_count": 1,
+    "measured_alternating_pairs": 5,
+    "frames_per_process_warmup": 30,
+    "timed_frames_per_process": 300,
+    "rss_sampling_interval_seconds": 0.01,
+    "rss_metric": "whole component test-process RSS, including test harness; samples may miss brief peaks",
+    "caveat": "Old camera uses one OpenH264 thread; new FFmpeg libopenh264 uses two and different wrapper defaults. No matched-quality, application-wide, live or hardware speed claim.",
+    "baseline_binary": {
+      "path": "/workspace/Serein-baseline/target/release/deps/discord_voice-6de7f9f2ee20c5a7",
+      "bytes": 7764608,
+      "sha256": "4f6888a0c7b325cf0d6a4fd76a7bd530b4480e356c562dc2bb18f9b92fce702d"
+    },
+    "after_binary": {
+      "path": "/workspace/Serein/target/release/deps/discord_voice-56b79be92354d8f2",
+      "bytes": 7778304,
+      "sha256": "275b41047509255853c727f08f54832ae2386d5d1cead30381371a35658947fd"
+    },
+    "warmups": {
+      "baseline": {
+        "encode_300_frames_ms": 1353.327,
+        "packets": 300,
+        "encoded_bytes": 5952600,
+        "sampled_peak_rss_bytes": 21078016,
+        "rss_samples": 192
+      },
+      "after": {
+        "encode_300_frames_ms": 1063.555,
+        "packets": 300,
+        "encoded_bytes": 5831668,
+        "sampled_peak_rss_bytes": 20369408,
+        "rss_samples": 118
+      }
+    },
+    "baseline_samples": [
+      {
+        "encode_300_frames_ms": 1213.192,
+        "packets": 300,
+        "encoded_bytes": 5952600,
+        "sampled_peak_rss_bytes": 20865024,
+        "rss_samples": 156
+      },
+      {
+        "encode_300_frames_ms": 1327.404,
+        "packets": 300,
+        "encoded_bytes": 5952600,
+        "sampled_peak_rss_bytes": 21041152,
+        "rss_samples": 166
+      },
+      {
+        "encode_300_frames_ms": 1248.183,
+        "packets": 300,
+        "encoded_bytes": 5952600,
+        "sampled_peak_rss_bytes": 21299200,
+        "rss_samples": 164
+      },
+      {
+        "encode_300_frames_ms": 1271.643,
+        "packets": 300,
+        "encoded_bytes": 5952600,
+        "sampled_peak_rss_bytes": 21233664,
+        "rss_samples": 158
+      },
+      {
+        "encode_300_frames_ms": 1301.27,
+        "packets": 300,
+        "encoded_bytes": 5952600,
+        "sampled_peak_rss_bytes": 21315584,
+        "rss_samples": 164
+      }
+    ],
+    "after_samples": [
+      {
+        "encode_300_frames_ms": 1069.752,
+        "packets": 300,
+        "encoded_bytes": 5831668,
+        "sampled_peak_rss_bytes": 20443136,
+        "rss_samples": 118
+      },
+      {
+        "encode_300_frames_ms": 1048.393,
+        "packets": 300,
+        "encoded_bytes": 5831668,
+        "sampled_peak_rss_bytes": 20295680,
+        "rss_samples": 117
+      },
+      {
+        "encode_300_frames_ms": 1075.687,
+        "packets": 300,
+        "encoded_bytes": 5831668,
+        "sampled_peak_rss_bytes": 20172800,
+        "rss_samples": 119
+      },
+      {
+        "encode_300_frames_ms": 1061.77,
+        "packets": 300,
+        "encoded_bytes": 5831668,
+        "sampled_peak_rss_bytes": 20287488,
+        "rss_samples": 117
+      },
+      {
+        "encode_300_frames_ms": 1059.058,
+        "packets": 300,
+        "encoded_bytes": 5831668,
+        "sampled_peak_rss_bytes": 20410368,
+        "rss_samples": 118
+      }
+    ],
+    "baseline_median_ms": 1271.643,
+    "after_median_ms": 1061.77
+  },
+  "native_idle": {
+    "build_command": "cargo rustc --release --locked -p serein --no-default-features --features demo --example profile_preview -- -C lto=off",
+    "feature_note": "Production message/settings widgets with synthetic state; no account or media adapters. Same final-example LTO override; standard package profile unchanged.",
+    "display": "isolated Xvfb :88, X11, 1120x760, scale 1, dark Appearance page",
+    "renderer": "WGPU Vulkan, forced Mesa lavapipe ICD; mapped libvulkan_lvp verified in every process",
+    "interaction": "Appearance starts open; after 8 seconds, move pointer to (1100,740) in the native window, settle 3 seconds",
+    "sampling": "20 one-second psutil CPU/RSS samples per launch, 2 launches per revision in reversed order; CPU percent of one logical core; settled RSS median of final 5 samples",
+    "baseline_binary": {
+      "path": "/workspace/Serein-baseline/target/release/examples/profile_preview",
+      "bytes": 55650728,
+      "sha256": "dfcd555bd70a8ebf166168dc94861ebbdffaf4a71099388fbb7d70d903017ac0"
+    },
+    "after_binary": {
+      "path": "/workspace/Serein/target/release/examples/profile_preview",
+      "bytes": 55650856,
+      "sha256": "57b7ee211cb2e91ba3a09fc5bd1b83d7af46cfc2a52c561a6fb4d46a317ad54d"
+    },
+    "runs": [
+      {
+        "order": [
+          "baseline",
+          "after"
+        ],
+        "baseline": {
+          "command": [
+            "/workspace/Serein-baseline/target/release/examples/profile_preview",
+            "--demo",
+            "--interactive",
+            "--page=appearance",
+            "--width=1120",
+            "--height=760"
+          ],
+          "warmup_seconds": 8,
+          "settle_seconds": 3,
+          "sample_interval_seconds": 1,
+          "renderer_libraries": [
+            "/usr/lib/x86_64-linux-gnu/libvulkan.so.1.4.309",
+            "/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so"
+          ],
+          "samples": [
+            {
+              "cpu_percent_one_core": 373.0,
+              "rss_bytes": 204468224,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 362.8,
+              "rss_bytes": 204468224,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 347.9,
+              "rss_bytes": 204468224,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 356.9,
+              "rss_bytes": 204468224,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 351.8,
+              "rss_bytes": 204468224,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 366.2,
+              "rss_bytes": 204468224,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 358.8,
+              "rss_bytes": 204468224,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 355.9,
+              "rss_bytes": 204468224,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 365.0,
+              "rss_bytes": 204468224,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 373.9,
+              "rss_bytes": 204468224,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 344.8,
+              "rss_bytes": 204468224,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 349.9,
+              "rss_bytes": 204468224,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 375.5,
+              "rss_bytes": 204468224,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 353.9,
+              "rss_bytes": 204468224,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 361.9,
+              "rss_bytes": 204468224,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 337.0,
+              "rss_bytes": 204468224,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 335.9,
+              "rss_bytes": 204468224,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 346.9,
+              "rss_bytes": 204468224,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 340.9,
+              "rss_bytes": 204468224,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 363.7,
+              "rss_bytes": 204468224,
+              "children": []
+            }
+          ],
+          "cpu_mean_percent_one_core": 356.13,
+          "cpu_median_percent_one_core": 356.4,
+          "sampled_peak_rss_bytes": 204468224,
+          "settled_rss_bytes": 204468224
+        },
+        "after": {
+          "command": [
+            "/workspace/Serein/target/release/examples/profile_preview",
+            "--demo",
+            "--interactive",
+            "--page=appearance",
+            "--width=1120",
+            "--height=760"
+          ],
+          "warmup_seconds": 8,
+          "settle_seconds": 3,
+          "sample_interval_seconds": 1,
+          "renderer_libraries": [
+            "/usr/lib/x86_64-linux-gnu/libvulkan.so.1.4.309",
+            "/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so"
+          ],
+          "samples": [
+            {
+              "cpu_percent_one_core": 363.8,
+              "rss_bytes": 202715136,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 343.9,
+              "rss_bytes": 202715136,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 387.9,
+              "rss_bytes": 202715136,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 389.9,
+              "rss_bytes": 202715136,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 392.9,
+              "rss_bytes": 202715136,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 392.9,
+              "rss_bytes": 202715136,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 391.9,
+              "rss_bytes": 202715136,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 390.9,
+              "rss_bytes": 202715136,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 390.0,
+              "rss_bytes": 202715136,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 379.9,
+              "rss_bytes": 202715136,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 390.9,
+              "rss_bytes": 202715136,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 382.9,
+              "rss_bytes": 202715136,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 393.9,
+              "rss_bytes": 202715136,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 390.8,
+              "rss_bytes": 202715136,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 390.9,
+              "rss_bytes": 202715136,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 392.9,
+              "rss_bytes": 202715136,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 384.9,
+              "rss_bytes": 202715136,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 387.9,
+              "rss_bytes": 202715136,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 378.9,
+              "rss_bytes": 202715136,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 391.5,
+              "rss_bytes": 202715136,
+              "children": []
+            }
+          ],
+          "cpu_mean_percent_one_core": 385.47499999999997,
+          "cpu_median_percent_one_core": 390.4,
+          "sampled_peak_rss_bytes": 202715136,
+          "settled_rss_bytes": 202715136
+        }
+      },
+      {
+        "order": [
+          "after",
+          "baseline"
+        ],
+        "baseline": {
+          "command": [
+            "/workspace/Serein-baseline/target/release/examples/profile_preview",
+            "--demo",
+            "--interactive",
+            "--page=appearance",
+            "--width=1120",
+            "--height=760"
+          ],
+          "warmup_seconds": 8,
+          "settle_seconds": 3,
+          "sample_interval_seconds": 1,
+          "renderer_libraries": [
+            "/usr/lib/x86_64-linux-gnu/libvulkan.so.1.4.309",
+            "/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so"
+          ],
+          "samples": [
+            {
+              "cpu_percent_one_core": 393.8,
+              "rss_bytes": 204021760,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 389.9,
+              "rss_bytes": 204021760,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 391.9,
+              "rss_bytes": 204021760,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 387.0,
+              "rss_bytes": 204021760,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 344.0,
+              "rss_bytes": 204021760,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 392.0,
+              "rss_bytes": 204021760,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 386.9,
+              "rss_bytes": 204021760,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 389.9,
+              "rss_bytes": 204021760,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 384.0,
+              "rss_bytes": 204021760,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 378.9,
+              "rss_bytes": 204021760,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 395.5,
+              "rss_bytes": 204021760,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 391.9,
+              "rss_bytes": 204021760,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 389.9,
+              "rss_bytes": 204021760,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 390.9,
+              "rss_bytes": 204021760,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 384.0,
+              "rss_bytes": 204021760,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 386.0,
+              "rss_bytes": 204021760,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 393.8,
+              "rss_bytes": 204021760,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 393.9,
+              "rss_bytes": 204021760,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 387.9,
+              "rss_bytes": 204021760,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 390.0,
+              "rss_bytes": 204021760,
+              "children": []
+            }
+          ],
+          "cpu_mean_percent_one_core": 387.105,
+          "cpu_median_percent_one_core": 389.9,
+          "sampled_peak_rss_bytes": 204021760,
+          "settled_rss_bytes": 204021760
+        },
+        "after": {
+          "command": [
+            "/workspace/Serein/target/release/examples/profile_preview",
+            "--demo",
+            "--interactive",
+            "--page=appearance",
+            "--width=1120",
+            "--height=760"
+          ],
+          "warmup_seconds": 8,
+          "settle_seconds": 3,
+          "sample_interval_seconds": 1,
+          "renderer_libraries": [
+            "/usr/lib/x86_64-linux-gnu/libvulkan.so.1.4.309",
+            "/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so"
+          ],
+          "samples": [
+            {
+              "cpu_percent_one_core": 386.0,
+              "rss_bytes": 202825728,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 383.9,
+              "rss_bytes": 202825728,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 387.9,
+              "rss_bytes": 202825728,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 386.0,
+              "rss_bytes": 202825728,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 387.0,
+              "rss_bytes": 202825728,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 389.0,
+              "rss_bytes": 202825728,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 363.0,
+              "rss_bytes": 202825728,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 364.9,
+              "rss_bytes": 202825728,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 383.2,
+              "rss_bytes": 202825728,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 386.9,
+              "rss_bytes": 202825728,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 388.0,
+              "rss_bytes": 202825728,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 391.4,
+              "rss_bytes": 202825728,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 396.0,
+              "rss_bytes": 202825728,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 390.9,
+              "rss_bytes": 202825728,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 389.0,
+              "rss_bytes": 202825728,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 377.9,
+              "rss_bytes": 202825728,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 392.0,
+              "rss_bytes": 202825728,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 368.6,
+              "rss_bytes": 202825728,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 380.9,
+              "rss_bytes": 202825728,
+              "children": []
+            },
+            {
+              "cpu_percent_one_core": 386.9,
+              "rss_bytes": 202825728,
+              "children": []
+            }
+          ],
+          "cpu_mean_percent_one_core": 383.96999999999997,
+          "cpu_median_percent_one_core": 386.9,
+          "sampled_peak_rss_bytes": 202825728,
+          "settled_rss_bytes": 202825728
+        }
+      }
+    ],
+    "summary": {
+      "baseline": {
+        "mean_cpu_percent_one_core": 371.6175,
+        "max_sampled_rss_bytes": 204468224,
+        "median_settled_rss_bytes": 204244992.0
+      },
+      "after": {
+        "mean_cpu_percent_one_core": 384.72249999999997,
+        "max_sampled_rss_bytes": 202825728,
+        "median_settled_rss_bytes": 202770432.0
+      }
+    },
+    "children": "No child processes in any sample",
+    "interpretation": "High software-renderer CPU in both revisions; per-pair CPU difference reverses. A thread sample found five llvmpipe workers dominating CPU. No encoding was active, so this does not isolate encoding CPU or establish production-idle regression/improvement."
+  },
+  "verification": {
+    "cargo_xtask_check": {
+      "outcome": "passed",
+      "passing_test_executions": 1162,
+      "ignored": 26,
+      "includes": [
+        "workspace formatting",
+        "strict workspace all-target Clippy",
+        "workspace tests",
+        "no-default-features production check",
+        "repository policy"
+      ],
+      "space_workaround": "CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=3; normal release/package profile unchanged"
+    },
+    "native_abi": "Strict C11 warnings as errors; shim ASan/UBSan/leak detection passed; 17 invalid configuration/null requests rejected; one-byte bounds/canaries; 8 camera IDRs and 8 screen packets (2 IDR, 6 delta)",
+    "independent_decode": "Host ffprobe decoded 8 frames per stream, Baseline/Main profiles; tv range, smpte170m matrix, bt709 primaries, iec61966-2-1 transfer",
+    "linux_screen": "Synthetic default and Niri-timestamp harness passed; pre-cancelled portals, no desktop/camera/microphone capture",
+    "python_ffmpeg_bundle": "6 tests passed with final native prefix, including host decoder symbol namespace coexistence and Windows ARM64 configure options",
+    "linux_debian_regression": "1 synthetic regression passed; standard baseline/after smoke passed (225/239 files)",
+    "flatpak_preparation": "4 offline fixture tests passed; actual Flatpak build unmeasured",
+    "macos_signing_fixture": "Offline exact identity/failure/keychain-cleanup regression passed; native macOS build unmeasured",
+    "xtask_workspace_fixture": "Node workspace fixture passed",
+    "license_audit": "Dedicated license CI not run locally; corresponding source and notices packaged, coverage not claimed",
+    "fuzz_format": "cargo fmt --manifest-path fuzz/Cargo.toml --all -- --check passed separately"
+  },
+  "unmeasured": [
+    "NVENC and VideoToolbox hardware behavior",
+    "native Windows/macOS and Windows ARM64 builds",
+    "actual Nix/Flatpak/RPM/Arch/AppImage builds",
+    "active native portal screen conversion/upload CPU and memory",
+    "startup/frame p95 and end-to-end call latency",
+    "GPU memory",
+    "live Discord interoperability"
+  ],
+  "migration": "First upgrade from an old Windows updater needs the installer or manual extraction because its DLL allowlist rejects the new files"
+}

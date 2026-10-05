@@ -447,7 +447,8 @@ The existing camera sender now accepts native capture on Windows (Media Foundati
 and Linux (V4L2), alongside macOS (AVFoundation). Both new adapters feed the existing
 H264 negotiation, opcode 12 video announcement, DAVE encryption and bounded RTP
 sender. These normal-user video extensions remain unofficial and live-unverified.
-The button requires a connected call, channel video permission and negotiated H264;
+The button requires a connected call, channel video permission and the negotiated
+outgoing codec (H.264 for Stable);
 capture requires an explicit click. No camera opens in the synthetic demo.
 September 13: Windows settings and call controls now enumerate/select cameras,
 including DirectShow-only virtual sources. A read-only native enumeration test
@@ -576,10 +577,15 @@ The standard build adds macOS 14+ ScreenCaptureKit and Windows Graphics Capture 
 
 Linux extension (September 15, 2026): the existing H.264/DAVE sender now accepts
 portal-approved PipeWire screen/window capture. It uses the system picker, an ephemeral
-portal session and VA-API/NVENC with OpenH264 fallback. The pipeline has one source
+portal session. Experimental camera/screen encoding uses native FFmpeg with
+NVENC/AMD AMF/Intel Quick Sync/VideoToolbox and H.264 OpenH264 fallback. Stable uses
+the original platform encoders. Experimental excludes Media Foundation and VA-API
+encoders. Quick Sync on Linux uses the iHD
+VA driver interface for its device. These hardware paths and actual runtime
+availability remain unverified locally. The pipeline has one source
 queue (at most 7680×4320 / 132,710,400 bytes per buffer; PipeWire negotiates 2–4 buffers), one raw frame per encode/preview
-branch (at most 33,177,600 bytes each), one appsink frame per branch (encoded ≤2 MiB;
-software raw ≤33,177,600 bytes; preview ≤925,696 bytes including padding), and the existing
+branch (at most 33,177,600 bytes each), one raw appsink frame per branch
+(screen ≤33,177,600 bytes; preview ≤925,696 bytes including padding), and the existing
 three-frame / 6-MiB encoded transport queue. Each processing stage can additionally hold
 its current buffer. Driver, compositor and codec surface pools are separate native
 allocations. Raw queues discard old frames before encoding; encoded pressure blocks
@@ -588,13 +594,18 @@ failure flag. Portal responses are admitted at ≤64 KiB; signal queues hold one
 and the connection queue holds two, with zbus's separate 128-MiB wire-message ceiling.
 Cancellation is checked during portal waits every 50 ms and media waits within 100 ms;
 native driver startup/shutdown can still block, retaining the existing retirement barrier.
-Each of at most four encoder attempts gets a fresh PipeWire remote under the same
-approved session. No source, restore token, pixel buffer or stream is persisted.
+One PipeWire remote remains under the approved session across FFmpeg backend or
+bitrate changes. Raw BGRA CPU conversion/cropping/scaling precedes encoding;
+source buffers and each current conversion stage can additionally retain a
+132,710,400-byte source picture. The worker retains one latest validated raw
+picture for idle keyframe recovery; a security pause clears it. No source, restore
+token, pixel buffer or stream is persisted.
 Native X11 now offers an explicitly selected whole-desktop source through GStreamer
 `ximagesrc`, reusing the bounded encoder/preview pipeline without a portal. It requires
 GStreamer Good and never activates after portal cancellation or failure. Individual
-X11 window selection and native/live validation remain outstanding. AV1/H.265 sending
-remains unsupported.
+X11 window selection and native/live validation remain outstanding. H.265/AV1
+sending requires Experimental, compatible hardware and explicit codec negotiation;
+Stable supports H.264.
 The offline debug example does not establish native Linux capture, hardware acceleration,
 measured performance, packaging or live Discord interoperability.
 
@@ -623,7 +634,7 @@ pacing and teardown; native output selection, sound quality, echo and live inter
 remain unverified. Linux adds the native `libpulse-sys 1.23.0` bindings; no new Flatpak
 permission, virtual device, output rerouting or recording file is added.
 
-Gateway opcodes 18/19 and STREAM_CREATE/STREAM_SERVER_UPDATE/STREAM_DELETE are unofficial normal-user behavior, checked against [discord.py-self](https://github.com/dolfies/discord.py-self/blob/master/discord/gateway.py). A separate RTC connection uses the stream RTC server/channel IDs and the parent call session, sharing one ephemeral DAVE signing identity. The `rtc_server_id - 1` MLS group mapping comes from [discord-native-voice](https://github.com/dolfies/discord-native-voice/blob/master/discord/ext/native_voice/stream_client.py); it is not an official protocol guarantee. H264 negotiation and UDP transport are required; mismatches fail visibly. Video is DAVE-encrypted before RFC 6184 packetization and per-packet transport AEAD. There is no plaintext fallback. [DAVE protocol](https://github.com/discord/dave-protocol/blob/main/protocol.md) supplies the encryption requirement.
+Gateway opcodes 18/19 and STREAM_CREATE/STREAM_SERVER_UPDATE/STREAM_DELETE are unofficial normal-user behavior, checked against [discord.py-self](https://github.com/dolfies/discord.py-self/blob/master/discord/gateway.py). A separate RTC connection uses the stream RTC server/channel IDs and the parent call session, sharing one ephemeral DAVE signing identity. The `rtc_server_id - 1` MLS group mapping comes from [discord-native-voice](https://github.com/dolfies/discord-native-voice/blob/master/discord/ext/native_voice/stream_client.py); it is not an official protocol guarantee. Explicit selected-codec negotiation and UDP transport are required; mismatches fail visibly. Video is DAVE-encrypted before matching H.264 RFC 6184, H.265 RFC 7798 or AV1 RTP packetization and per-packet transport AEAD. There is no plaintext fallback. [DAVE protocol](https://github.com/discord/dave-protocol/blob/main/protocol.md) supplies the encryption requirement.
 
 Screen source discovery and capture occur off the UI/audio threads. Application-owned source lists are capped at 64 labels of 256 bytes. Raw BGRA frames are capped at 3840×2160/33,177,600 bytes; macOS requests the selected output dimensions. Windows prechecks source size and stops on oversized callback frames, but its upstream driver adapter can resize its native GPU pool before that callback. One raw frame and three encoded frames can be queued; H264 frames are capped at 2 MiB, encrypted packetization at 2,048 fragments of at most 1,200 transport bytes. Quality presets target 4–16 Mbps, with frame dropping under load. They are limits/targets, not measured delivery guarantees.
 
@@ -872,13 +883,14 @@ no live Discord session was used.
 
 ### Custom server emoji, chat picker and copying (September 10, 2026)
 
-Joined servers' catalogs are received from READY and known-guild GUILD_CREATE, updated
+Joined servers' catalogs are received from READY and GUILD_CREATE, updated
 by GUILD_EMOJIS_UPDATE, and cleared on GUILD_DELETE. The documented emoji fields and update
 shape are supported by [Emoji Resource](https://docs.discord.com/developers/resources/emoji)
 and [Gateway Events](https://docs.discord.com/developers/events/gateway-events#guild-emojis-update).
 Normal-user READY remains unofficial/unstable; this change was tested with synthetic events
-and local sockets, not a live account. Joining new guilds' full navigation remains pre-existing
-unsupported behavior. Missing catalogs are displayed as unavailable rather than empty.
+and local sockets, not a live account. A GUILD_CREATE for a new or rejoined server restores
+its bounded navigation and permission metadata. Missing catalogs are displayed as unavailable
+rather than empty.
 
 Formatted message/profile/embed text renders `<:name:id>` and `<a:name:id>` as static CDN
 images, using the documented [custom emoji CDN endpoint](https://docs.discord.com/developers/reference#image-formatting-cdn-endpoints).
@@ -975,7 +987,7 @@ Threads use their loaded text/announcement/forum/media parent's overwrites and
 SEND_MESSAGES_IN_THREADS; category overwrites are not recursively applied to children.
 Existing DM/group-DM text access remains service-authoritative without guild metadata.
 
-READY and known-guild GUILD_CREATE install bounded snapshots. Role create/update/delete,
+READY and GUILD_CREATE install bounded snapshots. Role create/update/delete,
 self GUILD_MEMBER_UPDATE, owner and channel overwrite updates replace the relevant metadata;
 READY_SUPPLEMENTAL and PASSIVE_UPDATE_V2 can update already supplied self-member data.
 No full member request or new subscription is added. Normal-user evidence is pinned to
@@ -1000,7 +1012,7 @@ without USE_VAD, focused push-to-talk must be enabled and held. Restoration neve
 
 Discord remains authoritative for action rejection, private-thread membership, account emoji
 entitlements and delivery of permission updates. Role names/colors, role administration,
-moderating other users' messages, new guild joining, and full member-directory synchronization
+moderating other users' messages and full member-directory synchronization
 are outside this slice. Synthetic parser, localhost transport and reducer/UI guard tests do
 not establish live compatibility. Native automation remains paused after owner Escape stops;
 no live account action, microphone capture or new native screenshot was performed.
@@ -1413,6 +1425,12 @@ Leave Server uses documented [Leave Guild](https://docs.discord.com/developers/r
 (`DELETE /users/@me/guilds/{guild.id}`). Known owners cannot leave here; pending
 messages or an active guild call prevent the request. Confirmed success removes
 navigation and access through existing channel cleanup while preserving drafts.
+Permanent GUILD_DELETE dispatches (no `unavailable: true`) use the same cleanup,
+including departures made in another client. Temporary unavailable dispatches preserve
+the joined-server identity while revoking access until GUILD_CREATE restores its snapshot.
+Permanent departures also retire the Gateway's known-server entry, so a later create can
+restore the server's navigation and permission metadata. Synthetic localhost/reducer tests
+cover temporary outages, permanent departure and rejoin; service delivery remains unverified.
 One pending action and one bounded result are retained only in the session. Requests
 never automatically retry; ambiguous results remain visibly uncertain, and stale
 responses cannot change a new session or a subsequently rejoined guild. Malformed
@@ -2214,3 +2232,20 @@ whose original compression request is not implemented. Synthetic localhost tests
 `--features demo -- --demo --demo-chat --demo-attachment=file --demo-external-upload`
 verify local behavior without any real hosted upload or Discord session. Live service
 acceptance, link embedding and other-platform native interaction remain unverified.
+
+
+## Video backend and codec selection — October 5, 2026
+
+Voice & Video defaults to Stable/H.264 using the original platform encoders.
+Experimental uses FFmpeg and offers H.264, H.265 and AV1. H.264 has software fallback;
+H.265/AV1 require compatible hardware (AV1 is unavailable on macOS with this recipe).
+The outgoing codec is fixed for each call/share and must match the server's explicit
+selection. H264/PT101/RTX102, H265/PT103/RTX104 and AV1/PT109/RTX110 follow the
+public interoperability implementation; video signaling remains unofficial.
+Camera mismatch disables video while audio continues; screen mismatch fails the share.
+Receiving remains H.264-only, advertised separately, so these settings concern outgoing
+encoding rather than additional incoming decoder support. DAVE codec selection and
+bounded packetization have synthetic roundtrip fixtures, which do not prove live
+Discord playback. Physical AMD/Intel/NVIDIA/Apple encoders and official-client
+H.265/AV1/DAVE interoperability remain unverified; AV1 final-OBU size handling
+especially requires a paired live check. See [voice settings](voice.md#video-backend-and-codec-settings).

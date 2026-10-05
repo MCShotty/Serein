@@ -307,19 +307,22 @@ impl Encoder {
 			}
 			let stride = CVPixelBufferGetBytesPerRow(&buffer);
 			let base = CVPixelBufferGetBaseAddress(&buffer);
-			let result = if base.is_null() || stride < row_bytes {
-				Err(FAILED)
-			} else {
-				let destination =
-					std::slice::from_raw_parts_mut(base.cast::<u8>(), stride * height);
-				for (source, target) in pixels
-					.chunks_exact(row_bytes)
-					.zip(destination.chunks_exact_mut(stride))
-				{
-					target[..row_bytes].copy_from_slice(source);
-				}
-				Ok(())
-			};
+			let length = stride
+				.checked_mul(height)
+				.filter(|length| *length <= crate::screen::MAX_RAW_BYTES);
+			let result =
+				if let Some(length) = length.filter(|_| !base.is_null() && stride >= row_bytes) {
+					let destination = std::slice::from_raw_parts_mut(base.cast::<u8>(), length);
+					for (source, target) in pixels
+						.chunks_exact(row_bytes)
+						.zip(destination.chunks_exact_mut(stride))
+					{
+						target[..row_bytes].copy_from_slice(source);
+					}
+					Ok(())
+				} else {
+					Err(FAILED)
+				};
 			CVPixelBufferUnlockBaseAddress(&buffer, CVPixelBufferLockFlags(0));
 			result?;
 		}
@@ -496,6 +499,7 @@ mod tests {
 		bit_rate: 4_000_000,
 		max_bytes: 2 * 1024 * 1024,
 		profile: Profile::Main,
+		codec: model::voice_settings::VideoCodec::H264,
 	};
 	const CAMERA: Config = Config {
 		width: 640,
@@ -504,6 +508,7 @@ mod tests {
 		bit_rate: 600_000,
 		max_bytes: 128 * 1024,
 		profile: Profile::Baseline,
+		codec: model::voice_settings::VideoCodec::H264,
 	};
 
 	#[test]
