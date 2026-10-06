@@ -432,13 +432,7 @@ mod macos {
 		dimensions: (usize, usize),
 	) -> Result<Vec<u8>, &'static str> {
 		let (width, height) = dimensions;
-		if width == 0
-			|| height == 0
-			|| width > format::MAX_CAPTURE_WIDTH
-			|| height > format::MAX_CAPTURE_HEIGHT
-		{
-			return Err("Camera frame exceeds bounds");
-		}
+		let budget = format::raw_budget(width, height).ok_or("Camera frame exceeds bounds")?;
 		// SAFETY: The sample is valid for this delegate invocation. Retain its image,
 		// verify packed BGRA dimensions/stride before reading, and unlock every path.
 		unsafe {
@@ -451,7 +445,7 @@ mod macos {
 				|| CVPixelBufferGetHeight(&pixels) != height
 				|| CVPixelBufferGetPixelFormatType(&pixels) != kCVPixelFormatType_32BGRA
 				|| !(width * 4..=width * 4 + format::MAX_STRIDE_PADDING).contains(&stride)
-				|| bytes > format::MAX_RAW_BYTES
+				|| bytes > budget
 				|| bytes > CVPixelBufferGetDataSize(&pixels)
 			{
 				return Err("Camera did not provide a selected bounded BGRA frame");
