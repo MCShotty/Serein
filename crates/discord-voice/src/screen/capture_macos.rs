@@ -404,12 +404,7 @@ impl Capture {
 		teardown: Arc<AtomicBool>,
 	) -> Result<Self, &'static str> {
 		initialize();
-		if settings.width == 0
-			|| settings.height == 0
-			|| settings.width > MAX_FRAME_WIDTH
-			|| settings.height > MAX_FRAME_HEIGHT
-			|| settings.fps == 0
-		{
+		if !settings.valid() {
 			return Err("Invalid screen capture settings");
 		}
 		// Own the picker before selection so every later error/cancellation deactivates it.

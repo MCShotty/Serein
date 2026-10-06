@@ -2060,20 +2060,51 @@ mod tests {
 	}
 	#[test]
 	fn video_preferences_migrate_round_trip_and_reject_invalid_backend_codec() {
-		use model::voice_settings::{VideoBackend, VideoCodec, VideoSettings};
+		use model::voice_settings::{
+			VideoBackend, VideoCodec, VideoFrameRate, VideoResolution, VideoSettings,
+		};
 		let legacy: AppPreferences = serde_json::from_str("{}").unwrap();
 		assert_eq!(legacy.video_settings, VideoSettings::default());
+		let existing: AppPreferences =
+			serde_json::from_str(r#"{"video_settings":{"backend":"Experimental","codec":"H265"}}"#)
+				.unwrap();
+		assert_eq!(
+			existing.video_settings.camera_resolution,
+			VideoResolution::P480
+		);
+		assert!(
+			serde_json::from_str::<AppPreferences>(
+				r#"{"video_settings":{"camera_resolution":"P8640"}}"#,
+			)
+			.is_err()
+		);
+		assert_eq!(
+			existing.video_settings.camera_frame_rate,
+			VideoFrameRate::Fps15
+		);
+		assert!(
+			serde_json::from_str::<AppPreferences>(
+				r#"{"video_settings":{"camera_frame_rate":"Fps120"}}"#,
+			)
+			.is_err()
+		);
 		let store = LocalStore::initialize(Connection::open_in_memory().unwrap()).unwrap();
 		for codec in [VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1] {
-			let value = AppPreferences {
-				video_settings: VideoSettings {
-					backend: VideoBackend::Experimental,
-					codec,
-				},
-				..Default::default()
-			};
-			store.save_app_preferences(&value).unwrap();
-			assert_eq!(store.app_preferences().unwrap(), value);
+			for camera_resolution in VideoResolution::ALL {
+				for camera_frame_rate in VideoFrameRate::ALL {
+					let value = AppPreferences {
+						video_settings: VideoSettings {
+							backend: VideoBackend::Experimental,
+							codec,
+							camera_resolution,
+							camera_frame_rate,
+						},
+						..Default::default()
+					};
+					store.save_app_preferences(&value).unwrap();
+					assert_eq!(store.app_preferences().unwrap(), value);
+				}
+			}
 		}
 		let mut invalid = store.app_preferences().unwrap();
 		invalid.video_settings.backend = VideoBackend::Stable;

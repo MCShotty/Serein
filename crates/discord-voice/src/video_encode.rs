@@ -2,7 +2,7 @@
 //! Hardware backends preserve the selected codec; OpenH264 is the H.264 fallback.
 #![allow(unsafe_code)] // Small, checked ABI to the owned libavcodec context in the C shim.
 
-use model::voice_settings::{HardwareBackend, VideoCodec};
+use model::voice_settings::{HardwareBackend, VideoCodec, VideoResolution};
 use std::{ffi::c_void, marker::PhantomData, ptr::NonNull, rc::Rc};
 
 #[derive(Clone, Copy)]
@@ -23,11 +23,11 @@ pub(crate) enum Profile {
 }
 
 impl Config {
-	fn picture_bytes(self) -> Result<usize, &'static str> {
+	pub(crate) fn picture_bytes(self) -> Result<usize, &'static str> {
 		if self.width == 0
 			|| self.height == 0
-			|| self.width > 1920
-			|| self.height > 1080
+			|| self.width > VideoResolution::MAX_WIDTH
+			|| self.height > VideoResolution::MAX_HEIGHT
 			|| !self.width.is_multiple_of(2)
 			|| !self.height.is_multiple_of(2)
 			|| !(1..=60).contains(&self.fps)
@@ -535,7 +535,7 @@ mod tests {
 		for config in [
 			Config { width: 0, ..CAMERA },
 			Config {
-				width: 1922,
+				width: VideoResolution::MAX_WIDTH + 2,
 				..CAMERA
 			},
 			Config {
@@ -550,6 +550,66 @@ mod tests {
 		] {
 			assert!(Encoder::new(config).is_err());
 		}
+	}
+
+	#[test]
+	fn output_geometry_accepts_presets_through_8k_with_a_fixed_picture_budget() {
+		for resolution in VideoResolution::ALL {
+			let (width, height) = resolution.dimensions();
+			let config = Config {
+				width,
+				height,
+				..CAMERA
+			};
+			let bytes = config.picture_bytes().unwrap();
+			assert_eq!(bytes, width as usize * height as usize * 3 / 2);
+			assert!(bytes <= 7680 * 4320 * 3 / 2);
+		}
+		for config in [
+			Config {
+				width: 7682,
+				height: 4320,
+				..CAMERA
+			},
+			Config {
+				width: 7680,
+				height: 4322,
+				..CAMERA
+			},
+			Config {
+				width: u32::MAX,
+				height: u32::MAX,
+				..CAMERA
+			},
+			Config {
+				bit_rate: 50_000_001,
+				..CAMERA
+			},
+		] {
+			assert!(config.picture_bytes().is_err());
+		}
+	}
+
+	#[test]
+	fn ffmpeg_software_output_above_1080p_encodes_and_decodes_selected_geometry() {
+		use openh264::formats::YUVSource;
+		let config = Config {
+			width: 2560,
+			height: 1440,
+			bit_rate: 12_000_000,
+			max_bytes: 2 * 1024 * 1024,
+			profile: Profile::Main,
+			..CAMERA
+		};
+		let mut encoder = Encoder::software(config).unwrap();
+		let picture = vec![128; config.picture_bytes().unwrap()];
+		let (packet, keyframe) = encoder.encode(&picture, true).unwrap();
+		assert!(keyframe && !packet.is_empty() && packet.len() <= config.max_bytes);
+		let mut decoder = openh264::decoder::Decoder::new().unwrap();
+		assert_eq!(
+			decoder.decode(&packet).unwrap().unwrap().dimensions(),
+			(2560, 1440)
+		);
 	}
 
 	#[test]

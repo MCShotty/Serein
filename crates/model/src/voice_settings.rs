@@ -16,6 +16,89 @@ pub enum VideoCodec {
 	Av1,
 }
 
+/// Output presets shared by screen sharing and the device-local camera preference.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VideoResolution {
+	#[default]
+	P480,
+	P720,
+	P1080,
+	P1440,
+	P2160,
+	P4320,
+}
+
+impl VideoResolution {
+	pub const ALL: [Self; 6] = [
+		Self::P480,
+		Self::P720,
+		Self::P1080,
+		Self::P1440,
+		Self::P2160,
+		Self::P4320,
+	];
+	pub const MAX_WIDTH: u32 = 7680;
+	pub const MAX_HEIGHT: u32 = 4320;
+
+	pub const fn dimensions(self) -> (u32, u32) {
+		match self {
+			Self::P480 => (854, 480),
+			Self::P720 => (1280, 720),
+			Self::P1080 => (1920, 1080),
+			Self::P1440 => (2560, 1440),
+			Self::P2160 => (3840, 2160),
+			Self::P4320 => (7680, 4320),
+		}
+	}
+
+	pub const fn camera_dimensions(self) -> (u32, u32) {
+		match self {
+			Self::P480 => (640, 480),
+			_ => self.dimensions(),
+		}
+	}
+
+	pub const fn label(self) -> &'static str {
+		match self {
+			Self::P480 => "480p",
+			Self::P720 => "720p",
+			Self::P1080 => "1080p",
+			Self::P1440 => "1440p",
+			Self::P2160 => "4K (2160p)",
+			Self::P4320 => "8K (4320p)",
+		}
+	}
+}
+
+/// Camera output frame-rate presets; native capture negotiates the closest supported rate.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VideoFrameRate {
+	#[default]
+	Fps15,
+	Fps30,
+	Fps60,
+}
+
+impl VideoFrameRate {
+	pub const ALL: [Self; 3] = [Self::Fps15, Self::Fps30, Self::Fps60];
+
+	pub const fn fps(self) -> u32 {
+		match self {
+			Self::Fps15 => 15,
+			Self::Fps30 => 30,
+			Self::Fps60 => 60,
+		}
+	}
+
+	pub const fn label(self) -> &'static str {
+		match self {
+			Self::Fps15 => "15 fps",
+			Self::Fps30 => "30 fps",
+			Self::Fps60 => "60 fps",
+		}
+	}
+}
+
 impl VideoCodec {
 	pub const ALL: [Self; 3] = [Self::H264, Self::H265, Self::Av1];
 
@@ -145,6 +228,8 @@ impl VideoCapabilities {
 pub struct VideoSettings {
 	pub backend: VideoBackend,
 	pub codec: VideoCodec,
+	pub camera_resolution: VideoResolution,
+	pub camera_frame_rate: VideoFrameRate,
 }
 impl VideoSettings {
 	pub fn is_valid(self) -> bool {

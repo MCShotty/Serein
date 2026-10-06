@@ -129,20 +129,7 @@ impl Encoder {
 }
 
 fn picture_bytes(config: Config) -> Result<usize, &'static str> {
-	if config.width == 0
-		|| config.height == 0
-		|| config.width > 1920
-		|| config.height > 1080
-		|| !config.width.is_multiple_of(2)
-		|| !config.height.is_multiple_of(2)
-		|| !(1..=60).contains(&config.fps)
-		|| !(1_000..=50_000_000).contains(&config.bit_rate)
-		|| config.max_bytes == 0
-		|| config.max_bytes > 2 * 1024 * 1024
-	{
-		return Err("Invalid video encoder settings");
-	}
-	Ok(config.width as usize * config.height as usize * 3 / 2)
+	config.picture_bytes()
 }
 
 struct Stable {

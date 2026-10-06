@@ -31,7 +31,7 @@ use std::sync::{
 #[cfg(not(target_os = "linux"))]
 use std::time::{Duration, Instant};
 
-pub const MAX_RAW_BYTES: usize = 3840 * 2160 * 4;
+pub const MAX_RAW_BYTES: usize = 7680 * 4320 * 4;
 pub const MAX_ENCODED_BYTES: usize = 2 * 1024 * 1024;
 
 pub struct RawFrame {
@@ -533,8 +533,8 @@ fn validate_frame(frame: &RawFrame) -> Result<(usize, usize), &'static str> {
 		.ok_or("Screen capture returned an unsupported frame size")?;
 	if frame.width == 0
 		|| frame.height == 0
-		|| frame.width > 3840
-		|| frame.height > 2160
+		|| frame.width > model::voice_settings::VideoResolution::MAX_WIDTH
+		|| frame.height > model::voice_settings::VideoResolution::MAX_HEIGHT
 		|| frame.data.len() > MAX_RAW_BYTES
 		|| frame.stride < row_bytes
 		|| required > frame.data.len()
@@ -590,7 +590,7 @@ mod tests {
 		assert!(retain_screen_frame(&mut latest, None, true, true).unwrap());
 		assert_eq!(latest.as_ref().unwrap().data, vec![2; 16]);
 		let mut oversized = frame(3);
-		oversized.width = 3841;
+		oversized.width = model::voice_settings::VideoResolution::MAX_WIDTH + 1;
 		assert!(retain_screen_frame(&mut latest, Some(oversized), true, true).is_err());
 		assert_eq!(latest.unwrap().data, vec![2; 16]);
 	}
@@ -618,7 +618,7 @@ mod tests {
 		assert!(worker.take_preview().is_some());
 		assert!(worker.take_preview().is_none());
 		assert!(!worker.ready.load(Ordering::Acquire));
-		for (width, height) in [(3840, 2160), (2, 2160), (3840, 2)] {
+		for (width, height) in [(3840, 2160), (2, 4320), (7680, 2)] {
 			let frame = RawFrame {
 				width,
 				height,

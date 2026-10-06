@@ -2378,7 +2378,7 @@ impl MessagingUi {
 	}
 
 	fn video_settings_controls(&mut self, ui: &mut egui::Ui) {
-		use model::voice_settings::{VideoBackend, VideoCodec};
+		use model::voice_settings::{VideoBackend, VideoCodec, VideoFrameRate, VideoResolution};
 		let colors = design::palette(ui);
 		ui.label(crate::i18n::translate("voice-video-backend"));
 		ui.horizontal_wrapped(|ui| {
@@ -2439,6 +2439,48 @@ impl MessagingUi {
 		if experimental {
 			self.video_hardware_capabilities(ui);
 		}
+		ui.add_space(8.0);
+		ui.label(crate::i18n::translate("voice-video-camera-resolution"));
+		ui.horizontal_wrapped(|ui| {
+			for resolution in VideoResolution::ALL {
+				ui.selectable_value(
+					&mut self.video_settings.camera_resolution,
+					resolution,
+					resolution.label(),
+				);
+			}
+		});
+		ui.add(
+			egui::Label::new(
+				RichText::new(crate::i18n::translate(
+					"voice-video-camera-resolution-description",
+				))
+				.size(12.0)
+				.color(colors.muted),
+			)
+			.wrap(),
+		);
+		ui.add_space(8.0);
+		ui.label(crate::i18n::translate("voice-video-camera-frame-rate"));
+		ui.horizontal_wrapped(|ui| {
+			for frame_rate in VideoFrameRate::ALL {
+				ui.selectable_value(
+					&mut self.video_settings.camera_frame_rate,
+					frame_rate,
+					frame_rate.label(),
+				);
+			}
+		});
+		ui.add(
+			egui::Label::new(
+				RichText::new(crate::i18n::translate(
+					"voice-video-camera-frame-rate-description",
+				))
+				.size(12.0)
+				.color(colors.muted),
+			)
+			.wrap(),
+		);
 		ui.add(
 			egui::Label::new(
 				RichText::new(crate::i18n::translate("voice-video-settings-apply"))
@@ -4926,6 +4968,64 @@ mod tests {
 	}
 
 	#[test]
+	fn camera_resolution_controls_are_selectable_through_8k_on_both_backends() {
+		use model::voice_settings::{VideoBackend, VideoResolution};
+		for backend in [VideoBackend::Stable, VideoBackend::Experimental] {
+			let ctx = egui::Context::default();
+			let mut messaging = MessagingUi::default();
+			messaging.video_settings.backend = backend;
+			for resolution in VideoResolution::ALL {
+				video_controls_click(&ctx, &mut messaging, 320.0, resolution.label());
+				assert_eq!(messaging.video_settings.camera_resolution, resolution);
+				assert_eq!(messaging.video_settings.backend, backend);
+			}
+		}
+	}
+
+	#[test]
+	fn camera_frame_rate_controls_are_selectable_through_60_fps_on_both_backends() {
+		use model::voice_settings::{VideoBackend, VideoFrameRate};
+		for backend in [VideoBackend::Stable, VideoBackend::Experimental] {
+			let ctx = egui::Context::default();
+			let mut messaging = MessagingUi::default();
+			messaging.video_settings.backend = backend;
+			for frame_rate in VideoFrameRate::ALL {
+				video_controls_click(&ctx, &mut messaging, 320.0, frame_rate.label());
+				assert_eq!(messaging.video_settings.camera_frame_rate, frame_rate);
+				assert_eq!(messaging.video_settings.backend, backend);
+			}
+			// Start keyboard navigation with a fresh focus chain: pointer selection
+			// does not imply keyboard focus for egui selectable-value buttons.
+			let ctx = egui::Context::default();
+			let mut messaging = MessagingUi::default();
+			messaging.video_settings.backend = backend;
+			messaging.video_capabilities = Some(Default::default());
+			video_controls_frame(&ctx, &mut messaging, 320.0, vec![]);
+			// Backend (2), enabled codecs (1/3), experimental actions (0/2),
+			// resolutions (6), then 15 fps and 30 fps.
+			let tabs = if backend == VideoBackend::Stable {
+				11
+			} else {
+				15
+			};
+			for _ in 0..tabs {
+				video_controls_key(&ctx, &mut messaging, egui::Key::Tab);
+			}
+			video_controls_key(&ctx, &mut messaging, egui::Key::Enter);
+			assert_eq!(
+				messaging.video_settings.camera_frame_rate,
+				VideoFrameRate::Fps30
+			);
+			video_controls_key(&ctx, &mut messaging, egui::Key::Tab);
+			video_controls_key(&ctx, &mut messaging, egui::Key::Enter);
+			assert_eq!(
+				messaging.video_settings.camera_frame_rate,
+				VideoFrameRate::Fps60
+			);
+		}
+	}
+
+	#[test]
 	fn video_hardware_negative_results_disable_codecs_but_preserve_saved_selection() {
 		use model::voice_settings::{VideoBackend, VideoCodec, VideoSettings};
 		let ctx = egui::Context::default();
@@ -4933,6 +5033,7 @@ mod tests {
 			video_settings: VideoSettings {
 				backend: VideoBackend::Experimental,
 				codec: VideoCodec::H265,
+				..Default::default()
 			},
 			video_capabilities: Some(no_video_hardware()),
 			..Default::default()
@@ -4972,6 +5073,7 @@ mod tests {
 				video_settings: VideoSettings {
 					backend: VideoBackend::Experimental,
 					codec: VideoCodec::H264,
+					..Default::default()
 				},
 				video_capabilities: Some(caps),
 				..Default::default()
@@ -5003,6 +5105,7 @@ mod tests {
 				video_settings: VideoSettings {
 					backend: VideoBackend::Experimental,
 					codec: VideoCodec::H264,
+					..Default::default()
 				},
 				video_capabilities: Some(no_video_hardware()),
 				video_capabilities_loading: loading,
@@ -5175,6 +5278,7 @@ mod tests {
 				video_settings: VideoSettings {
 					backend: VideoBackend::Experimental,
 					codec: VideoCodec::H264,
+					..Default::default()
 				},
 				video_capabilities: Some(caps),
 				..Default::default()

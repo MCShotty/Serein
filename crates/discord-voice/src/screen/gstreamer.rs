@@ -4,6 +4,7 @@ use ::gstreamer as gst;
 use gst::prelude::*;
 use gstreamer_app as app;
 use gstreamer_video::{self as video, VideoFrameExt};
+use model::voice_settings::VideoResolution;
 use std::sync::{
 	Arc,
 	atomic::{AtomicBool, Ordering},
@@ -11,7 +12,7 @@ use std::sync::{
 
 const INVALID: &str = "Screen capture returned an unsupported frame";
 const UNAVAILABLE: &str = "Screen capture is unavailable";
-const MAX_SOURCE_BYTES: usize = 7680 * 4320 * 4;
+const MAX_SOURCE_BYTES: usize = MAX_RAW_BYTES;
 
 pub(super) struct Capture {
 	pipeline: gst::Pipeline,
@@ -45,8 +46,9 @@ impl Capture {
 		);
 		// FFmpeg owns encoding after capture. Queues discard stale raw pictures, and the
 		// frame sink blocks upstream when the worker waits for transport capacity.
+		let (max_width, max_height) = (VideoResolution::MAX_WIDTH, VideoResolution::MAX_HEIGHT);
 		let description = format!(
-			"capsfilter caps=\"video/x-raw(ANY),width=[1,7680],height=[1,4320]\" ! \
+			"capsfilter caps=\"video/x-raw(ANY),width=[1,{max_width}],height=[1,{max_height}]\" ! \
 			queue max-size-buffers=1 max-size-bytes={MAX_SOURCE_BYTES} max-size-time=0 leaky=downstream ! \
 			videorate drop-only=true ! video/x-raw(ANY),framerate={}/1 ! \
 			videoconvert name=crop-input ! video/x-raw,format=BGRA ! videocrop name=crop ! \
@@ -240,7 +242,11 @@ fn crop_edges(
 	rect: Option<(u32, u32, u32, u32)>,
 	(width, height): (u32, u32),
 ) -> Result<[i32; 4], &'static str> {
-	if width == 0 || height == 0 || width > 7680 || height > 4320 {
+	if width == 0
+		|| height == 0
+		|| width > VideoResolution::MAX_WIDTH
+		|| height > VideoResolution::MAX_HEIGHT
+	{
 		return Err(INVALID);
 	}
 	let Some((x, y, crop_width, crop_height)) = rect else {
@@ -276,8 +282,8 @@ pub(super) fn raw(sample: &gst::Sample) -> Result<RawFrame, &'static str> {
 	if info.format() != video::VideoFormat::Bgra
 		|| info.width() == 0
 		|| info.height() == 0
-		|| info.width() > 1920
-		|| info.height() > 1080
+		|| info.width() > VideoResolution::MAX_WIDTH
+		|| info.height() > VideoResolution::MAX_HEIGHT
 	{
 		return Err(INVALID);
 	}
@@ -297,7 +303,11 @@ pub(super) fn raw(sample: &gst::Sample) -> Result<RawFrame, &'static str> {
 	if stride < row || data.len() < required {
 		return Err(INVALID);
 	}
-	let mut pixels = vec![0; row * info.height() as usize];
+	let bytes = row.checked_mul(info.height() as usize).ok_or(INVALID)?;
+	if required > MAX_RAW_BYTES || bytes > MAX_RAW_BYTES {
+		return Err(INVALID);
+	}
+	let mut pixels = vec![0; bytes];
 	for (source, target) in data.chunks(stride).zip(pixels.chunks_exact_mut(row)) {
 		target.copy_from_slice(&source[..row]);
 	}
@@ -331,6 +341,37 @@ mod tests {
 			assert!(crop_edges(Some(rect), (640, 360)).is_err());
 		}
 		assert!(crop_edges(None, (7681, 4320)).is_err());
+		assert!(crop_edges(None, (7680, 4321)).is_err());
+		assert_eq!(crop_edges(None, (7680, 4320)), Ok([0; 4]));
+	}
+
+	#[test]
+	fn raw_capture_accepts_both_8k_axes_and_rejects_oversized_dimensions() {
+		gst::init().unwrap();
+		// Exercise the mapping/copy path at each maximum axis without retaining a
+		// full 126.6 MiB picture in the default test harness.
+		for (width, height) in [(7680, 2), (2, 4320)] {
+			let info = video::VideoInfo::builder(video::VideoFormat::Bgra, width, height)
+				.build()
+				.unwrap();
+			let caps = info.to_caps().unwrap();
+			let buffer = gst::Buffer::from_mut_slice(vec![19u8; info.size()]);
+			let sample = gst::Sample::builder().caps(&caps).buffer(&buffer).build();
+			let frame = raw(&sample).expect("bounded native 8K geometry");
+			assert_eq!((frame.width, frame.height), (width, height));
+			assert_eq!(frame.stride, width as usize * 4);
+			assert_eq!(frame.data.len(), width as usize * height as usize * 4);
+			assert!(frame.data.iter().all(|byte| *byte == 19));
+		}
+		for (width, height) in [(7681, 2), (2, 4321)] {
+			let info = video::VideoInfo::builder(video::VideoFormat::Bgra, width, height)
+				.build()
+				.unwrap();
+			let caps = info.to_caps().unwrap();
+			let buffer = gst::Buffer::from_mut_slice(vec![19u8; info.size()]);
+			let sample = gst::Sample::builder().caps(&caps).buffer(&buffer).build();
+			assert!(raw(&sample).is_err());
+		}
 	}
 
 	#[test]

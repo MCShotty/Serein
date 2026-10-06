@@ -170,7 +170,7 @@ struct Live {
 	task: JoinHandle<()>,
 	devices: Devices,
 	device_deadline: Option<Instant>,
-	camera_frames: mpsc::SyncSender<discord_voice::camera_video::Frame>,
+	camera_frames: tokio::sync::mpsc::Sender<discord_voice::camera_video::Frame>,
 	camera_negotiated: bool,
 	video_settings: model::voice_settings::VideoSettings,
 	camera_clock: Instant,
@@ -265,9 +265,14 @@ fn store_remote_frame(
 }
 
 #[allow(clippy::chunks_exact_to_as_chunks)] // Matches egui's allocation fallback loop.
-fn store_camera_frame(picture: &mut CameraPicture, rgb: &[u8]) -> bool {
-	let size = [discord_voice::camera::WIDTH, discord_voice::camera::HEIGHT];
-	if rgb.len() != size[0] * size[1] * 3 {
+fn store_camera_frame(picture: &mut CameraPicture, rgb: &[u8], width: u32, height: u32) -> bool {
+	let size = [width as usize, height as usize];
+	if width == 0
+		|| height == 0
+		|| size[0] > discord_voice::camera::WIDTH
+		|| size[1] > discord_voice::camera::HEIGHT
+		|| rgb.len() != size[0] * size[1] * 3
+	{
 		return false;
 	}
 	let (image, dirty) =
@@ -1203,8 +1208,12 @@ impl Voice {
 			// No transport sender is captured: these frames can only reach the settings texture.
 			let on_frame = Arc::new(move |frame: discord_voice::camera::Frame| {
 				if let Ok(mut slot) = frames.try_lock()
-					&& store_camera_frame(&mut slot, &frame.rgb)
-				{
+					&& store_camera_frame(
+						&mut slot,
+						&frame.rgb,
+						frame.preview_width,
+						frame.preview_height,
+					) {
 					wake.request_repaint();
 				}
 			});
@@ -1356,8 +1365,12 @@ impl Voice {
 					data,
 				});
 				if let Ok(mut slot) = preview.try_lock()
-					&& store_camera_frame(&mut slot, &frame.rgb)
-				{
+					&& store_camera_frame(
+						&mut slot,
+						&frame.rgb,
+						frame.preview_width,
+						frame.preview_height,
+					) {
 					wake.request_repaint();
 				}
 			});
@@ -1413,7 +1426,7 @@ impl Voice {
 		input_enabled: bool,
 	) -> Result<(), &'static str> {
 		let (capture_send, capture) = mpsc::sync_channel(8);
-		let (camera_frames, camera_receive) = mpsc::sync_channel(1);
+		let (camera_frames, camera_receive) = tokio::sync::mpsc::channel(1);
 		let (stream_audio, stream_audio_receive) = mpsc::sync_channel(8);
 		let (playback, playback_receive) = mpsc::sync_channel(8);
 		let (send, events) = mpsc::sync_channel(8);
@@ -1867,10 +1880,20 @@ mod tests {
 	fn optimization_local_camera_reuses_the_latest_frame_buffer() {
 		let mut picture = None;
 		let rgb = vec![127; discord_voice::camera::WIDTH * discord_voice::camera::HEIGHT * 3];
-		assert!(store_camera_frame(&mut picture, &rgb));
+		assert!(store_camera_frame(
+			&mut picture,
+			&rgb,
+			discord_voice::camera::WIDTH as u32,
+			discord_voice::camera::HEIGHT as u32
+		));
 		let pixels = picture.as_ref().unwrap().0.pixels.as_ptr();
 		picture.as_mut().unwrap().1 = false;
-		assert!(store_camera_frame(&mut picture, &rgb));
+		assert!(store_camera_frame(
+			&mut picture,
+			&rgb,
+			discord_voice::camera::WIDTH as u32,
+			discord_voice::camera::HEIGHT as u32
+		));
 		assert_eq!(picture.as_ref().unwrap().0.pixels.as_ptr(), pixels);
 		assert!(picture.unwrap().1);
 	}
@@ -2072,6 +2095,17 @@ mod tests {
 		}
 	}
 	#[test]
+	fn camera_preview_accepts_small_wide_frames_and_rejects_full_resolution() {
+		let mut picture = None;
+		let rgb = vec![127; 640 * 360 * 3];
+		assert!(store_camera_frame(&mut picture, &rgb, 640, 360));
+		assert_eq!(picture.as_ref().unwrap().0.size, [640, 360]);
+		assert!(!store_camera_frame(&mut picture, &rgb, 7680, 4320));
+		assert!(!store_camera_frame(&mut picture, &rgb[..10], 640, 360));
+		assert!(!store_camera_frame(&mut picture, &[], 0, 0));
+	}
+
+	#[test]
 	fn call_request_snapshots_video_preferences_without_opening_media() {
 		use model::voice_settings::{VideoBackend, VideoCodec, VideoSettings};
 		let mut state = test_support::demo_state();
@@ -2080,6 +2114,7 @@ mod tests {
 		let selected = VideoSettings {
 			backend: VideoBackend::Experimental,
 			codec: VideoCodec::Av1,
+			..VideoSettings::default()
 		};
 		let mut manager = Voice::default();
 		assert!(
@@ -2371,7 +2406,7 @@ mod tests {
 		let (controls, _control_events) = watch::channel(Controls::default());
 		let (_notices, events) = mpsc::sync_channel(8);
 		let (_speaking, speakers) = watch::channel([0; 64]);
-		let (camera_frames, _camera_frames) = mpsc::sync_channel(1);
+		let (camera_frames, _camera_frames) = tokio::sync::mpsc::channel(1);
 		let (stream_audio, _stream_audio) = mpsc::sync_channel(8);
 		manager.live = Some(Live {
 			generation: pending.generation,

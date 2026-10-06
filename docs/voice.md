@@ -423,7 +423,7 @@ not establish production readiness or superiority over Discord's processing.
 
 ## Screen sharing
 
-In a connected call, select **Share your screen**, choose a display/window, 480p, 720p or 1080p, 15/30/60 fps, cursor visibility and optional **Share system audio**, then select **Share screen**. The screen button changes to **Stop sharing** while starting/sharing; it also remains available in the compact call controls. Call microphone controls remain independent. All presets are selectable without Nitro, but Discord acceptance and sustained frame rate are not guaranteed.
+In a connected call, select **Share your screen**, choose a display/window, 480p, 720p, 1080p, 1440p, 4K (2160p) or 8K (4320p), 15/30/60 fps, cursor visibility and optional **Share system audio**, then select **Share screen**. The screen button changes to **Stop sharing** while starting/sharing; it also remains available in the compact call controls. Call microphone controls remain independent. All presets are selectable without Nitro, but Discord acceptance and sustained frame rate are not guaranteed. Resolution selects the output canvas; smaller sources gain no additional detail. The 4K/8K presets need an encoder that accepts those dimensions and target up to 50 Mbps at 60 fps.
 
 480p uses 854×480 pixels and a target video bitrate of 2 Mbps at 15/30 fps or 4 Mbps at 60 fps.
 
@@ -440,7 +440,7 @@ other windows in that application; this is not isolation of one window's audio.
 Serein's own playback remains excluded. No microphone is captured by screen sharing.
 The native picker has not been opened during synthetic verification.
 
-Source discovery alone does not start streaming. Closing or minimizing a selected source may pause frames or end capture, according to the native API. The initial Windows adapter accepts source dimensions up to 3840×2160. Changes to screen-server metadata, lost video permission, leaving the call and logout stop sharing. The sender never starts itself after reconnection.
+Source discovery alone does not start streaming. Closing or minimizing a selected source may pause frames or end capture, according to the native API. Raw screen capture accepts source dimensions up to 7680×4320 and 132,710,400 BGRA bytes. Changes to screen-server metadata, lost video permission, leaving the call and logout stop sharing. The sender never starts itself after reconnection.
 
 Linux uses the desktop ScreenCast portal and PipeWire. Share Screen opens the system
 screen/window picker after the quality dialog; source discovery never opens that picker.
@@ -524,14 +524,21 @@ The native demo (`cargo run --locked -p serein -- --demo --demo-voice`) exposes 
 ### Video backend and codec settings
 
 Voice & Video → Video encoding, at the bottom of the page, saves a device-local
-backend and codec. Stable is the
+backend, codec, camera resolution and frame rate. Camera offers 480p, 720p, 1080p, 1440p,
+4K (2160p) and 8K (4320p), with 15, 30 or 60 fps. Its default remains 640×480/15 fps; other presets use
+their 16:9 dimensions through 7680×4320. A higher camera preset requires a
+native camera mode with at least those dimensions, and fails visibly when
+unavailable. It never enlarges a smaller camera mode to claim 4K/8K. Capture requests
+the closest supported native frame rate and caps output at the selected rate; a
+60 fps preference does not guarantee that a particular camera mode supplies 60 fps. Stable is the
 new-install and migration default, using the original Media Foundation (Windows),
 VideoToolbox (macOS), or GStreamer VA/NV encoders (Linux), with direct OpenH264
 software fallback. Stable supports H.264. Experimental selects the shared FFmpeg
 backend and offers H.264, H.265 and AV1. Camera settings are snapshotted when a call
 starts; a local camera preview uses the current settings and stops when they change.
 Screen sharing snapshots the settings at the explicit Share gesture. Changes do not
-alter an already negotiated stream. Existing incoming playback remains H.264-only.
+alter an already negotiated stream. Existing incoming playback remains H.264-only
+and capped at 1080p; these choices expand outgoing resolution, not receiver budgets.
 
 Experimental queries hardware codec capabilities when Voice & Video is opened.
 The H.264, H.265 and AV1 rows show driver-reported NVENC, AMD AMF, Intel Quick Sync
@@ -619,7 +626,9 @@ Private library names and ELF symbol versions keep the system GStreamer FFmpeg
 plugin independent. The source patch also supplies HEVC QSV's missing internal SEI
 helper dependency; no decoder is registered in the outgoing library.
 
-Camera output is bounded at 128 KiB and screen output at 2 MiB. Camera pictures
+Camera output preserves its default 128 KiB encoded-picture budget, rising to
+256 KiB at 720p, 512 KiB at 1080p, 1 MiB at 1440p and 2 MiB at 4K/8K. Screen
+output remains bounded at 2 MiB per encoded picture. Camera pictures
 must be independently decodable; screen encoders use no B frames and periodic or
 requested keyframes. H.264 keyframes repeat SPS/PPS; H.265 repeats VPS/SPS/PPS;
 AV1 repeats a sequence header. Rate changes retain the existing 15% reduction /
@@ -657,27 +666,37 @@ Stop, source failure, permission loss, leaving and logout release the preview.
 These paths have synthetic coverage; native camera/screen capture and live Discord
 viewing still require owner-operated validation.
 
-Native capture prefers the closest supported size to the 640×480 encoder, with
-a 1280×720 input ceiling (DirectShow preserves its existing 1920×1080 fallback).
+At the default 480p preset, native capture prefers the closest supported size to
+the 640×480 encoder, with a 1280×720 input ceiling (DirectShow preserves its
+1920×1080 fallback). Higher presets rank native modes at or above the selected
+dimensions, within a 7680×4320 ceiling.
 macOS and Windows rank native modes by dimension
-distance, then distance from 15 fps; macOS explicitly locks the device format
+distance, then distance from the selected frame rate; macOS explicitly locks the device format
 and supported frame duration; AVFoundation aspect fitting preserves nonmatching
 native ratios with black bars before the callback. Windows drivers without
 frame-rate metadata retain their bounded fallback and rank after known rates at
 the same resolution. Linux probes each candidate with its effective
 V4L2 interval before ranking it and reapplies the selected interval after the final
 format change. Drivers without interval metadata rank last at the same resolution.
-Capture is converted to 640×480, capped at 15 encoded frames/second, encoded on a worker with a
-600 kbit/s target (not a measured bandwidth guarantee). The worker uses the backend/codec snapshot described above. H.264 requests
+Capture is converted to the selected output dimensions, capped at the selected
+15/30/60 encoded frames/second, and encoded on a worker. At 15 fps, camera bitrate
+targets are 600 kbit/s at 480p, 2/4/8 Mbit/s at 720p/1080p/1440p, 16 Mbit/s at 4K
+and 40 Mbit/s at 8K. Targets scale with the selected frame rate, capped at 50 Mbit/s;
+these are targets, not measured bandwidth guarantees. The worker uses the backend/codec snapshot described above. H.264 requests
 Baseline; H.265/AV1 use their Main profile with an independently decodable picture
 every frame. Invalid output advances through compatible backends; only H.264 has
 software fallback. macOS retains one pending
-BGRA frame (1,228,800 bytes). Windows validates each native buffer against a 3,194,880-byte
-ceiling (including row padding), requests one source buffer and queues at most one
-921,600-byte RGB frame. Linux requests two mapped buffers, accepts at most four of
-4 MiB each, and decodes YUYV or MJPEG on the worker with a 4 MiB JPEG allocation limit.
-One RGB preview, one encoded frame (128 KiB), and up to 256 RTP
-packets from one bounded frame are retained. Frames are independently decodable to tolerate
+BGRA frame; Windows requests one source buffer and queues at most one RGB frame.
+Native camera buffers are capped at 7680×4320 plus at most 4096 stride-padding
+bytes per row (150,405,120 bytes). Linux requests two mapped buffers, accepts at
+most four within that byte cap, and decodes YUYV or MJPEG on the worker with the
+same bounded JPEG allocation limit. Full-resolution conversion/encoder buffers
+remain on the worker; the UI retains only a preview at most 640×480 RGB.
+One RGB preview, one encoded frame (2 MiB), and up to 2048 RTP
+packets from one bounded frame are retained. A one-picture async camera channel wakes
+the transport independently of the 20 ms audio tick, allowing delivery above 50 fps.
+Packet pacing uses elapsed time at
+2.5× the selected bitrate target, with a bounded catch-up window. Frames are independently decodable to tolerate
 drops. Codec-specific DAVE frame encryption precedes RTP fragmentation and the existing authenticated
 UDP transport. No camera recording or cache is created; the codec is included on supported platforms.
 
@@ -703,23 +722,23 @@ camera, joining a call, logout, or an error stops the preview. During a camera-e
 call, settings show the existing call preview. Demo mode never opens a camera.
 Physical capture and native permission behavior still require owner verification.
 
-Media Foundation selects a native mode at or below 1280×720 and uses its
-video processor to resize/convert to 640×480 RGB32.
+Media Foundation selects a native mode for the requested preset and uses its
+video processor to resize/convert to that output geometry in RGB32.
 DirectShow discovery/capture additionally covers virtual cameras such as OBS and
 NVIDIA Broadcast, which may not appear in Media Foundation enumeration.
-Its native input is limited to 1920×1080, converted to RGB24 and fitted into
-640×480 with aspect-preserving nearest-neighbor scaling and black bars. It retains
-one callback frame (at most 8,294,400 bytes) and validates the negotiated input
-allocator against eight buffers of at most that size each. Vendor-driver and
+Its native input is limited to 1920×1080 at the default preset and up to 8K for
+higher presets, converted to RGB24 and fitted into the selected dimensions with
+aspect-preserving nearest-neighbor scaling and black bars. It retains one bounded
+callback frame and validates the negotiated input allocator against at most eight
+bounded buffers. Vendor-driver and
 upstream decoder allocations remain separate from those application limits.
 Default selection falls back to DirectShow when Media Foundation lists no devices.
 Allow desktop camera access in Windows
 Settings > Privacy & security > Camera; Windows N may require the Media Feature
 Pack. Linux tries `/dev/video0` through `/dev/video63` and uses the first accessible
-progressive, single-plane YUYV/MJPEG streaming camera at or below 1280×720.
-Linux fits nonmatching frames into 640×480 with black bars; temporary RGB
-allocations are bounded by one 2,764,800-byte native image, one 921,600-byte
-fitted image and one 921,600-byte output image. The session or sandbox
+progressive, single-plane YUYV/MJPEG streaming camera that supports the selected
+resolution. Linux fits nonmatching frames into the selected canvas with black
+bars; each temporary RGB image remains bounded by 7680×4320×3 bytes. The session or sandbox
 must already permit access to its device node; this implementation does not request
 camera access through a desktop portal or change device permissions. Cameras
 with no supported mode within the input ceiling are rejected before streaming.

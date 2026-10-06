@@ -123,6 +123,7 @@ async fn reject_h264_selection(codec: VideoCodec) {
 		video_settings: VideoSettings {
 			backend: model::voice_settings::VideoBackend::Experimental,
 			codec,
+			..Default::default()
 		},
 		settings: Settings {
 			source: SourceId::Display(1),

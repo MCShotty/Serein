@@ -172,7 +172,7 @@ void *serein_avc_open(int width, int height, int fps, int bitrate, int baseline,
     SereinAvc *encoder;
     AVCodecContext *codec;
 
-    if (width <= 0 || height <= 0 || width > 1920 || height > 1080 ||
+    if (width <= 0 || height <= 0 || width > 7680 || height > 4320 ||
         (width & 1) || (height & 1) || fps <= 0 || fps > 60 ||
         bitrate <= 0 || bitrate > 100000000 ||
         (baseline != 0 && baseline != 1) || backend < 0 || backend > 4 || kind < 0 || kind > 2 ||
@@ -188,7 +188,7 @@ void *serein_avc_open(int width, int height, int fps, int bitrate, int baseline,
     encoder = av_mallocz(sizeof(*encoder));
     if (!encoder)
         return NULL;
-    /* Dimension checks above bound every multiplication to at most 3 MiB. */
+    /* Dimension checks above bound every input picture to at most 47.5 MiB. */
     encoder->input_bytes = (size_t)width * (size_t)height * 3 / 2;
     encoder->max_bytes = max_bytes;
     encoder->baseline = baseline;
