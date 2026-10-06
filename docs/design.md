@@ -74,7 +74,9 @@ The bundled faces remain upstream's hinted TrueType builds. See `assets/README.m
 ## Layout
 
 - 36px title strip (`base`): hidden native title bar on macOS with traffic lights inline, centred
-  context title, session status text and an OFFLINE PREVIEW / EXPERIMENTAL pill. Windows and macOS General
+  context title, session status text and an OFFLINE PREVIEW / EXPERIMENTAL pill. Eframe centres the
+  native macOS buttons in the active title strip every frame, including after resizing or zooming;
+  sign-in and login use their taller headers. Windows and macOS General
   settings can hide the app strip and use native window decorations instead. Linux always omits
   the app strip and defaults to system decorations, with the Adwaita Wayland fallback on GNOME.
   General → Window can hide Linux decorations immediately for tiling window managers; the
@@ -119,6 +121,11 @@ The conversation header collapses its closed search field to a keyboard-accessib
 in narrow panes. Reply/edit context reserves the action buttons first and elides long names
 or status text; hover reveals the full context. Message actions stay inside the timeline
 viewport when the start of a tall message scrolls away, without changing its cached height.
+
+Shortcut capture also accepts egui's browser, media and system keys, including Caps Lock,
+Pause and the macOS Fn key, when the OS delivers them to the focused window. These bindings
+persist through the existing device settings. Global availability remains limited by the
+native shortcut adapter; unsupported global bindings continue to work while Serein is focused.
 
 Voice follows Discord's call screens: a black stage with 80px participant avatars (DM calls,
 above the conversation) or 16:9 tiles with name badges (guild channels), a bottom control bar

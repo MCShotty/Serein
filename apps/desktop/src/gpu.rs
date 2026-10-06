@@ -179,6 +179,8 @@ fn luid_identity(bytes: [u8; 8], valid: bool) -> VideoAdapterIdentity {
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 fn physical_identity(adapter: &wgpu::Adapter, _: &wgpu::AdapterInfo) -> VideoAdapterIdentity {
+	use objc2_metal::MTLDevice;
+
 	// SAFETY: The guard owns the HAL borrow; registryID reads the selected live
 	// Metal device and no Objective-C/native handle escapes this function.
 	unsafe {

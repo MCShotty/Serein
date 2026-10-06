@@ -87,7 +87,13 @@ class BundleTest(unittest.TestCase):
                 if backends["qsv"]:
                     query_files += ["include/vpl/mfxdispatcher.h", "include/vpl/mfxstructures.h", "lib/pkgconfig/vpl.pc",
                                     "lib/vpl.lib" if system == "Windows" else "lib/libvpl.a"]
-                relative_files += query_files
+                vulkan_provenance = []
+                if backends["amf"] and system == "Linux":
+                    query_files += ["include/vulkan/vulkan.h", "include/vulkan/vulkan_core.h"]
+                    vulkan_provenance = ["share/serein-ffmpeg/" + name for name in (
+                        "Vulkan-Headers-LICENSE.md", "Vulkan-Headers-LICENSES/Apache-2.0.txt",
+                        "Vulkan-Headers-LICENSES/MIT.txt", "source/Vulkan-Headers-1.3.290.tar.gz")]
+                relative_files += query_files + vulkan_provenance
                 if system == "Linux":
                     relative_files.append("share/serein-ffmpeg/serein-openh264.patch")
                 for name in relative_files:
@@ -110,7 +116,7 @@ class BundleTest(unittest.TestCase):
                                 with self.assertRaisesRegex(ValueError, "prefix contains another build"):
                                     builder.build(args)
                     for name in ["include/libavcodec/avcodec.h", libraries[0], aliases[0],
-                                 "share/serein-ffmpeg/source/ffmpeg-7.1.5.tar.xz", *query_files]:
+                                 "share/serein-ffmpeg/source/ffmpeg-7.1.5.tar.xz", *query_files, *vulkan_provenance]:
                         target = prefix / name
                         original = target.read_bytes()
                         target.unlink()
@@ -271,10 +277,32 @@ class BundleTest(unittest.TestCase):
             (root / "libavutil").mkdir()
             (root / "libavcodec/libavcodec.v").write_text("LIBAVCODEC_MAJOR { local: *; };\n")
             (root / "libavutil/libavutil.v").write_text("LIBAVUTIL_MAJOR { local: *; };\n")
-            (root / "libavcodec/qsvenc.c").write_text("ret = av_new_packet(&pkt.pkt, q->packet_size);\n")
+            # The complete recipe patches every platform's source even when
+            # only the QSV allocation change is being exercised here.
+            (root / "libavcodec/qsvenc.c").write_text(
+                '#include "qsvenc.h"\n'
+                "ret = av_new_packet(&pkt.pkt, q->packet_size);\n"
+                "    ret = MFXVideoENCODE_QueryIOSurf(q->session, &q->param, &q->req);\n"
+                "    q->packet_size = q->param.mfx.BufferSizeInKB * q->param.mfx.BRCParamMultiplier * 1000;\n"
+                "    dump_video_av1_param(avctx, q, ext_buffers);\n"
+                "    if (!extradata.SPSBufSize || (need_pps && !extradata.PPSBufSize)\n")
+            (root / "libavcodec/videotoolboxenc.c").write_text(
+                "    int allow_sw;\n"
+                "#define COMMON_OPTIONS \\\n"
+                "    // low-latency mode: eliminate frame reordering, follow a one-in-one-out encoding mode\n")
+            (root / "libavcodec/amfenc.c").write_text(
+                '#include "libavutil/hwcontext.h"\n'
+                "#if CONFIG_D3D11VA\nstatic int amf_init_from_d3d11_device\n"
+                "        switch (device_ctx->type) {\n")
+            (root / "libavutil/hwcontext_vulkan.c").write_text(
+                "        dev_select.drm_major = major(drm_node_info.st_dev);\n"
+                "        dev_select.drm_minor = minor(drm_node_info.st_dev);\n"
+                "    if (select->has_uuid) {\n")
             (root / "configure").write_text('hevc_qsv_encoder_select="hevcparse qsvenc"\n')
             source_patch = builder.patch_ffmpeg(root)
             self.assertIn("+ret = ff_get_encode_buffer(avctx, &pkt.pkt, q->packet_size, 0);", source_patch)
+            self.assertEqual((root / "libavcodec/serein_qsv_feature_validation.h").read_text(),
+                             builder.QSV_FEATURE_VALIDATION)
             with self.assertRaisesRegex(ValueError, "exactly one"):
                 builder.patch_ffmpeg(root)
 
@@ -299,6 +327,9 @@ class BundleTest(unittest.TestCase):
                 def unpack(archive, destination):
                     destination.mkdir(parents=True)
                     (destination / "AMF").mkdir()
+                    if destination.name == "vulkan-headers":
+                        (destination / "include/vulkan").mkdir(parents=True)
+                        (destination / "include/vulkan/vulkan.h").write_text("synthetic Vulkan header")
                     return destination
 
                 def run(*arguments, **kwargs):

@@ -43,6 +43,7 @@ impl eframe::App for Preview {
 			raw_input.events.push(egui::Event::MouseWheel {
 				unit: egui::MouseWheelUnit::Point,
 				phase: egui::TouchPhase::Move,
+				source: egui::MouseWheelSource::Unknown,
 				delta: egui::vec2(0.0, -distance / 3.0),
 				modifiers: egui::Modifiers::NONE,
 			});

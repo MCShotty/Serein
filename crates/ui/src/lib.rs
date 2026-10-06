@@ -1183,7 +1183,7 @@ impl MessagingUi {
 	) {
 		let colors = design::palette(ui);
 		egui::Panel::top("title-bar")
-			.exact_size(36.0)
+			.exact_size(design::TITLE_BAR_HEIGHT)
 			.show_separator_line(false)
 			.frame(egui::Frame::new().fill(design::section_surface(
 				ui,
@@ -1714,8 +1714,9 @@ impl MessagingUi {
 			let first = visible.start;
 			let mut last = visible.end.saturating_sub(1);
 			if row_count < total
-				&& output.state.offset.y > 0.0
-				&& output.state.offset.y + output.inner_rect.height() >= output.content_size.y - 1.0
+				&& output.state.clamped_offset().y > 0.0
+				&& output.state.clamped_offset().y + output.inner_rect.height()
+					>= output.content_size.y - 1.0
 			{
 				// Keep requesting the next chunk while at the bottom, without exposing
 				// another page of empty rows before its first entry arrives.
