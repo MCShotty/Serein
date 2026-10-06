@@ -17,7 +17,7 @@
 #include <libavutil/opt.h>
 
 #define SEREIN_MAX_PACKET_BYTES ((size_t)2 * 1024 * 1024)
-#define SEREIN_MAX_IN_FLIGHT 4
+#define SEREIN_MAX_IN_FLIGHT 48
 #define SEREIN_MAX_NALS 2048
 
 typedef struct SereinAvc {
@@ -33,6 +33,7 @@ typedef struct SereinAvc {
     int kind;
     int av1_reduced_still;
     int has_output;
+    int features;
 } SereinAvc;
 
 /* This callback reads immutable state only, including if libavcodec invokes
@@ -59,6 +60,10 @@ static int configure_backend(SereinAvc *encoder, int backend)
     AVCodecContext *codec = encoder->codec;
     const int h264 = encoder->kind == 0;
     const int av1 = encoder->kind == 2;
+    /* A one-picture DPB cannot retain both references for reordered output.
+     * Let the selected preset/driver choose its reference structure when B
+     * frames are requested; keep the existing single-reference non-B modes. */
+    codec->refs = encoder->features & 1 ? 0 : 1;
     if (backend == 0) {
         /* OpenH264 2.6 preserves real-time / low-complexity defaults. */
         return h264 && set_option(codec, "profile", encoder->baseline ? "constrained_baseline" : "main") &&
@@ -68,18 +73,23 @@ static int configure_backend(SereinAvc *encoder, int backend)
     if (backend == 1) {
         /* AV1 NVENC has no private profile option; the context requests Main. */
         return (av1 || set_option(codec, "profile", h264 && encoder->baseline ? "baseline" : "main")) &&
-               set_option(codec, "preset", "p4") && set_option(codec, "tune", "hq") &&
-               set_option(codec, "rc", "cbr") && set_option(codec, "rc-lookahead", "0") &&
-               set_option(codec, "forced-idr", "1") && set_option(codec, "surfaces", "4");
+               set_option(codec, "preset", "p5") && set_option(codec, "tune", "hq") &&
+               set_option(codec, "rc", "cbr") &&
+               set_option(codec, "rc-lookahead", encoder->features & 2 ? "16" : "0") &&
+               set_option(codec, "forced-idr", "1") &&
+               set_option(codec, "surfaces", encoder->features & 2 ? "24" : encoder->features & 1 ? "12" : "4");
     }
     if (backend == 3) {
         const int hevc = encoder->kind == 1;
         if (!set_option(codec, "profile", h264 && encoder->baseline ? "constrained_baseline" : "main") ||
             !set_option(codec, "usage", hevc ? "high_quality" : "transcoding") ||
             !set_option(codec, "quality", hevc ? "quality" : "balanced") ||
-            !set_option(codec, "rc", "cbr") || !set_option(codec, "preanalysis", "0") ||
+            !set_option(codec, "rc", "cbr") ||
+            !set_option(codec, "preanalysis", encoder->features & 2 ? "1" : "0") ||
             !set_option(codec, "preencode", "0") ||
             !set_option(codec, "latency", av1 ? "none" : "0"))
+            return 0;
+        if ((encoder->features & 2) && !set_option(codec, "pa_lookahead_buffer_depth", "16"))
             return 0;
         if (h264)
             return set_option(codec, "frame_skipping", "0") && set_option(codec, "bf", "0") &&
@@ -94,7 +104,9 @@ static int configure_backend(SereinAvc *encoder, int backend)
     if (backend == 4) {
         if (!set_option(codec, "profile", h264 && encoder->baseline ? "baseline" : "main") ||
             !set_option(codec, "preset", "medium") ||
-            !set_option(codec, "look_ahead_depth", "0") || !set_option(codec, "forced_idr", "1") ||
+            !set_option(codec, "look_ahead_depth", encoder->features & 2 ? "16" : "0") ||
+            !set_option(codec, "extbrc", encoder->features & 2 ? "1" : "0") ||
+            !set_option(codec, "forced_idr", "1") ||
             av_opt_set_int(codec->priv_data, "max_frame_size", (int64_t)encoder->max_bytes, 0) < 0)
             return 0;
         if (av1)
@@ -106,7 +118,7 @@ static int configure_backend(SereinAvc *encoder, int backend)
     }
     return !av1 && set_option(codec, "profile", h264 && encoder->baseline ? "baseline" : "main") &&
            set_option(codec, "realtime", "0") && set_option(codec, "allow_sw", "0") &&
-           set_option(codec, "max_ref_frames", "1");
+           set_option(codec, "max_ref_frames", encoder->features & 1 ? "0" : "1");
 }
 
 static int initialize_device(AVCodecContext *codec, int backend)
@@ -162,6 +174,15 @@ void serein_avc_close(void *opaque)
 void *serein_avc_open(int width, int height, int fps, int bitrate, int baseline,
                      int backend, int kind, size_t max_bytes)
 {
+    return serein_avc_open_on_adapter(width, height, fps, bitrate, baseline,
+                                      backend, kind, max_bytes, NULL, 0);
+}
+
+void *serein_avc_open_on_adapter(int width, int height, int fps, int bitrate,
+                                int baseline, int backend, int kind,
+                                size_t max_bytes, const SereinVideoAdapter *adapter,
+                                int features)
+{
     static const char *const names[][5] = {
         {"libopenh264", "h264_nvenc", "h264_videotoolbox", "h264_amf", "h264_qsv"},
         {NULL, "hevc_nvenc", "hevc_videotoolbox", "hevc_amf", "hevc_qsv"},
@@ -171,16 +192,26 @@ void *serein_avc_open(int width, int height, int fps, int bitrate, int baseline,
     const AVCodec *implementation;
     SereinAvc *encoder;
     AVCodecContext *codec;
+    int b_frames = features & 1 ? 2 : 0;
 
     if (width <= 0 || height <= 0 || width > 7680 || height > 4320 ||
         (width & 1) || (height & 1) || fps <= 0 || fps > 60 ||
         bitrate <= 0 || bitrate > 100000000 ||
         (baseline != 0 && baseline != 1) || backend < 0 || backend > 4 || kind < 0 || kind > 2 ||
+        features < 0 || features > 3 || (baseline && features) || (kind == 0 && (features & 1)) ||
         max_bytes == 0 || max_bytes > SEREIN_MAX_PACKET_BYTES)
         return NULL;
 
     if (!names[kind][backend])
         return NULL;
+    if (backend == 1 && adapter && features) {
+        int max_b_frames = 0, lookahead = 0;
+        if (serein_nvenc_features(kind, adapter, &max_b_frames, &lookahead) == 1 &&
+            (((features & 1) && max_b_frames < 1) || ((features & 2) && !lookahead)))
+            return NULL;
+        if ((features & 1) && max_b_frames == 1)
+            b_frames = 1;
+    }
     implementation = avcodec_find_encoder_by_name(names[kind][backend]);
     if (!implementation || implementation->id != ids[kind])
         return NULL;
@@ -193,6 +224,7 @@ void *serein_avc_open(int width, int height, int fps, int bitrate, int baseline,
     encoder->max_bytes = max_bytes;
     encoder->baseline = baseline;
     encoder->kind = kind;
+    encoder->features = features;
     encoder->codec = avcodec_alloc_context3(implementation);
     encoder->frame = av_frame_alloc();
     encoder->packet = av_packet_alloc();
@@ -229,20 +261,20 @@ void *serein_avc_open(int width, int height, int fps, int bitrate, int baseline,
         codec->rc_buffer_size = (int)(max_bytes * 8);
     codec->rc_initial_buffer_occupancy = codec->rc_buffer_size / 2;
     codec->gop_size = baseline ? 1 : fps * 2;
-    codec->max_b_frames = 0;
+    codec->max_b_frames = b_frames;
     codec->thread_count = width * height <= 640 * 480 ? 2 : 4;
-    codec->refs = 1;
     codec->profile = kind == 0 ? (baseline ? AV_PROFILE_H264_BASELINE : AV_PROFILE_H264_MAIN) :
                      kind == 1 ? AV_PROFILE_HEVC_MAIN : AV_PROFILE_AV1_MAIN;
-    /* Frame order and the pending-picture cap are transport/resource contracts,
-     * independent of the encoder's quality tuning or low-latency modes. */
+    /* Output stays in decoder submission order. Packet PTS travels through the
+     * bounded Rust timeline instead of being replaced with the output clock. */
     codec->flags = (int)((unsigned int)codec->flags | AV_CODEC_FLAG_CLOSED_GOP);
     /* The pinned FFmpeg encoders repeat parameter sets on IDRs without
      * GLOBAL_HEADER. VideoToolbox's wrapper converts native AVCC to Annex B
      * and prepends its CMSampleBuffer's current SPS/PPS, so no out-of-band or
      * untrusted extradata parser is needed here. Verify the result below. */
     codec->flags &= ~AV_CODEC_FLAG_GLOBAL_HEADER;
-    if (!configure_backend(encoder, backend) || !initialize_device(codec, backend) ||
+    if (!configure_backend(encoder, backend) ||
+        (adapter && backend != 0 ? !serein_video_bind_adapter(codec, backend, adapter) : !initialize_device(codec, backend)) ||
         avcodec_open2(codec, implementation, NULL) < 0)
         goto failed;
 
@@ -441,6 +473,17 @@ int serein_avc_encode(void *opaque, const uint8_t *input, size_t length,
                       size_t output_capacity, size_t *output_length,
                       int *keyframe)
 {
+    int64_t presentation_index;
+    return serein_avc_encode_timed(opaque, input, length, force_keyframe,
+                                   output, output_capacity, output_length,
+                                   keyframe, &presentation_index);
+}
+
+int serein_avc_encode_timed(void *opaque, const uint8_t *input, size_t length,
+                            int force_keyframe, uint8_t *output,
+                            size_t output_capacity, size_t *output_length,
+                            int *keyframe, int64_t *presentation_index)
+{
     SereinAvc *encoder = opaque;
     int status, reduced_still;
     PacketInfo info;
@@ -451,7 +494,9 @@ int serein_avc_encode(void *opaque, const uint8_t *input, size_t length,
         *output_length = 0;
     if (keyframe)
         *keyframe = 0;
-    if (!encoder || !input || !output || !output_length || !keyframe ||
+    if (presentation_index)
+        *presentation_index = -1;
+    if (!encoder || !input || !output || !output_length || !keyframe || !presentation_index ||
         encoder->failed || length != encoder->input_bytes || output_capacity == 0)
         return -1;
     if (encoder->in_flight >= SEREIN_MAX_IN_FLIGHT || encoder->next_pts == INT64_MAX)
@@ -508,6 +553,7 @@ int serein_avc_encode(void *opaque, const uint8_t *input, size_t length,
     memcpy(output + prefix_bytes, encoder->packet->data, packet_bytes);
     *output_length = prefix_bytes + packet_bytes;
     *keyframe = info.keyframe;
+    *presentation_index = encoder->packet->pts;
     encoder->in_flight--;
     encoder->has_output = 1;
     encoder->av1_reduced_still = reduced_still;

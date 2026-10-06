@@ -8,6 +8,11 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <stdio.h>
+#if defined(SEREIN_AMF_SCOPED_FIXTURE)
+#include <stdint.h>
+#include <AMF/core/VulkanAMF.h>
+static uintptr_t physical_device;
+#endif
 static int context_refs, component_refs, caps_refs, input_refs;
 static int context_term, encoder_init, pictures, codec_received;
 static AMFContext1 context;
@@ -26,7 +31,18 @@ static AMF_RESULT context_terminate(AMFContext1 *self) {
     ++context_term; return AMF_OK;
 }
 static AMF_RESULT context_vulkan(AMFContext1 *self, void *device) {
-    (void)self; assert(device == NULL);
+    (void)self;
+#if defined(SEREIN_AMF_SCOPED_FIXTURE)
+    if (device) {
+        const AMFVulkanDevice *gpu = device;
+        assert(gpu->cbSizeof == sizeof(*gpu));
+        physical_device = (uintptr_t)gpu->hPhysicalDevice;
+        assert(physical_device == 1 || physical_device == 2);
+        assert((uintptr_t)gpu->hDevice == physical_device + 100);
+    }
+#else
+    assert(device == NULL);
+#endif
     if(is("init-failed")) return AMF_FAIL;
     if(is("no-device")) return AMF_NO_DEVICE;
     return AMF_OK;
@@ -64,6 +80,10 @@ static AMF_RESULT create_component(AMFFactory *self, AMFContext *ctx, const wcha
     (void)self; assert(ctx == (AMFContext *)&context);
     codec_received = !wcscmp(id, AMFVideoEncoderVCE_AVC) ? 0 : !wcscmp(id, AMFVideoEncoder_HEVC) ? 1 : !wcscmp(id, AMFVideoEncoder_AV1) ? 2 : -1;
     assert(codec_received >= 0);
+#if defined(SEREIN_AMF_SCOPED_FIXTURE)
+    if(is("scoped") && physical_device == 1 && codec_received != 0)
+        return AMF_ENCODER_NOT_PRESENT;
+#endif
     if(is("absent")) return AMF_ENCODER_NOT_PRESENT;
     if(is("component-failed")) return AMF_FAIL;
     if(is("null-component")) { *out = NULL; return AMF_OK; }
@@ -92,5 +112,5 @@ AMF_RESULT AMFInit(amf_uint64 version, AMFFactory **out) {
 }
 __attribute__((destructor)) static void check_cleanup(void) {
     assert(context_refs == 0 && component_refs == 0 && caps_refs == 0 && input_refs == 0);
-    assert(context_term == 1 && encoder_init == 0 && pictures == 0);
+    assert((context_term == 1 || (is("scoped") && context_term == 0)) && encoder_init == 0 && pictures == 0);
 }

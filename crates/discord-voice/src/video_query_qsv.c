@@ -5,6 +5,7 @@
  * not proof that an otherwise usable Intel GPU supports no video codecs. */
 #include <stdint.h>
 #include <string.h>
+#include "video_gpu.h"
 
 #if defined(SEREIN_HAVE_QSV_QUERY) && SEREIN_HAVE_QSV_QUERY && \
     (defined(_WIN32) || defined(__linux__))
@@ -44,7 +45,33 @@ static int description_supports_codec(const mfxImplDescription *description, mfx
     return 0;
 }
 
-int serein_query_qsv(int codec)
+static int implementation_matches(mfxLoader loader, mfxU32 index, const SereinVideoAdapter *target)
+{
+    mfxHDL handle = NULL;
+    const mfxStatus status = MFXEnumImplementations(loader, index, MFX_IMPLCAPS_DEVICE_ID_EXTENDED, &handle);
+    int result = -1;
+    if (status == MFX_ERR_NONE && handle) {
+        const mfxExtendedDeviceId *device = (const mfxExtendedDeviceId *)handle;
+        if (device->Version.Major == 1) {
+            result = 0;
+            if (device->VendorID == target->vendor_id && device->DeviceID == target->device_id) {
+                if (target->identity == SEREIN_GPU_PCI)
+                    result = device->PCIDomain == target->domain && device->PCIBus == target->bus &&
+                             device->PCIDevice == target->slot && device->PCIFunction == target->function;
+                else if (target->identity == SEREIN_GPU_WINDOWS_LUID) {
+                    uint64_t luid = 0;
+                    memcpy(&luid, device->DeviceLUID, sizeof(luid));
+                    result = device->LUIDValid && luid == target->value;
+                }
+            }
+        }
+    }
+    if (handle && MFXDispReleaseImplDescription(loader, handle) != MFX_ERR_NONE)
+        result = -1;
+    return result;
+}
+
+static int query_qsv(int codec, const SereinVideoAdapter *target)
 {
     static const mfxU32 codecs[] = {MFX_CODEC_AVC, MFX_CODEC_HEVC, MFX_CODEC_AV1};
     mfxLoader loader;
@@ -82,7 +109,8 @@ int serein_query_qsv(int codec)
                 MFXDispReleaseImplDescription(loader, handle);
             continue;
         }
-        int supported = description_supports_codec((const mfxImplDescription *)handle, codecs[codec]);
+        const int matching = target ? implementation_matches(loader, i, target) : 1;
+        int supported = matching == 1 ? description_supports_codec((const mfxImplDescription *)handle, codecs[codec]) : matching;
         if (MFXDispReleaseImplDescription(loader, handle) != MFX_ERR_NONE)
             supported = -1;
         if (supported == 1) {
@@ -100,6 +128,14 @@ cleanup:
     return result;
 }
 
+int serein_query_qsv(int codec) { return query_qsv(codec, NULL); }
+int serein_query_qsv_on_adapter(int codec, const SereinVideoAdapter *adapter)
+{
+    if (!serein_video_adapter_valid(adapter) || adapter->vendor_id != 0x8086)
+        return -1;
+    return query_qsv(codec, adapter);
+}
+
 #else
 int serein_query_qsv(int codec)
 {
@@ -108,4 +144,6 @@ int serein_query_qsv(int codec)
      * driver capability report. */
     return -1;
 }
+int serein_query_qsv_on_adapter(int codec, const SereinVideoAdapter *adapter)
+{ (void)codec; (void)adapter; return -1; }
 #endif

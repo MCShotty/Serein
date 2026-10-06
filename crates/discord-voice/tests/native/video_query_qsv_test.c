@@ -6,6 +6,7 @@
 #include <string.h>
 #include <assert.h>
 #include <stdint.h>
+#include "video_gpu.h"
 #ifdef NDEBUG
 #error Driver query fixtures require assertions enabled
 #endif
@@ -14,6 +15,7 @@ static const char *mode;
 static int releases, unloads, enumerations, filters, forbidden;
 static mfxImplDescription description;
 static struct encoder encoder;
+static mfxExtendedDeviceId extended_device;
 int serein_query_qsv(int codec);
 mfxLoader MFX_CDECL MFXLoad(void) {
     return strcmp(mode, "load-error") ? (mfxLoader)(uintptr_t)1 : NULL;
@@ -30,8 +32,20 @@ mfxStatus MFX_CDECL MFXSetConfigFilterProperty(mfxConfig config, const mfxU8 *na
     return !strcmp(mode, "filter-error") ? MFX_ERR_UNSUPPORTED : MFX_ERR_NONE;
 }
 mfxStatus MFX_CDECL MFXEnumImplementations(mfxLoader loader, mfxU32 index, mfxImplCapsDeliveryFormat format, mfxHDL *handle) {
-    assert(loader); assert(format == MFX_IMPLCAPS_IMPLDESCSTRUCTURE); enumerations++;
-    if (!strcmp(mode, "no-driver") || (index > 0 && strcmp(mode, "bound") && (strcmp(mode, "error-then-supported") || index > 1))) return MFX_ERR_NOT_FOUND;
+    assert(loader); enumerations++;
+    if (format == MFX_IMPLCAPS_DEVICE_ID_EXTENDED) {
+        assert(!strcmp(mode, "scoped"));
+        memset(&extended_device, 0, sizeof(extended_device));
+        extended_device.Version.Version = MFX_EXTENDEDDEVICEID_VERSION;
+        extended_device.VendorID = 0x8086;
+        extended_device.DeviceID = 0x56a0;
+        extended_device.PCIBus = index + 1;
+        *handle = &extended_device;
+        return MFX_ERR_NONE;
+    }
+    assert(format == MFX_IMPLCAPS_IMPLDESCSTRUCTURE);
+    if (!strcmp(mode, "no-driver") || (index > 0 && strcmp(mode, "bound") &&
+        (strcmp(mode, "error-then-supported") || index > 1) && (strcmp(mode, "scoped") || index > 1))) return MFX_ERR_NOT_FOUND;
     if (!strcmp(mode, "enum-error")) return MFX_ERR_UNSUPPORTED;
     memset(&description, 0, sizeof(description)); memset(&encoder, 0, sizeof(encoder));
     description.Version.Version = MFX_IMPLDESCRIPTION_VERSION;
@@ -42,6 +56,7 @@ mfxStatus MFX_CDECL MFXEnumImplementations(mfxLoader loader, mfxU32 index, mfxIm
     description.Enc.NumCodecs = 1;
     description.Enc.Codecs = &encoder;
     encoder.CodecID = !strcmp(mode, "av1") ? MFX_CODEC_AV1 : MFX_CODEC_AVC;
+    if (!strcmp(mode, "scoped") && index == 1) encoder.CodecID = MFX_CODEC_AV1;
     if (!strcmp(mode, "legacy") || (!strcmp(mode, "error-then-supported") && !index)) {
         description.ApiVersion.Major = 1;
         memset(&description.Enc, 0, sizeof(description.Enc));
@@ -55,7 +70,7 @@ mfxStatus MFX_CDECL MFXEnumImplementations(mfxLoader loader, mfxU32 index, mfxIm
     return MFX_ERR_NONE;
 }
 mfxStatus MFX_CDECL MFXDispReleaseImplDescription(mfxLoader loader, mfxHDL handle) {
-    assert(loader); assert(handle == &description); releases++;
+    assert(loader); assert(handle == &description || handle == &extended_device); releases++;
     return !strcmp(mode, "release-error") ? MFX_ERR_UNKNOWN : MFX_ERR_NONE;
 }
 mfxStatus MFX_CDECL MFXCreateSession(mfxLoader loader, mfxU32 index, mfxSession *session) {
@@ -97,5 +112,19 @@ int main(void) {
         if (enumerations) assert(filters == 3);
         assert(forbidden == 0);
     }
+    mode = "scoped";
+    SereinVideoAdapter target = {SEREIN_GPU_PCI, 0x8086, 0x56a0, 0, 1, 0, 0, 0};
+    releases = unloads = enumerations = filters = forbidden = 0;
+    assert(serein_query_qsv_on_adapter(2, &target) == 0);
+    assert(unloads == 1 && releases == 4 && forbidden == 0);
+    target.bus = 2;
+    releases = unloads = enumerations = filters = forbidden = 0;
+    assert(serein_query_qsv_on_adapter(2, &target) == 1);
+    assert(unloads == 1 && releases == 4 && forbidden == 0);
+    target.bus = 3;
+    assert(serein_query_qsv_on_adapter(2, &target) == 0);
+    target.identity = SEREIN_GPU_UNIDENTIFIED;
+    assert(serein_query_qsv_on_adapter(2, &target) == -1);
+    assert(forbidden == 0);
     printf("QSV query: %zu offline dispatcher-boundary cases passed, descriptions/loaders released, no encoding calls\n", sizeof(cases)/sizeof(cases[0]));
 }

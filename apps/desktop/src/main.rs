@@ -1592,6 +1592,11 @@ impl Desktop {
 		if let Some(render_state) = cc.wgpu_render_state.as_ref() {
 			messaging.gpu_adapter = gpu::describe(&render_state.adapter.get_info());
 		}
+		let video_adapter = cc
+			.wgpu_render_state
+			.as_ref()
+			.map(|render_state| gpu::video_adapter(&render_state.adapter))
+			.unwrap_or_default();
 		let startup = startup::Startup::new(&cc.egui_ctx, &runtime, &mut messaging, demo);
 		// `--demo-update`: a pending release without any network check. The system title bar
 		// comes with it, since that is when the sidebar prompt stands in for the title strip.
@@ -2134,7 +2139,7 @@ impl Desktop {
 			avatar_cleanup: None,
 			avatar_start_failed: false,
 			avatar_clear_account: None,
-			voice: voice::Voice::default(),
+			voice: voice::Voice::for_adapter(video_adapter),
 			runtime,
 			store,
 			cache,

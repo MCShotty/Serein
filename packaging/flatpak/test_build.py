@@ -160,7 +160,10 @@ class PreparationTest(unittest.TestCase):
             encoders = next(module for module in prepared["modules"] if module["name"] == "serein-ffmpeg")
             archives = {item["dest-filename"]: item for item in encoders["sources"] if "dest-filename" in item}
             self.assertEqual(set(archives), {"ffmpeg-7.1.5.tar.xz", "openh264-2.6.0.tar.gz",
-                                            "nv-codec-headers-12.2.72.0.tar.gz", "AMF-1.4.36.tar.gz", "libvpl-2.14.0.tar.gz"})
+                                            "nv-codec-headers-12.2.72.0.tar.gz", "AMF-1.4.36.tar.gz", "libvpl-2.14.0.tar.gz",
+                                            "Vulkan-Headers-1.3.290.tar.gz"})
+            self.assertEqual(archives["Vulkan-Headers-1.3.290.tar.gz"]["sha256"],
+                             "f38a653bf93cab7a2a229a53d2d53b1cba9a2819e4c0a7de13c54085bde9bcf5")
             # Preparation passes arch restrictions through to flatpak-builder,
             # which selects SDK source downloads for the target architecture.
             self.assertEqual(archives["libvpl-2.14.0.tar.gz"]["only-arches"], ["x86_64"])

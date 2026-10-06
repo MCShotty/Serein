@@ -75,12 +75,20 @@ impl Drop for Activated {
 }
 
 impl Encoder {
+	#[allow(dead_code)] // Legacy standalone/native fixture entry point.
 	pub(crate) fn new(config: Config) -> Result<Self, &'static str> {
+		Self::new_on_adapter(config, None)
+	}
+
+	pub(crate) fn new_on_adapter(
+		config: Config,
+		adapter: Option<model::VideoAdapter>,
+	) -> Result<Self, &'static str> {
 		let runtime = Runtime::open()?;
 		// SAFETY: Media Foundation owns returned COM objects; the activation array is cleared
 		// before its CoTaskMem allocation is released.
 		unsafe {
-			let activate = Activated(hardware_encoder()?);
+			let activate = Activated(hardware_encoder(adapter)?);
 			let transform: IMFTransform = activate.0.ActivateObject().map_err(|_| UNAVAILABLE)?;
 			let attributes = transform.GetAttributes().map_err(|_| UNAVAILABLE)?;
 			if attributes.GetUINT32(&MF_TRANSFORM_ASYNC).unwrap_or(0) == 0 {
@@ -169,6 +177,7 @@ impl Encoder {
 		}
 	}
 
+	#[allow(dead_code)] // Retained native API; stream owners now restart atomically.
 	pub(crate) fn set_bitrate(&mut self, bitrate: u32) -> Result<(), &'static str> {
 		// SAFETY: Dynamic codec control stays on the encoder's owning worker.
 		unsafe {
@@ -351,7 +360,9 @@ impl Drop for Encoder {
 	}
 }
 
-unsafe fn hardware_encoder() -> Result<IMFActivate, &'static str> {
+unsafe fn hardware_encoder(
+	adapter: Option<model::VideoAdapter>,
+) -> Result<IMFActivate, &'static str> {
 	unsafe {
 		let input = MFT_REGISTER_TYPE_INFO {
 			guidMajorType: MFMediaType_Video,
@@ -363,14 +374,41 @@ unsafe fn hardware_encoder() -> Result<IMFActivate, &'static str> {
 		};
 		let mut entries = std::ptr::null_mut();
 		let mut count = 0;
-		MFTEnumEx(
-			MFT_CATEGORY_VIDEO_ENCODER,
-			MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_ASYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER,
-			Some(&input),
-			Some(&output),
-			&mut entries,
-			&mut count,
-		)
+		let flags = MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_ASYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER;
+		if let Some(adapter) = adapter {
+			let model::VideoAdapterIdentity::WindowsLuid(luid) = adapter.identity else {
+				return Err(UNAVAILABLE);
+			};
+			if luid == 0 {
+				return Err(UNAVAILABLE);
+			}
+			let mut attributes = None;
+			MFCreateAttributes(&mut attributes, 1).map_err(|_| UNAVAILABLE)?;
+			let attributes = attributes.ok_or(UNAVAILABLE)?;
+			attributes
+				.SetUINT64(&MFT_ENUM_ADAPTER_LUID, luid)
+				.map_err(|_| UNAVAILABLE)?;
+			// MFTEnum2 filters hardware activations by this exact DXGI adapter.
+			// An absent hardware encoder falls back to software in the caller.
+			MFTEnum2(
+				MFT_CATEGORY_VIDEO_ENCODER,
+				flags,
+				Some(&input),
+				Some(&output),
+				&attributes,
+				&mut entries,
+				&mut count,
+			)
+		} else {
+			MFTEnumEx(
+				MFT_CATEGORY_VIDEO_ENCODER,
+				flags,
+				Some(&input),
+				Some(&output),
+				&mut entries,
+				&mut count,
+			)
+		}
 		.map_err(|_| UNAVAILABLE)?;
 		if entries.is_null() {
 			return Err(UNAVAILABLE);

@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
+#include "video_gpu.h"
 #ifdef NDEBUG
 #error Driver query fixtures require assertions enabled
 #endif
@@ -40,5 +41,27 @@ int main(void) {
         assert(fixture_nv_closed() == fixture_nv_opened());
         assert(fixture_nv_forbidden() == 0);
     }
+    SereinVideoAdapter target = {SEREIN_GPU_PCI, 0x10de, 0x2684, 0, 1, 0, 0, 0};
+    assert(setenv("SEREIN_QUERY_FIXTURE", "multi", 1) == 0);
+    fixture_cuda_reset(); fixture_nv_reset();
+    /* First GPU has H264 only, second (identical model) has AV1. Never
+     * borrow a positive answer from the second GPU for the first target. */
+    assert(serein_query_nvenc_on_adapter(2, &target) == 0);
+    assert(fixture_cuda_created() == 1 && fixture_cuda_destroyed() == 1);
+    target.bus = 2;
+    fixture_cuda_reset(); fixture_nv_reset();
+    assert(serein_query_nvenc_on_adapter(2, &target) == 1);
+    assert(fixture_cuda_created() == 1 && fixture_cuda_destroyed() == 1);
+    int b_frames = 0, lookahead = 0;
+    assert(serein_nvenc_features(2, &target, &b_frames, &lookahead) == 1);
+    assert(b_frames == 3 && lookahead == 1);
+    assert(fixture_nv_forbidden() == 0);
+    target.bus = 3;
+    fixture_cuda_reset(); fixture_nv_reset();
+    assert(serein_query_nvenc_on_adapter(2, &target) == -1);
+    assert(fixture_cuda_created() == 0 && fixture_nv_opened() == 0);
+    target.identity = SEREIN_GPU_UNIDENTIFIED;
+    assert(serein_query_nvenc_on_adapter(2, &target) == -1);
+    assert(fixture_cuda_created() == 0 && fixture_nv_forbidden() == 0);
     printf("NVENC query: %zu offline driver-boundary cases passed, contexts/sessions released, no encoding calls\n", sizeof(cases)/sizeof(cases[0]));
 }

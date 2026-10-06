@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdio.h>
 
 static CUcontext current;
 static int created, destroyed;
@@ -22,6 +23,11 @@ CUresult CUDAAPI cuDeviceGetCount(int *count) {
 }
 CUresult CUDAAPI cuDeviceGet(CUdevice *device, int ordinal) {
     *device = ordinal;
+    return CUDA_SUCCESS;
+}
+CUresult CUDAAPI cuDeviceGetPCIBusId(char *address, int capacity, CUdevice device) {
+    if (mode("identity-error")) return CUDA_ERROR_UNKNOWN;
+    snprintf(address, (size_t)capacity, "0000:%02x:00.0", device + 1);
     return CUDA_SUCCESS;
 }
 CUresult CUDAAPI cuCtxCreate_v2(CUcontext *context, unsigned int flags, CUdevice device) {

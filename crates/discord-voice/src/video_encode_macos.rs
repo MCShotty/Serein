@@ -29,7 +29,6 @@ use objc2_video_toolbox::{
 	kVTCompressionPropertyKey_MaxKeyFrameInterval, kVTCompressionPropertyKey_ProfileLevel,
 	kVTCompressionPropertyKey_RealTime, kVTEncodeFrameOptionKey_ForceKeyFrame,
 	kVTProfileLevel_H264_Baseline_AutoLevel, kVTProfileLevel_H264_Main_AutoLevel,
-	kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder,
 };
 use std::{
 	ffi::c_void,
@@ -77,7 +76,16 @@ pub(crate) struct Encoder {
 }
 
 impl Encoder {
+	#[allow(dead_code)] // Legacy standalone/native fixture entry point.
 	pub(crate) fn new(config: Config, format: SourceFormat) -> Result<Self, &'static str> {
+		Self::new_on_adapter(config, format, None)
+	}
+
+	pub(crate) fn new_on_adapter(
+		config: Config,
+		format: SourceFormat,
+		adapter: Option<model::VideoAdapter>,
+	) -> Result<Self, &'static str> {
 		let width = i32::try_from(config.width).map_err(|_| UNAVAILABLE)?;
 		let height = i32::try_from(config.height).map_err(|_| UNAVAILABLE)?;
 		let output = Arc::new(Mutex::new(Output {
@@ -85,12 +93,21 @@ impl Encoder {
 			failed: false,
 			max_bytes: config.max_bytes,
 		}));
-		// SAFETY: Static keys are valid CFStrings; both dictionaries are plain attribute maps.
-		let specification = unsafe {
-			CFDictionary::from_slices(
-				&[kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder],
-				&[CFBoolean::new(true)],
-			)
+		unsafe extern "C" {
+			fn serein_video_vt_specification(
+				adapter: *const crate::video_gpu::Adapter,
+			) -> *mut c_void;
+		}
+		let adapter = adapter.map(crate::video_gpu::Adapter::from);
+		// SAFETY: The native helper returns a +1 dictionary with hardware required
+		// and, when supplied, the exact renderer GPU registry ID required.
+		let specification: CFRetained<CFDictionary<CFString, CFType>> = unsafe {
+			let pointer = serein_video_vt_specification(
+				adapter
+					.as_ref()
+					.map_or(std::ptr::null(), std::ptr::from_ref),
+			);
+			CFRetained::from_raw(NonNull::new(pointer.cast()).ok_or(UNAVAILABLE)?)
 		};
 		let pixel_format = CFNumber::new_i32(pixel_format_type(format) as i32);
 		let source_attributes = unsafe {
@@ -174,6 +191,7 @@ impl Encoder {
 		Ok(())
 	}
 
+	#[allow(dead_code)] // Retained native API; stream owners now restart atomically.
 	pub(crate) fn set_bitrate(&mut self, bitrate: u32) -> Result<(), &'static str> {
 		let target = CFNumber::new_i32(i32::try_from(bitrate).map_err(|_| FAILED)?);
 		let bytes = CFNumber::new_i32(i32::try_from(bitrate / 8 * 3 / 2).map_err(|_| FAILED)?);
@@ -500,6 +518,7 @@ mod tests {
 		max_bytes: 2 * 1024 * 1024,
 		profile: Profile::Main,
 		codec: model::voice_settings::VideoCodec::H264,
+		adapter: None,
 	};
 	const CAMERA: Config = Config {
 		width: 640,
@@ -509,6 +528,7 @@ mod tests {
 		max_bytes: 128 * 1024,
 		profile: Profile::Baseline,
 		codec: model::voice_settings::VideoCodec::H264,
+		adapter: None,
 	};
 
 	#[test]

@@ -1,0 +1,18 @@
+[
+  {
+    "name": "libavcodec-serein.so.61",
+    "before_bytes": 1217929,
+    "after_bytes": 1258993,
+    "delta_bytes": 41064,
+    "before_sha256": "9cf37e1d005b09664e14b757d6e9a0910d2207251d39deb1d755192a73b1bb93",
+    "after_sha256": "652d7128979bc9d31f5e1dd1ffc54b3453db1c6f8a9acd966a882061b1c30738"
+  },
+  {
+    "name": "libavutil-serein.so.59",
+    "before_bytes": 1489977,
+    "after_bytes": 1588281,
+    "delta_bytes": 98304,
+    "before_sha256": "91172e93d9dd067cf1e4f7f67d49558abb86ea75174f3a9c9aee85207724d2b7",
+    "after_sha256": "4e2153f679843bc4f5d4f42e68aa843302c87efdb5168970828093941c6e8fbc"
+  }
+]

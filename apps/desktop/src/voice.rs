@@ -173,7 +173,6 @@ struct Live {
 	camera_frames: tokio::sync::mpsc::Sender<discord_voice::camera_video::Frame>,
 	camera_negotiated: bool,
 	video_settings: model::voice_settings::VideoSettings,
-	camera_clock: Instant,
 	/// Latest decoded camera picture per remote user, replaced (never queued) by the decoder.
 	remote_video: Arc<std::sync::Mutex<RemotePictures>>,
 	/// Decoded audio of a watched stream, mixed into this call's playback.
@@ -232,6 +231,25 @@ impl CallCues {
 const MAX_REMOTE_VIDEO: usize = 16;
 type RemotePictures = Vec<(u64, Arc<egui::ColorImage>, bool)>;
 type CameraPicture = Option<(Arc<egui::ColorImage>, bool)>;
+
+fn queue_camera_frame(
+	send: &tokio::sync::mpsc::Sender<discord_voice::camera_video::Frame>,
+	frame: discord_voice::camera_video::Frame,
+) {
+	// A capture worker can update the settings/call preview without submitting an
+	// encoded picture when the bounded transport queue has no capacity.
+	if frame.data.is_empty() {
+		return;
+	}
+	let keyframe_request = frame.keyframe_request.clone();
+	if frame.data.len() > discord_voice::camera_video::MAX_FRAME_BYTES
+		|| send.try_send(frame).is_err()
+	{
+		// A dropped reference picture invalidates dependent frames already being
+		// encoded. The bounded camera worker starts a new epoch at an IDR.
+		keyframe_request.store(true, std::sync::atomic::Ordering::Release);
+	}
+}
 
 #[allow(clippy::chunks_exact_to_as_chunks)] // Matches egui's faster profiled conversion loop.
 fn store_remote_frame(
@@ -308,6 +326,8 @@ struct CameraTest {
 
 #[derive(Default)]
 pub struct Voice {
+	/// Captured from the running renderer; saved GPU changes apply after restart.
+	video_adapter: Option<model::VideoAdapter>,
 	video_capabilities: crate::video_capabilities::Detector,
 	camera_test: Option<CameraTest>,
 	mic_preview: Option<MicPreview>,
@@ -324,6 +344,13 @@ pub struct Voice {
 	camera_scan: Option<mpsc::Receiver<Result<discord_voice::camera::DeviceList, &'static str>>>,
 }
 impl Voice {
+	#[allow(clippy::field_reassign_with_default)] // Voice owns Drop-managed workers.
+	pub fn for_adapter(adapter: model::VideoAdapter) -> Self {
+		let mut voice = Self::default();
+		voice.video_adapter = Some(adapter);
+		voice
+	}
+
 	pub fn stop(&mut self) {
 		self.video_capabilities.cancel();
 		self.camera_test = None;
@@ -638,7 +665,8 @@ impl Voice {
 		ctx: &egui::Context,
 	) -> Option<Command> {
 		self.reap();
-		self.video_capabilities.poll(state.demo, ui, ctx);
+		self.video_capabilities
+			.poll_on_adapter(state.demo, ui, ctx, self.video_adapter);
 		self.poll_mic_preview(state, ui, ctx);
 		ui.voice_switch_ready =
 			self.pending.is_none() && self.live.is_none() && self.retiring.is_none();
@@ -1043,6 +1071,7 @@ impl Voice {
 			return command;
 		}
 		let call = self.live.as_ref().map(|live| crate::screen::Call {
+			video_adapter: self.video_adapter,
 			generation: live.generation,
 			channel: live.channel,
 			request: live.request,
@@ -1052,6 +1081,7 @@ impl Voice {
 			identity: live.identity.clone(),
 		});
 		let watched = self.live.as_ref().map(|live| crate::screen::Call {
+			video_adapter: self.video_adapter,
 			generation: live.generation,
 			channel: live.channel,
 			request: live.request,
@@ -1218,9 +1248,10 @@ impl Voice {
 				}
 			});
 			let wake = ctx.clone();
-			match discord_voice::camera::Camera::start(
+			match discord_voice::camera::Camera::start_on_adapter(
 				ui.voice_camera_device.clone(),
 				ui.video_settings,
+				self.video_adapter,
 				on_frame,
 				Arc::new(move || wake.request_repaint()),
 			) {
@@ -1349,21 +1380,25 @@ impl Voice {
 			self.camera_generation = self.camera_generation.checked_add(1).unwrap_or(1);
 			let generation = self.camera_generation;
 			let send = live.camera_frames.clone();
+			let capacity = live.camera_frames.clone();
 			let receive = std::sync::Arc::new(std::sync::Mutex::new(None));
 			let preview = receive.clone();
-			let start = live.camera_clock;
 			let wake = ctx.clone();
 			let on_frame = std::sync::Arc::new(move |frame: discord_voice::camera::Frame| {
-				let data = frame.data;
-				if data.len() > discord_voice::camera_video::MAX_FRAME_BYTES {
-					return;
-				}
-				let _ = send.try_send(discord_voice::camera_video::Frame {
-					generation,
-					codec: frame.codec,
-					timestamp: (start.elapsed().as_micros() * 90 / 1000) as u32,
-					data,
-				});
+				queue_camera_frame(
+					&send,
+					discord_voice::camera_video::Frame {
+						generation,
+						codec: frame.codec,
+						timestamp: frame.timestamp,
+						keyframe: frame.keyframe,
+						epoch: frame.epoch,
+						reset: frame.reset,
+						reset_generation: frame.reset_generation,
+						keyframe_request: frame.keyframe_request,
+						data: frame.data,
+					},
+				);
 				if let Ok(mut slot) = preview.try_lock()
 					&& store_camera_frame(
 						&mut slot,
@@ -1375,11 +1410,13 @@ impl Voice {
 				}
 			});
 			let wake = ctx.clone();
-			match discord_voice::camera::Camera::start(
+			match discord_voice::camera::Camera::start_on_adapter_with_capacity(
 				ui.voice_camera_device.clone(),
 				live.video_settings,
+				self.video_adapter,
 				on_frame,
 				std::sync::Arc::new(move || wake.request_repaint()),
+				Arc::new(move || !capacity.is_closed() && capacity.capacity() > 0),
 			) {
 				Ok(camera) => {
 					self.camera_device = ui.voice_camera_device.clone();
@@ -1587,7 +1624,6 @@ impl Voice {
 			camera_frames,
 			camera_negotiated: false,
 			video_settings: pending.video_settings,
-			camera_clock: Instant::now(),
 			remote_video,
 			stream_audio,
 			negotiation: Some(pending),
@@ -1771,6 +1807,86 @@ pub fn takeover_notice(state: &State, event: &Event) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn camera_queue_keeps_encoder_timestamps_and_requests_idr_after_a_drop() {
+		use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+		let request = Arc::new(AtomicBool::new(false));
+		let reset = Arc::new(AtomicU64::new(5));
+		let frame = |timestamp, data| discord_voice::camera_video::Frame {
+			generation: 7,
+			codec: model::voice_settings::VideoCodec::H265,
+			timestamp,
+			keyframe: false,
+			epoch: 3,
+			reset: reset.clone(),
+			reset_generation: 5,
+			keyframe_request: request.clone(),
+			data,
+		};
+		let (send, mut receive) = tokio::sync::mpsc::channel(1);
+		queue_camera_frame(&send, frame(0, vec![]));
+		assert!(receive.try_recv().is_err() && !request.load(Ordering::Acquire));
+		queue_camera_frame(&send, frame(9000, vec![1]));
+		assert!(!request.load(Ordering::Acquire));
+		queue_camera_frame(&send, frame(6000, vec![2]));
+		assert!(request.swap(false, Ordering::AcqRel));
+		let queued = receive.try_recv().unwrap();
+		assert_eq!(
+			(queued.timestamp, queued.epoch, queued.generation),
+			(9000, 3, 7)
+		);
+		assert!(Arc::ptr_eq(&queued.keyframe_request, &request));
+		assert!(Arc::ptr_eq(&queued.reset, &reset));
+		assert_eq!(queued.reset_generation, 5);
+		queue_camera_frame(
+			&send,
+			frame(
+				12000,
+				vec![0; discord_voice::camera_video::MAX_FRAME_BYTES + 1],
+			),
+		);
+		assert!(request.swap(false, Ordering::AcqRel));
+		assert!(receive.try_recv().is_err());
+		drop(receive);
+		queue_camera_frame(&send, frame(15000, vec![3]));
+		assert!(request.load(Ordering::Acquire));
+		assert_eq!(
+			reset.load(Ordering::Acquire),
+			5,
+			"ordinary queue drops must not change the transport security generation"
+		);
+	}
+
+	#[test]
+	fn encoder_adapter_stays_bound_to_the_running_renderer_until_restart() {
+		let discrete = model::VideoAdapter {
+			vendor_id: 0x10de,
+			device_id: 0x2684,
+			identity: model::VideoAdapterIdentity::WindowsLuid(1),
+		};
+		let integrated = model::VideoAdapter {
+			vendor_id: 0x8086,
+			device_id: 0x46a6,
+			identity: model::VideoAdapterIdentity::WindowsLuid(2),
+		};
+		let mut manager = Voice::for_adapter(discrete);
+		let mut ui = ui::MessagingUi::default();
+		for preference in model::GpuPreference::ALL {
+			ui.gpu_preference = preference;
+			manager.stop();
+			assert_eq!(manager.video_adapter, Some(discrete));
+		}
+		// Only a newly initialized renderer supplies a different physical adapter.
+		assert_eq!(
+			Voice::for_adapter(integrated).video_adapter,
+			Some(integrated)
+		);
+		assert_eq!(
+			Voice::for_adapter(model::VideoAdapter::default()).video_adapter,
+			Some(model::VideoAdapter::default())
+		);
+	}
 
 	#[test]
 	#[allow(clippy::field_reassign_with_default)] // Voice implements Drop, so struct update cannot move its fields.
@@ -2433,7 +2549,6 @@ mod tests {
 			camera_frames,
 			camera_negotiated: false,
 			video_settings: Default::default(),
-			camera_clock: Instant::now(),
 			remote_video: Arc::new(std::sync::Mutex::new(Vec::new())),
 			stream_audio,
 		});

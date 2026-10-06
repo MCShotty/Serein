@@ -4800,3 +4800,54 @@ follow negotiated geometry with at most 4096 padding bytes per row, within a glo
 scale only by resolution to at most 2 MiB; selected frame rate does not enlarge
 that cap. Camera UI previews remain at most 640×480 RGB, screen previews 640×360
 RGBA. These are component bounds, not a total RSS cap or measured active-media cost.
+
+
+## Renderer GPU encoding and supported reordering — October 6, 2026
+
+Compared source `79e336066beff5ea6c414268308f1f817c50c2f4` (camera GOP 1)
+with Experimental camera Main profile/GOP 30 at 15 fps. Both software-only C
+processes use the same pinned FFmpeg 7.1.5/OpenH264 2.6.0 libraries; hardware
+presets, look-ahead and physical GPU selection are not exercised by this workload.
+The [reproducer](pr-evidence/video-gpu-routing/measure-encoder.py) compiles each
+revision's actual encoder shim with GCC `-O2`. Each run uses 30 warmup pictures
+then 300 measured moving-gradient 640×480 limited-range BT.601 I420 pictures at
+600 kbps. Elapsed time includes pixel preparation and bitstream writes. One
+warmup run is discarded, then five alternating runs per revision are measured.
+Both final 330-picture streams decode without errors with system FFmpeg.
+
+Environment: Linux 6.18.44 x86-64, Intel Xeon Platinum 8573C, five visible CPUs
+(four-core cgroup quota), 16 GiB memory ceiling. Process RSS is sampled every
+10 ms. No renderer, GPU, camera, microphone, capture, account or network session
+runs in this benchmark. No Cargo/native build ran during the final samples.
+
+| Software-only workload / median | Before | After | Delta |
+| --- | ---: | ---: | ---: |
+| 300 camera pictures, elapsed | 1,115.033 ms | 546.520 ms | -568.513 ms / -50.99% |
+| Encoded payload bytes for 300 pictures | 4,537,700 | 225,825 | -4,311,875 / -95.02% |
+| Keyframes for 300 pictures | 300 | 10 | -290 |
+| Sampled peak C-process RSS | 8,753,152 bytes | 8,740,864 bytes | -12,288 bytes / -0.14% |
+| Actual Linux libavcodec shared library | 1,217,929 bytes | 1,258,993 bytes | +41,064 bytes |
+| Actual Linux libavutil shared library | 1,489,977 bytes | 1,588,281 bytes | +98,304 bytes |
+
+Timings vary (before 1,086.959–1,185.478 ms; after 466.037–632.130 ms).
+The lower payload/time is specific to replacing every-picture keyframes in this
+simple synthetic camera stream; it is not a hardware quality, bandwidth or
+end-to-end latency guarantee. The small RSS difference is noise. Shared-library
+sizes compare the original pinned prefix with the compiled GPU-binding patches;
+they exclude source archives, headers, licenses and the rest of the application.
+[Raw samples](pr-evidence/video-gpu-routing/measurements.json) and
+[library hashes/sizes](pr-evidence/video-gpu-routing/native-library-sizes.json)
+record the actual artifacts.
+
+Native driver fixtures verify same-model GPU targeting, missing-device rejection,
+metadata correction and resource release without physical hardware. The pinned
+FFmpeg patches compile on Linux; their corresponding-source patch reproduces
+byte-for-byte and reverses cleanly. Encoder fixtures exercise sixteen pending
+inputs, reordered packet PTS, P5/look-ahead options and the 48-picture ceiling.
+They do not prove physical hardware encoding or HEVC/AV1 receiver interoperability.
+NVENC/QSV look-ahead and reordered output increase buffering and driver memory;
+those costs, sustained leak behavior and actual Windows/macOS execution remain
+unmeasured here. Standard executable/installed/compressed package sizes and native
+demo CPU/RSS could not be measured: the current workspace check and standard
+package commands stop at missing `glib-2.0.pc` development metadata. No new
+full-desktop or whole-package performance claim is made.

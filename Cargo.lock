@@ -6314,6 +6314,7 @@ name = "serein"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "ash",
  "client-core",
  "cpal",
  "discord-api",

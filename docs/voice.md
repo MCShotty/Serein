@@ -557,7 +557,8 @@ metadata, stays Unknown. Recheck repeats only these driver queries.
 
 **Test encoder** is optional and tests only the selected codec, without software
 or another-vendor fallback. It separately checks camera 640×480/15 fps and screen
-sharing 1280×720/30 fps, with at most eight synthetic pictures per preset.
+sharing 1280×720/30 fps, with Main profile and at most 48 synthetic pictures per preset
+to cover look-ahead startup. Only the first input requests a keyframe.
 Successful keyframes must pass the size/bitstream checks and contain codec
 parameters. Results are retained per codec and never replace the driver report
 or disable a codec. Failure can reflect a busy device, preset or runtime problem.
@@ -579,8 +580,13 @@ use Unknown or explicitly synthetic fixtures without accessing drivers. Helpers
 never initialize capture, microphone, credentials or network sessions.
 
 Experimental uses native FFmpeg 7.1.5 `libavcodec`/`libavutil` contexts on the media
-worker without a CLI process. Windows/Linux try NVENC, AMD AMF and Intel Quick Sync
-in that order for the selected codec. H.264 then falls back to `libopenh264`.
+worker without a CLI process. Both Stable and Experimental target the physical GPU
+used by the running renderer. General → Graphics preference takes effect after restart;
+changing a saved preference does not move an active call to another GPU. Windows
+uses the renderer's adapter LUID, Linux its Vulkan PCI identity, and macOS its Metal
+registry ID. NVENC, AMF and Quick Sync are eligible only for that GPU. An unknown
+or unsupported physical identity excludes hardware rather than guessing a different
+adapter. H.264 then falls back to `libopenh264`.
 H.265 and AV1 require compatible hardware and fail visibly if no encoder succeeds;
 there is no automatic change of codec. macOS supports H.264/H.265 VideoToolbox
 hardware with H.264 software fallback; AV1 has no compatible backend in this recipe.
@@ -590,23 +596,46 @@ Sync's device. Incoming decoding and native capture APIs are independent.
 
 AMF needs the installed AMD runtime: D3D11 on Windows, Vulkan through AMF on Linux.
 Quick Sync uses the static oneVPL dispatcher and an installed Intel GPU runtime,
-with an Intel-selected D3D11 device on Windows or an iHD VA driver device on Linux.
+with the renderer-selected Intel D3D11 device on Windows or its exact PCI-derived
+DRM render node and iHD VA driver on Linux.
 Packages do not install or redistribute GPU drivers. Flatpak needs matching runtimes
 inside its sandbox. Initialization, frame, packet-limit or bounded output-delay
-failure retires the failed backend before trying the next compatible encoder.
-Bitrate restarts retain the active backend and do not retry earlier failed GPUs;
+failure first retries with fewer advanced features on the same physical GPU.
+H.264 can then retire that backend for software; H.265/AV1 fail visibly.
+Bitrate restarts retain the active backend and do not retry earlier failed features;
 H.264 software fallback stays software. Native SDK calls and teardown may block;
 the bounded queue is not a driver-call deadline. Hardware remains unverified here.
 
 Neither backend requests an explicit low-latency video mode. Experimental uses
-NVENC P4 with high-quality tuning, AMF balanced transcoding for H.264/AV1 and
+NVENC P5 with high-quality tuning, AMF balanced transcoding for H.264/AV1 and
 high-quality usage with the highest `quality` preset for H.265, without a latency
 requirement, and Quick Sync's medium preset with its default four-task
 parallelism. VideoToolbox's real-time hint is disabled in both backends; Stable
 does not request Media Foundation low-latency or GStreamer zero-latency operation.
-Frame ordering, disabled lookahead/preanalysis and the four-picture pending cap
-remain resource/transport requirements. OpenH264 2.6 only accepts camera-real-time
-and screen-real-time usage types; selecting its advertised non-real-time types
+Experimental requests sixteen-picture look-ahead when supported: NVENC uses
+`rc-lookahead=16` with 24 surfaces; AMF uses preanalysis with a 16-picture buffer;
+QSV uses external bitrate control with `look_ahead_depth=16`, retaining CBR and
+the existing bitrate/buffer/frame limits. NVENC driver caps are queried on the exact
+adapter. The pinned QSV wrapper rejects driver-corrected unsupported look-ahead
+and exposes its effective reference distance. Unsupported feature combinations
+fall back on that same GPU before H.264 software fallback. Reordered modes let
+the preset/driver choose its reference-buffer structure instead of imposing the
+single-reference setting retained for non-reordered modes.
+
+H.265/AV1 NVENC and QSV request up to two B frames where supported; macOS
+VideoToolbox also permits H.265 reordering (it exposes no look-ahead control). AMF's
+bundled HEVC/AV1 wrappers do not expose B-frame encoding. H.264 B frames remain
+disabled: the receiver rewrites H.264 SPS frame-reordering metadata before DAVE
+decryption, which makes ordinary reordered H.264 incompatible with that contract.
+Encoded access units stay in decode order while their packet PTS selects the
+original RTP presentation timestamp from a bounded 48-entry timeline. Camera and
+screen prediction chains restart at a fresh keyframe after encoded loss, staleness
+or security changes. Separate security reset generations reject older pending or
+queued pictures even if another keyframe request is already waiting. Local camera
+preview updates while look-ahead is pending. Look-ahead and reordering increase
+buffering and driver memory; physical-GPU latency/quality still requires
+owner-operated measurement. OpenH264 2.6 only accepts camera-real-time and
+screen-real-time usage types; selecting its advertised non-real-time types
 fails initialization, so its supported usage types remain in software fallback.
 
 Linux keeps the Rust static OpenH264 and FFmpeg's shared OpenH264 symbols private.
@@ -617,8 +646,9 @@ Host GStreamer plugins must use their own OpenH264 ABI, including Ubuntu's older
 sources; see [the encoder recipe](../packaging/ffmpeg/README.md).
 
 Quick Sync receives NV12 from bounded I420 input. AMF restarts its context for
-requested screen keyframes after producing output because FFmpeg 7.1 does not
-forward forced picture types; camera GOP 1 does not restart per frame. The pinned
+requested camera/screen keyframes after producing output because FFmpeg 7.1 does not
+forward forced picture types. Repeated requests coalesce while the first new keyframe
+is pending, so look-ahead can fill. The pinned
 FFmpeg OpenH264 wrapper uses camera-realtime/low-complexity tuning for H.264 software
 fallback, including screens; active desktop text quality and throughput need native
 validation. Stable retains OpenH264's original screen-content tuning.
@@ -634,8 +664,9 @@ helper dependency; no decoder is registered in the outgoing library.
 Camera output preserves its default 128 KiB encoded-picture budget, rising to
 256 KiB at 720p, 512 KiB at 1080p, 1 MiB at 1440p and 2 MiB at 4K/8K. Screen
 output remains bounded at 2 MiB per encoded picture. Camera pictures
-must be independently decodable; screen encoders use no B frames and periodic or
-requested keyframes. H.264 keyframes repeat SPS/PPS; H.265 repeats VPS/SPS/PPS;
+use independent pictures in Stable. Experimental camera and screen encoders use a
+two-second GOP with periodic or requested keyframes and supported reordering for
+H.265/AV1. H.264 keyframes repeat SPS/PPS; H.265 repeats VPS/SPS/PPS;
 AV1 repeats a sequence header. Rate changes retain the existing 15% reduction /
 25% recovery thresholds and restart only the encoder. Capture, portal selection,
 audio, secure-readiness gates and queue bounds continue through those restarts.
