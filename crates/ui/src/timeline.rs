@@ -4436,7 +4436,17 @@ mod tests {
 				);
 			},
 		);
-		assert!(output.platform_output.commands.is_empty());
+		// egui reports settled text selection for the native PRIMARY clipboard.
+		// Explicit clipboard writes and browser actions must remain absent.
+		assert!(
+			output
+				.platform_output
+				.commands
+				.iter()
+				.all(|command| matches!(command, egui::OutputCommand::TextSelectionSettled(_))),
+			"Unexpected platform actions: {:?}",
+			output.platform_output.commands
+		);
 		let mut labels = vec![];
 		for shape in &output.shapes {
 			collect(&shape.shape, &mut labels, actual_glyphs);
@@ -6732,7 +6742,20 @@ mod tests {
 						)
 					},
 				);
-				assert!(output.platform_output.commands.is_empty());
+				// egui reports settled text selection for the native PRIMARY clipboard.
+				// Explicit clipboard writes and browser actions must remain absent.
+				assert!(
+					output
+						.platform_output
+						.commands
+						.iter()
+						.all(|command| matches!(
+							command,
+							egui::OutputCommand::TextSelectionSettled(_)
+						)),
+					"Unexpected platform actions: {:?}",
+					output.platform_output.commands
+				);
 				let mut labels = vec![];
 				for shape in &output.shapes {
 					collect(&shape.shape, &mut labels);

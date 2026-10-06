@@ -4551,3 +4551,6 @@ voice-video-encoder-test-checking = Testing…
 voice-video-encoder-test-not-tested = Not tested
 voice-video-encoder-test-incomplete = Test incomplete — try again
 voice-video-encoder-test-no-success = No hardware encoder passed this test
+settings-chat-box = Chat Box
+settings-convert-emoticons = Automatically convert emoticons in your messages to emoji
+settings-convert-emoticons-description = Convert standalone emoticons such as :) to 🙂 when sending or editing messages. Code and links stay unchanged.
