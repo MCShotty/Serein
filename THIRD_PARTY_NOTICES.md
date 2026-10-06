@@ -185,6 +185,11 @@ uses the **oneVPL 2.14.0** MIT-licensed dispatcher, compiled as a PIC static lib
 into FFmpeg; its license and third-party-programs notice are retained. GPU
 runtime drivers are supplied by the OS/vendor, not bundled. Linux QSV uses
 distribution-provided libva/libdrm for its driver device interface.
+Exact AMD GPU selection on Linux additionally compiles against pinned
+**Vulkan-Headers 1.3.290** (MIT OR Apache-2.0); packages retain its full source
+archive, upstream license summary and both license texts. The Vulkan loader is
+provided by the system. Its DRM-derived Vulkan context binds AMF to the selected
+renderer device; Vulkan video encoders/decoders remain disabled.
 The bundled FFmpeg build is **LGPL-2.1-or-later**;
 GPL, nonfree, Media Foundation and H264/HEVC/AV1 VA-API encoders are disabled
 in this FFmpeg build. Its hardware wrappers support H264, HEVC and AV1 where

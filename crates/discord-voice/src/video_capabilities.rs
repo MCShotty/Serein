@@ -5,7 +5,7 @@
 use crate::video_encode::{Config, Encoder, Profile};
 use model::voice_settings::{HardwareBackend, HardwareSupport, ProbeResult, VideoCodec};
 
-const MAX_PROBE_FRAMES: usize = 8;
+const MAX_PROBE_FRAMES: usize = crate::video_encode::MAX_PENDING_PICTURES;
 
 #[allow(unsafe_code)]
 unsafe extern "C" {
@@ -16,6 +16,15 @@ unsafe extern "C" {
 /// This does not prove that a stream's resolution, profile or preset will work.
 #[allow(unsafe_code)]
 pub fn query(backend: HardwareBackend, codec: VideoCodec) -> ProbeResult {
+	query_on_adapter(backend, codec, None)
+}
+
+#[allow(unsafe_code)]
+pub fn query_on_adapter(
+	backend: HardwareBackend,
+	codec: VideoCodec,
+	adapter: Option<model::VideoAdapter>,
+) -> ProbeResult {
 	let backend = match backend {
 		HardwareBackend::Nvenc => 1,
 		HardwareBackend::VideoToolbox => 2,
@@ -23,7 +32,10 @@ pub fn query(backend: HardwareBackend, codec: VideoCodec) -> ProbeResult {
 		HardwareBackend::Qsv => 4,
 	};
 	// The bridge owns all driver resources. Only fixed enum values cross the ABI.
-	query_result(unsafe { serein_video_query(backend, codec.index() as i32) })
+	query_result(match adapter {
+		Some(adapter) => crate::video_gpu::query_on_adapter(backend, codec.index() as i32, adapter),
+		None => unsafe { serein_video_query(backend, codec.index() as i32) },
+	})
 }
 
 fn query_result(result: i32) -> ProbeResult {
@@ -51,16 +63,27 @@ pub fn backends() -> &'static [HardwareBackend] {
 /// Available means a real keyframe with inline parameter sets was produced;
 /// discovering an encoder name or merely opening a device is insufficient.
 pub fn probe(backend: HardwareBackend, codec: VideoCodec) -> HardwareSupport {
-	probe_with(backend, codec, Encoder::hardware_only)
+	probe_on_adapter(backend, codec, None)
+}
+
+pub fn probe_on_adapter(
+	backend: HardwareBackend,
+	codec: VideoCodec,
+	adapter: Option<model::VideoAdapter>,
+) -> HardwareSupport {
+	probe_with(backend, codec, |mut config, backend| {
+		config.adapter = adapter;
+		Encoder::hardware_only(config, backend)
+	})
 }
 
 trait ProbeEncoder {
-	fn encode(&mut self, picture: &[u8]) -> Result<(Vec<u8>, bool), &'static str>;
+	fn encode(&mut self, picture: &[u8], first: bool) -> Result<(Vec<u8>, bool), &'static str>;
 }
 
 impl ProbeEncoder for Encoder {
-	fn encode(&mut self, picture: &[u8]) -> Result<(Vec<u8>, bool), &'static str> {
-		self.encode_without_fallback(picture, true)
+	fn encode(&mut self, picture: &[u8], first: bool) -> Result<(Vec<u8>, bool), &'static str> {
+		self.encode_without_fallback(picture, first)
 	}
 }
 
@@ -75,8 +98,9 @@ fn probe_with<E: ProbeEncoder>(
 		fps: 15,
 		bit_rate: 600_000,
 		max_bytes: 128 * 1024,
-		profile: Profile::Baseline,
+		profile: Profile::Main,
 		codec,
+		adapter: None,
 	};
 	let screen = Config {
 		width: 1280,
@@ -86,6 +110,7 @@ fn probe_with<E: ProbeEncoder>(
 		max_bytes: 2 * 1024 * 1024,
 		profile: Profile::Main,
 		codec,
+		adapter: None,
 	};
 	// Each helper drops its encoder before the next native context is opened.
 	let camera = probe_profile(camera, backend, &mut open);
@@ -104,8 +129,8 @@ fn probe_profile<E: ProbeEncoder>(
 	let luma = config.width as usize * config.height as usize;
 	let mut picture = vec![128; luma * 3 / 2];
 	picture[..luma].fill(16);
-	for _ in 0..MAX_PROBE_FRAMES {
-		let Ok((data, keyframe)) = encoder.encode(&picture) else {
+	for index in 0..MAX_PROBE_FRAMES {
+		let Ok((data, keyframe)) = encoder.encode(&picture, index == 0) else {
 			return ProbeResult::Unavailable;
 		};
 		if data.is_empty() {
@@ -145,7 +170,11 @@ mod tests {
 		live: Rc<Cell<usize>>,
 	}
 	impl ProbeEncoder for Fake {
-		fn encode(&mut self, picture: &[u8]) -> Result<(Vec<u8>, bool), &'static str> {
+		fn encode(
+			&mut self,
+			picture: &[u8],
+			_first: bool,
+		) -> Result<(Vec<u8>, bool), &'static str> {
 			assert!(matches!(picture.len(), 460_800 | 1_382_400));
 			self.calls.set(self.calls.get() + 1);
 			self.frames.pop_front().unwrap_or(Ok((Vec::new(), false)))
@@ -191,7 +220,7 @@ mod tests {
 			let support = probe_with(HardwareBackend::Amf, codec, |config, backend| {
 				requests.push((config, backend));
 				assert!(config.codec == codec && backend == HardwareBackend::Amf);
-				let frames = if config.profile == Profile::Baseline {
+				let frames = if config.width == 640 {
 					vec![Ok((Vec::new(), false)), Ok((keyframe(codec), true))]
 				} else {
 					vec![Err("GPU rejected the screen profile")]
@@ -242,7 +271,7 @@ mod tests {
 		let mut attempts = 0;
 		let support = probe_with(HardwareBackend::Qsv, VideoCodec::H264, |config, _| {
 			attempts += 1;
-			if config.profile == Profile::Baseline {
+			if config.width == 640 {
 				Err("camera profile unavailable")
 			} else {
 				Ok(fake(

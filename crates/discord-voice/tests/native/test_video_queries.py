@@ -22,9 +22,15 @@ def run(prefix):
     source = here.parents[1] / "src"
     include = prefix / "include"
     compiler = shlex.split(os.environ.get("CC", "cc"))
-    flags = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-I" + str(include)]
+    flags = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-ffunction-sections", "-fdata-sections",
+             "-Wl,--gc-sections", "-I" + str(include), "-I" + str(source)]
     with tempfile.TemporaryDirectory(prefix="serein-driver-fixtures-") as directory:
         out = Path(directory)
+        recipe_spec = importlib.util.spec_from_file_location(
+            "ffmpeg_recipe", source.parents[2] / "scripts/build-ffmpeg.py")
+        recipe = importlib.util.module_from_spec(recipe_spec)
+        recipe_spec.loader.exec_module(recipe)
+        (out / "serein_qsv_feature_validation.h").write_text(recipe.QSV_FEATURE_VALIDATION)
         if (include / "ffnvcodec/nvEncodeAPI.h").is_file():
             for name, soname in [("cuda", "libcuda.so.1"), ("nvenc", "libnvidia-encode.so.1")]:
                 subprocess.run([*compiler, *flags, "-fPIC", "-shared",
@@ -33,6 +39,7 @@ def run(prefix):
             executable = out / "nvenc-test"
             subprocess.run([*compiler, *flags, "-DSEREIN_HAVE_NVENC_QUERY=1",
                             str(here / "video_query_nvenc_test.c"), str(source / "video_query_nvenc.c"),
+                            str(source / "video_gpu.c"),
                             "-L" + str(out), "-Wl,--no-as-needed", "-l:libcuda.so.1",
                             "-l:libnvidia-encode.so.1", "-ldl", "-o", str(executable)], check=True)
             subprocess.run([str(executable)], env=dict(os.environ, LD_LIBRARY_PATH=str(out)), check=True)
@@ -42,6 +49,11 @@ def run(prefix):
             executable = out / "qsv-test"
             subprocess.run([*compiler, *flags, "-DSEREIN_HAVE_QSV_QUERY=1",
                             str(here / "video_query_qsv_test.c"), str(source / "video_query_qsv.c"),
+                            str(source / "video_gpu.c"),
+                            "-o", str(executable)], check=True)
+            subprocess.run([str(executable)], check=True)
+            executable = out / "qsv-quality-test"
+            subprocess.run([*compiler, *flags, "-I" + str(out), str(here / "video_qsv_quality_test.c"),
                             "-o", str(executable)], check=True)
             subprocess.run([str(executable)], check=True)
         else:
@@ -49,13 +61,24 @@ def run(prefix):
         executable = out / "dispatcher-test"
         subprocess.run([*compiler, *flags, "-DSEREIN_HAVE_AMF_QUERY=1",
                         str(here / "video_query_dispatcher_test.c"), str(source / "video_query.c"),
+                        str(source / "video_gpu.c"),
                         "-o", str(executable)], check=True)
+        subprocess.run([str(executable)], check=True)
+        executable = out / "gpu-binding-test"
+        subprocess.run([*compiler, *flags, "-DSEREIN_HAVE_VULKAN_GPU=1",
+                        str(here / "video_gpu_binding_test.c"), str(source / "video_gpu.c"),
+                        "-Wl,--wrap=readlink", "-o", str(executable)], check=True)
         subprocess.run([str(executable)], check=True)
         executable = out / "no-sdk-test"
         subprocess.run([*compiler, *flags, str(here / "video_query_no_sdk_test.c"),
                         *(str(source / name) for name in ["video_query.c", "video_query_nvenc.c",
                                                         "video_query_qsv.c", "video_query_videotoolbox.c"]),
+                        str(source / "video_gpu.c"),
                         "-o", str(executable)], check=True)
+        subprocess.run([str(executable)], check=True)
+        executable = out / "gpu-identity-test"
+        subprocess.run([*compiler, *flags, str(here / "video_gpu_identity_test.c"),
+                        str(source / "video_gpu.c"), "-o", str(executable)], check=True)
         subprocess.run([str(executable)], check=True)
     if (include / "AMF/core/Factory.h").is_file():
         spec = importlib.util.spec_from_file_location("amf_fixture", here / "test_amf_query.py")

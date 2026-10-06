@@ -1,3 +1,4 @@
+#include "video_gpu.h"
 /* AMD driver capability discovery. This creates a device context and reads
  * AMF caps, but never initializes an encoder or submits pictures. */
 #if (defined(_WIN32) || defined(__linux__)) && __has_include(<AMF/core/Factory.h>)
@@ -25,6 +26,14 @@
 #include <AMF/components/VideoEncoderVCE.h>
 #include <AMF/components/VideoEncoderHEVC.h>
 #include <AMF/components/VideoEncoderAV1.h>
+#if defined(__linux__) && defined(SEREIN_HAVE_VULKAN_GPU) && SEREIN_HAVE_VULKAN_GPU
+#include <AMF/core/VulkanAMF.h>
+extern "C" {
+#include <libavutil/buffer.h>
+#include <libavutil/hwcontext.h>
+#include <libavutil/hwcontext_vulkan.h>
+}
+#endif
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
 #endif
@@ -141,7 +150,7 @@ public:
     ComPtr &operator=(const ComPtr &) = delete;
 };
 
-int query_devices(amf::AMFFactory *factory, int codec) {
+int query_devices(amf::AMFFactory *factory, int codec, const SereinVideoAdapter *target) {
     Library dxgi(L"dxgi.dll");
     Library d3d11(L"d3d11.dll");
     const auto create_factory = reinterpret_cast<HRESULT (WINAPI *)(REFIID, void **)>(
@@ -173,6 +182,13 @@ int query_devices(amf::AMFFactory *factory, int codec) {
         }
         if (description.VendorId != 0x1002 || (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE))
             continue;
+        if (target) {
+            uint64_t luid = 0;
+            memcpy(&luid, &description.AdapterLuid, sizeof(luid));
+            if (target->identity != SEREIN_GPU_WINDOWS_LUID || luid != target->value ||
+                description.VendorId != target->vendor_id || description.DeviceId != target->device_id)
+                continue;
+        }
 
         ComPtr<ID3D11Device> device;
         if (FAILED(create_device(adapter.value, D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0,
@@ -192,14 +208,40 @@ int query_devices(amf::AMFFactory *factory, int codec) {
             continue;
         }
         const int result = query_caps(factory, context.value, codec);
-        if (result == 1)
-            return 1;
+        if (result == 1 || target)
+            return result;
         uncertain |= result < 0;
     }
     return -1;
 }
 #else
-int query_devices(amf::AMFFactory *factory, int codec) {
+int query_devices(amf::AMFFactory *factory, int codec, const SereinVideoAdapter *target) {
+#if defined(SEREIN_HAVE_VULKAN_GPU) && SEREIN_HAVE_VULKAN_GPU
+    class Device {
+    public:
+        AVBufferRef *value = nullptr;
+        ~Device() { av_buffer_unref(&value); }
+    } device;
+    amf::AMFVulkanDevice selected = {};
+    if (target) {
+        device.value = static_cast<AVBufferRef *>(serein_video_vulkan_device(target));
+        if (!device.value)
+            return -1;
+        const AVHWDeviceContext *gpu = reinterpret_cast<const AVHWDeviceContext *>(device.value->data);
+        if (gpu->type != AV_HWDEVICE_TYPE_VULKAN || !gpu->hwctx)
+            return -1;
+        const AVVulkanDeviceContext *native = static_cast<const AVVulkanDeviceContext *>(gpu->hwctx);
+        selected.cbSizeof = sizeof(selected);
+        selected.hInstance = native->inst;
+        selected.hPhysicalDevice = native->phys_dev;
+        selected.hDevice = native->act_dev;
+        if (!selected.hInstance || !selected.hPhysicalDevice || !selected.hDevice)
+            return -1;
+    }
+#else
+    if (target)
+        return -1;
+#endif
     Context context;
     if (factory->CreateContext(&context.value) != AMF_OK || !context.value)
         return -1;
@@ -208,7 +250,13 @@ int query_devices(amf::AMFFactory *factory, int codec) {
         return -1;
     /* FFmpeg's Linux AMF encoder uses this same runtime-selected Vulkan
      * device. AMF owns its device; no Vulkan header or link dependency needed. */
-    const AMF_RESULT initialized = vulkan->InitVulkan(nullptr);
+    const AMF_RESULT initialized = vulkan->InitVulkan(
+#if defined(SEREIN_HAVE_VULKAN_GPU) && SEREIN_HAVE_VULKAN_GPU
+        target ? &selected : nullptr
+#else
+        nullptr
+#endif
+    );
     if (initialized != AMF_OK)
         return unavailable(initialized) ? 0 : -1;
     return query_caps(factory, context.value, codec);
@@ -217,7 +265,7 @@ int query_devices(amf::AMFFactory *factory, int codec) {
 
 } // namespace
 
-extern "C" int serein_query_amf(int codec) {
+static int query_amf(int codec, const SereinVideoAdapter *target) {
     if (codec < 0 || codec > 2)
         return -1;
 #if defined(_WIN32)
@@ -233,7 +281,13 @@ extern "C" int serein_query_amf(int codec) {
     amf::AMFFactory *factory = nullptr;
     if (initialize(AMF_FULL_VERSION, &factory) != AMF_OK || !factory)
         return -1;
-    return query_devices(factory, codec);
+    return query_devices(factory, codec, target);
+}
+extern "C" int serein_query_amf(int codec) { return query_amf(codec, nullptr); }
+extern "C" int serein_query_amf_on_adapter(int codec, const SereinVideoAdapter *target) {
+    if (!serein_video_adapter_valid(target) || target->vendor_id != 0x1002)
+        return -1;
+    return query_amf(codec, target);
 }
 
 #else
@@ -246,5 +300,9 @@ extern "C" int serein_query_amf(int codec) {
 #else
     return 0;
 #endif
+}
+extern "C" int serein_query_amf_on_adapter(int codec, const SereinVideoAdapter *target) {
+    (void)codec; (void)target;
+    return -1;
 }
 #endif

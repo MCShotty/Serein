@@ -15,6 +15,7 @@ mod video;
 mod video_backend;
 pub mod video_capabilities;
 mod video_encode;
+mod video_gpu;
 mod video_receive;
 mod video_sps;
 pub use crypto::Identity;

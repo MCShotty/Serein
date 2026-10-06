@@ -46,6 +46,10 @@ pub struct EncodedFrame {
 	pub data: Vec<u8>,
 	pub timestamp: u32,
 	pub keyframe: bool,
+	/// Prediction generation; a restart invalidates every older queued access unit.
+	pub epoch: u64,
+	/// Capture reset acknowledged before this encoder session accepted its input.
+	pub reset_generation: u64,
 }
 
 /// Longest system-audio chunk accepted from the OS: 100 ms of 48 kHz stereo.
@@ -120,6 +124,15 @@ impl Worker {
 		video_settings: VideoSettings,
 		wake: impl Fn() + Send + 'static,
 	) -> Result<(Self, Video), &'static str> {
+		Self::start_on_adapter(settings, video_settings, None, wake)
+	}
+
+	pub fn start_on_adapter(
+		settings: Settings,
+		video_settings: VideoSettings,
+		adapter: Option<model::VideoAdapter>,
+		wake: impl Fn() + Send + 'static,
+	) -> Result<(Self, Video), &'static str> {
 		if !settings.valid() || !video_settings.is_valid() || !supported() {
 			return Err("Screen sharing is unavailable for these settings or this platform");
 		}
@@ -159,6 +172,7 @@ impl Worker {
 				let result = linux::run(
 					settings,
 					video_settings,
+					adapter,
 					worker_stop,
 					worker_ready,
 					worker_keyframe,
@@ -175,6 +189,7 @@ impl Worker {
 				let result = encode_loop(
 					settings,
 					video_settings,
+					adapter,
 					worker_stop,
 					worker_ready,
 					worker_keyframe,
@@ -260,6 +275,7 @@ impl Drop for Worker {
 fn encode_loop(
 	settings: Settings,
 	video_settings: VideoSettings,
+	adapter: Option<model::VideoAdapter>,
 	stop: Arc<AtomicBool>,
 	ready: Arc<AtomicBool>,
 	keyframe: Arc<AtomicBool>,
@@ -274,6 +290,7 @@ fn encode_loop(
 		return Ok(());
 	}
 	let origin = Instant::now();
+	let mut reset_generation = audio_epoch.load(Ordering::Acquire);
 	let (raw_send, raw) = mpsc::sync_channel(1);
 	let capture_stop = Arc::new(AtomicBool::new(false));
 	#[cfg(target_os = "windows")]
@@ -285,7 +302,7 @@ fn encode_loop(
 		audio,
 		capture_stop.clone(),
 		ready.clone(),
-		audio_epoch,
+		audio_epoch.clone(),
 		raw_pending.clone(),
 	)?;
 	// The worker's stop also reaches a pending macOS picker, so call teardown closes it now.
@@ -296,14 +313,15 @@ fn encode_loop(
 		audio,
 		capture_stop.clone(),
 		ready.clone(),
-		audio_epoch,
+		audio_epoch.clone(),
 		stop.clone(),
 	)?;
-	let mut encoding = None;
+	let mut encoding: Option<ScreenEncoder> = None;
 	let mut first_frame_deadline = Some(Instant::now() + Duration::from_secs(15));
 	let mut next_frame = Instant::now();
 	let mut next_preview = Instant::now();
 	let mut latest_frame = None;
+	let mut next_epoch = 0;
 
 	while !stop.load(Ordering::Acquire) && !send.is_closed() {
 		#[cfg(target_os = "windows")]
@@ -315,7 +333,8 @@ fn encode_loop(
 		if capture_stop.load(Ordering::Acquire) {
 			return Err("The selected screen or window stopped sharing");
 		}
-		let frame = match raw.recv_timeout(Duration::from_millis(100)) {
+		let interval = Duration::from_secs_f64(1.0 / f64::from(settings.fps));
+		let frame = match raw.recv_timeout(interval.min(Duration::from_millis(100))) {
 			Ok(frame) => {
 				#[cfg(target_os = "windows")]
 				raw_pending.store(false, Ordering::Release);
@@ -336,6 +355,20 @@ fn encode_loop(
 		if stop.load(Ordering::Acquire) || send.is_closed() {
 			break;
 		}
+		let reset = audio_epoch.load(Ordering::Acquire);
+		if reset == u64::MAX {
+			return Err("Screen security reset generation exhausted");
+		}
+		if reset != reset_generation {
+			reset_generation = reset;
+			if let Some(encoder) = &mut encoding {
+				encoder.reset_for_security(reset)?;
+			}
+			latest_frame = None;
+			keyframe.store(true, Ordering::Release);
+			// This captured input can span the security transition.
+			continue;
+		}
 		let now = Instant::now();
 		if let Some(frame) = &frame {
 			first_frame_deadline = None;
@@ -352,10 +385,17 @@ fn encode_loop(
 			&mut latest_frame,
 			frame,
 			ready.load(Ordering::Acquire),
-			keyframe.load(Ordering::Acquire),
+			keyframe.load(Ordering::Acquire)
+				|| encoding.as_ref().is_some_and(ScreenEncoder::pending),
 		)?;
 		// Local capture remains available while alone; only secure media is encoded or queued.
 		if !ready.load(Ordering::Acquire) {
+			if let Some(encoder) = &encoding {
+				next_epoch = encoder
+					.epoch()
+					.checked_add(1)
+					.ok_or("Screen encoder epoch exhausted")?;
+			}
 			encoding = None;
 			keyframe.store(true, Ordering::Release);
 			continue;
@@ -365,7 +405,6 @@ fn encode_loop(
 		}
 		// Pace on an accumulating schedule with a little tolerance: capture timing jitter must
 		// not skip every other frame, and a stalled encoder resumes from now instead of bursting.
-		let interval = Duration::from_secs_f64(1.0 / f64::from(settings.fps));
 		if now + Duration::from_millis(2) < next_frame {
 			continue;
 		}
@@ -379,7 +418,14 @@ fn encode_loop(
 			.load(Ordering::Acquire)
 			.clamp(250_000, settings.bit_rate());
 		if encoding.is_none() {
-			encoding = Some(ScreenEncoder::new(settings, target, video_settings)?);
+			encoding = Some(ScreenEncoder::new_on_adapter(
+				settings,
+				target,
+				video_settings,
+				adapter,
+				next_epoch,
+				reset_generation,
+			)?);
 		}
 		if encoding
 			.as_mut()
@@ -390,26 +436,42 @@ fn encode_loop(
 		}
 		// Retain one source snapshot for keyframe requests on an unchanged desktop.
 		let force_keyframe = keyframe.swap(false, Ordering::AcqRel);
-		let (data, is_keyframe) = encoding.as_mut().expect("secure screen encoder").encode(
-			latest_frame.as_ref().expect("latest screen frame"),
-			force_keyframe,
-		)?;
-		if force_keyframe && (data.is_empty() || !is_keyframe) {
-			keyframe.store(true, Ordering::Release);
-		}
-		if data.is_empty() {
+		if audio_epoch.load(Ordering::Acquire) != reset_generation {
 			continue;
 		}
-		if !ready.load(Ordering::Acquire) || stop.load(Ordering::Acquire) {
+		let packet = encoding
+			.as_mut()
+			.expect("secure screen encoder")
+			.encode_at(
+				latest_frame.as_ref().expect("latest screen frame"),
+				force_keyframe,
+				(origin.elapsed().as_micros() * 90 / 1000) as u32,
+			)?;
+		if packet.data.is_empty() {
+			continue;
+		}
+		if !ready.load(Ordering::Acquire)
+			|| stop.load(Ordering::Acquire)
+			|| audio_epoch.load(Ordering::Acquire) != reset_generation
+		{
 			continue;
 		}
 		let frame = EncodedFrame {
 			codec: video_settings.codec,
-			data,
-			timestamp: (origin.elapsed().as_micros() * 90 / 1000) as u32,
-			keyframe: is_keyframe,
+			data: packet.data,
+			timestamp: packet.timestamp,
+			keyframe: packet.keyframe,
+			epoch: packet.epoch,
+			reset_generation: encoding
+				.as_ref()
+				.expect("secure screen encoder")
+				.reset_generation,
 		};
 		if send.try_send(frame).is_err() {
+			encoding
+				.as_mut()
+				.expect("secure screen encoder")
+				.restart()?;
 			keyframe.store(true, Ordering::Release);
 		}
 	}
@@ -439,21 +501,27 @@ pub(super) struct ScreenEncoder {
 	i420: Vec<u8>,
 	settings: Settings,
 	bitrate: u32,
+	adapter: Option<model::VideoAdapter>,
+	epoch_base: u64,
+	awaiting_keyframe: bool,
+	reset_generation: u64,
 }
 
 impl ScreenEncoder {
-	pub(super) fn new(
+	pub(super) fn new_on_adapter(
 		settings: Settings,
 		bitrate: u32,
 		video_settings: VideoSettings,
+		adapter: Option<model::VideoAdapter>,
+		epoch_base: u64,
+		reset_generation: u64,
 	) -> Result<Self, &'static str> {
-		if !settings.valid() || !video_settings.is_valid() {
+		if !settings.valid() || !video_settings.is_valid() || reset_generation == u64::MAX {
 			return Err("Invalid screen encoder settings");
 		}
-		let encoder = crate::video_backend::Encoder::new(
-			Self::config(settings, bitrate, video_settings.codec),
-			video_settings.backend,
-		)?;
+		let mut config = Self::config(settings, bitrate, video_settings.codec);
+		config.adapter = adapter;
+		let encoder = crate::video_backend::Encoder::new(config, video_settings.backend)?;
 		Ok(Self {
 			diagnostics: crate::diagnostics::EncoderRegistration::new(true, encoder.hardware()),
 			encoder: Some(encoder),
@@ -461,6 +529,10 @@ impl ScreenEncoder {
 			i420: Vec::new(),
 			settings,
 			bitrate,
+			adapter,
+			epoch_base,
+			awaiting_keyframe: true,
+			reset_generation,
 		})
 	}
 
@@ -473,6 +545,7 @@ impl ScreenEncoder {
 			max_bytes: MAX_ENCODED_BYTES,
 			profile: crate::video_encode::Profile::Main,
 			codec,
+			adapter: None,
 		}
 	}
 
@@ -487,23 +560,78 @@ impl ScreenEncoder {
 		let bitrate = bitrate.clamp(250_000, self.settings.bit_rate());
 		// Rate changes restart at an IDR. Bound restart frequency with the sender's
 		// existing 15% reduction / 25% recovery thresholds.
-		if !software_rate_change(self.bitrate, bitrate) {
+		if self.awaiting_keyframe || !software_rate_change(self.bitrate, bitrate) {
 			return Ok(false);
 		}
 		self.diagnostics.set(None);
-		let config = Self::config(self.settings, bitrate, self.video_settings.codec);
+		let mut config = Self::config(self.settings, bitrate, self.video_settings.codec);
+		config.adapter = self.adapter;
 		let encoder = self.encoder.as_mut().ok_or("Screen encoder stopped")?;
 		encoder.reconfigure(config)?;
 		self.diagnostics.set(Some(encoder.hardware()));
 		self.bitrate = bitrate;
+		self.awaiting_keyframe = true;
 		Ok(true)
 	}
 
+	#[cfg(test)]
 	pub(super) fn encode(
 		&mut self,
 		frame: &RawFrame,
 		force: bool,
 	) -> Result<(Vec<u8>, bool), &'static str> {
+		let packet = self.encode_at(frame, force, 0)?;
+		Ok((packet.data, packet.keyframe))
+	}
+
+	pub(super) fn pending(&self) -> bool {
+		self.encoder
+			.as_ref()
+			.is_some_and(|encoder| encoder.pending())
+	}
+
+	pub(super) fn epoch(&self) -> u64 {
+		self.epoch_base
+			.saturating_add(self.encoder.as_ref().map_or(0, |encoder| encoder.epoch()))
+	}
+
+	pub(super) fn restart(&mut self) -> Result<(), &'static str> {
+		if !self.awaiting_keyframe {
+			self.encoder
+				.as_mut()
+				.ok_or("Screen encoder stopped")?
+				.restart()?;
+			self.awaiting_keyframe = true;
+		}
+		Ok(())
+	}
+
+	pub(super) fn reset_for_security(&mut self, generation: u64) -> Result<bool, &'static str> {
+		if generation == u64::MAX {
+			return Err("Screen security reset generation exhausted");
+		}
+		if generation == self.reset_generation {
+			return Ok(false);
+		}
+		// Unlike ordinary keyframe feedback, this must discard an already pending IDR.
+		self.encoder
+			.as_mut()
+			.ok_or("Screen encoder stopped")?
+			.restart()?;
+		self.reset_generation = generation;
+		self.awaiting_keyframe = true;
+		Ok(true)
+	}
+
+	pub(super) fn encode_at(
+		&mut self,
+		frame: &RawFrame,
+		force: bool,
+		timestamp: u32,
+	) -> Result<crate::video_encode::EncodedPacket, &'static str> {
+		if force {
+			self.restart()?;
+		}
 		let (width, height) = (self.settings.width as usize, self.settings.height as usize);
 		self.i420.resize(width * height * 3 / 2, 0);
 		convert::bgra_to_i420(frame, width, height, &mut self.i420)?;
@@ -511,8 +639,18 @@ impl ScreenEncoder {
 			.encoder
 			.as_mut()
 			.ok_or("FFmpeg screen encoder stopped")?;
-		let result = encoder.encode(&self.i420, force)?;
+		let mut result = encoder.encode_at(&self.i420, false, timestamp)?;
 		self.diagnostics.set(Some(encoder.hardware()));
+		result.epoch = result
+			.epoch
+			.checked_add(self.epoch_base)
+			.ok_or("Screen encoder epoch exhausted")?;
+		if !result.data.is_empty() {
+			if self.awaiting_keyframe && !result.keyframe {
+				return Err("Screen encoder did not restart at an independently decodable picture");
+			}
+			self.awaiting_keyframe = false;
+		}
 		Ok(result)
 	}
 }
@@ -569,6 +707,74 @@ pub(super) fn preview_frame(frame: &RawFrame) -> Result<image::RgbaImage, &'stat
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn screen_recovery_coalesces_feedback_and_always_honors_security_resets() {
+		let settings = Settings {
+			source: SourceId::Display(1),
+			width: 320,
+			height: 240,
+			fps: 30,
+			cursor: false,
+			audio: false,
+		};
+		let video_settings = VideoSettings::default();
+		let software = crate::video_backend::Encoder::software(ScreenEncoder::config(
+			settings,
+			settings.bit_rate(),
+			video_settings.codec,
+		))
+		.unwrap();
+		let mut encoder = ScreenEncoder {
+			diagnostics: crate::diagnostics::EncoderRegistration::new(true, false),
+			encoder: Some(software),
+			video_settings,
+			i420: Vec::new(),
+			settings,
+			bitrate: settings.bit_rate(),
+			adapter: None,
+			epoch_base: 7,
+			awaiting_keyframe: true,
+			reset_generation: 0,
+		};
+		let raw = RawFrame {
+			width: 2,
+			height: 2,
+			stride: 8,
+			data: vec![128; 16],
+		};
+		encoder.restart().unwrap();
+		encoder.restart().unwrap();
+		assert_eq!(encoder.epoch(), 7);
+		assert!(!encoder.set_bitrate(settings.bit_rate() / 2).unwrap());
+		let first = encoder.encode_at(&raw, true, 6000).unwrap();
+		assert!(first.keyframe);
+		assert_eq!((first.epoch, first.timestamp), (7, 6000));
+		encoder.restart().unwrap();
+		encoder.restart().unwrap();
+		assert_eq!(encoder.epoch(), 8);
+		let recovered = encoder.encode_at(&raw, false, 12000).unwrap();
+		assert!(recovered.keyframe);
+		assert_eq!((recovered.epoch, recovered.timestamp), (8, 12000));
+		assert!(crate::video_receive::has_parameter_sets(&recovered.data));
+		encoder.restart().unwrap();
+		assert!(encoder.awaiting_keyframe);
+		assert_eq!(encoder.epoch(), 9);
+		assert!(encoder.reset_for_security(1).unwrap());
+		assert_eq!(encoder.epoch(), 10);
+		assert_eq!(encoder.reset_generation, 1);
+		assert!(!encoder.reset_for_security(1).unwrap());
+		let fresh = encoder.encode_at(&raw, false, 18000).unwrap();
+		assert_eq!((fresh.epoch, fresh.timestamp), (10, 18000));
+		assert!(fresh.keyframe && crate::video_receive::has_parameter_sets(&fresh.data));
+		use openh264::formats::YUVSource;
+		let mut decoder = openh264::decoder::Decoder::new().unwrap();
+		assert_eq!(
+			decoder.decode(&fresh.data).unwrap().unwrap().dimensions(),
+			(320, 240)
+		);
+		assert!(encoder.reset_for_security(u64::MAX).is_err());
+	}
 
 	#[test]
 	fn idle_screen_keyframe_uses_latest_snapshot_only_when_ready() {
@@ -675,6 +881,10 @@ mod tests {
 			i420: Vec::new(),
 			settings,
 			bitrate: settings.bit_rate(),
+			adapter: None,
+			epoch_base: 0,
+			awaiting_keyframe: true,
+			reset_generation: 0,
 		};
 		let raw = frame;
 		let (encoded, keyframe) = encoder.encode(&raw, true).unwrap();

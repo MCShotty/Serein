@@ -1,6 +1,6 @@
 //! Worker-owned video encoding selection. Stable retains the native H.264 encoders;
 //! Experimental uses FFmpeg and the explicitly selected codec.
-use crate::video_encode::{Config, Profile};
+use crate::video_encode::{Config, EncodedPacket, Profile};
 use model::voice_settings::{VideoBackend, VideoCodec};
 use openh264::{
 	OpenH264API,
@@ -10,6 +10,9 @@ use openh264::{
 	},
 	formats::YUVSlices,
 };
+use std::collections::VecDeque;
+
+const MAX_STABLE_PENDING_PICTURES: usize = 4;
 
 #[cfg(target_os = "linux")]
 #[path = "video_encode_linux.rs"]
@@ -61,7 +64,8 @@ impl Encoder {
 				config,
 				#[cfg(target_os = "macos")]
 				bgra: Vec::new(),
-				pending: 0,
+				timeline: VecDeque::with_capacity(MAX_STABLE_PENDING_PICTURES),
+				epoch: 0,
 				produced_output: false,
 			})),
 		})
@@ -83,14 +87,46 @@ impl Encoder {
 		Ok(Self { implementation })
 	}
 
+	#[cfg(test)]
 	pub(crate) fn encode(
 		&mut self,
 		picture: &[u8],
 		force: bool,
 	) -> Result<(Vec<u8>, bool), &'static str> {
+		let packet = self.encode_at(picture, force, 0)?;
+		Ok((packet.data, packet.keyframe))
+	}
+
+	pub(crate) fn encode_at(
+		&mut self,
+		picture: &[u8],
+		force: bool,
+		timestamp: u32,
+	) -> Result<EncodedPacket, &'static str> {
 		match &mut self.implementation {
-			Implementation::Stable(encoder) => encoder.encode(picture, force),
-			Implementation::Experimental(encoder) => encoder.encode(picture, force),
+			Implementation::Stable(encoder) => encoder.encode_at(picture, force, timestamp),
+			Implementation::Experimental(encoder) => encoder.encode_at(picture, force, timestamp),
+		}
+	}
+
+	pub(crate) fn pending(&self) -> bool {
+		match &self.implementation {
+			Implementation::Stable(encoder) => !encoder.timeline.is_empty(),
+			Implementation::Experimental(encoder) => encoder.pending(),
+		}
+	}
+
+	pub(crate) fn epoch(&self) -> u64 {
+		match &self.implementation {
+			Implementation::Stable(encoder) => encoder.epoch,
+			Implementation::Experimental(encoder) => encoder.epoch(),
+		}
+	}
+
+	pub(crate) fn restart(&mut self) -> Result<(), &'static str> {
+		match &mut self.implementation {
+			Implementation::Stable(encoder) => encoder.replace(encoder.config),
+			Implementation::Experimental(encoder) => encoder.restart(),
 		}
 	}
 
@@ -138,16 +174,17 @@ struct Stable {
 	config: Config,
 	#[cfg(target_os = "macos")]
 	bgra: Vec<u8>,
-	pending: u8,
+	timeline: VecDeque<u32>,
+	epoch: u64,
 	produced_output: bool,
 }
 
 impl Stable {
 	fn new(config: Config) -> Result<Self, &'static str> {
 		#[cfg(target_os = "macos")]
-		let hardware = native::Encoder::new(config, SourceFormat::Bgra).ok();
+		let hardware = native::Encoder::new_on_adapter(config, SourceFormat::Bgra, config.adapter).ok();
 		#[cfg(not(target_os = "macos"))]
-		let hardware = native::Encoder::new(config).ok();
+		let hardware = native::Encoder::new_on_adapter(config, config.adapter).ok();
 		let software = hardware.is_none().then(|| software(config)).transpose()?;
 		Ok(Self {
 			hardware,
@@ -155,39 +192,39 @@ impl Stable {
 			config,
 			#[cfg(target_os = "macos")]
 			bgra: Vec::new(),
-			pending: 0,
+			timeline: VecDeque::with_capacity(MAX_STABLE_PENDING_PICTURES),
+			epoch: 0,
 			produced_output: false,
 		})
 	}
 
 	fn reconfigure(&mut self, config: Config) -> Result<(), &'static str> {
-		let old = self.config;
-		// Use the original native live rate setter when geometry/profile are unchanged.
-		if config.width == old.width
-			&& config.height == old.height
-			&& config.fps == old.fps
-			&& config.profile == old.profile
-			&& config.max_bytes == old.max_bytes
-			&& self
-				.hardware
-				.as_mut()
-				.is_some_and(|encoder| encoder.set_bitrate(config.bit_rate).is_ok())
-		{
-			self.config = config;
-			return Ok(());
+		if config.adapter != self.config.adapter {
+			return Err("Restart video to change its rendering GPU");
 		}
+		// The screen worker treats a rate change as a fresh IDR epoch. Native live
+		// setters would retain delayed old frames and violate that shared contract.
+		self.replace(config)
+	}
+
+	fn replace(&mut self, config: Config) -> Result<(), &'static str> {
+		let epoch = self
+			.epoch
+			.checked_add(1)
+			.ok_or("Stable encoder epoch exhausted")?;
 		let was_hardware = self.hardware.is_some();
 		// Native Drop completes its platform teardown before another session is requested.
 		self.hardware = None;
 		self.software = None;
 		self.config = config;
-		self.pending = 0;
+		self.timeline.clear();
+		self.epoch = epoch;
 		self.produced_output = false;
 		if was_hardware {
 			#[cfg(target_os = "macos")]
-			let hardware = native::Encoder::new(config, SourceFormat::Bgra).ok();
+			let hardware = native::Encoder::new_on_adapter(config, SourceFormat::Bgra, config.adapter).ok();
 			#[cfg(not(target_os = "macos"))]
-			let hardware = native::Encoder::new(config).ok();
+			let hardware = native::Encoder::new_on_adapter(config, config.adapter).ok();
 			self.hardware = hardware;
 		}
 		if self.hardware.is_none() {
@@ -196,50 +233,32 @@ impl Stable {
 		Ok(())
 	}
 
-	fn encode(&mut self, picture: &[u8], force: bool) -> Result<(Vec<u8>, bool), &'static str> {
+	fn encode_at(
+		&mut self,
+		picture: &[u8],
+		force: bool,
+		timestamp: u32,
+	) -> Result<EncodedPacket, &'static str> {
 		if picture.len() != picture_bytes(self.config)? {
 			return Err("Invalid video encoder picture");
 		}
 		let force = force || self.config.profile == Profile::Baseline || !self.produced_output;
-		if let Some(hardware) = self.hardware.as_mut() {
-			#[cfg(target_os = "linux")]
-			let encoded = hardware.encode(picture, force);
-			#[cfg(target_os = "windows")]
-			let encoded = {
-				let (y, chroma) =
-					picture.split_at(self.config.width as usize * self.config.height as usize);
-				let (u, v) = chroma.split_at(y.len() / 4);
-				hardware.encode(y, u, v, force)
-			};
-			#[cfg(target_os = "macos")]
-			let encoded = {
-				i420_to_bgra(picture, self.config, &mut self.bgra)?;
-				hardware.encode(
-					&self.bgra,
-					(self.config.width as usize, self.config.height as usize),
-					force,
-				)
-			};
-			if let Ok(frame) = encoded {
-				if frame.0.is_empty() {
-					self.pending = self.pending.saturating_add(1);
-					if self.pending < 4 {
-						return Ok(frame);
-					}
-				} else if validate_h264(&frame.0, frame.1, self.config, !self.produced_output)
-					.is_ok()
-				{
-					self.pending = self.pending.saturating_sub(1);
-					self.produced_output = true;
-					return Ok(frame);
-				}
+		if self.hardware.is_some() {
+			if let Ok(packet) = self.encode_hardware(picture, force, timestamp) {
+				return Ok(packet);
 			}
 			// A failed platform encoder stays excluded through every bitrate change in
 			// this stream. The first software picture must reset the receiver with an IDR.
+			let epoch = self
+				.epoch
+				.checked_add(1)
+				.ok_or("Stable encoder epoch exhausted")?;
 			self.hardware = None;
-			self.software = Some(software(self.config)?);
-			self.pending = 0;
+			self.software = None;
+			self.timeline.clear();
+			self.epoch = epoch;
 			self.produced_output = false;
+			self.software = Some(software(self.config)?);
 		}
 		let (width, height) = (self.config.width as usize, self.config.height as usize);
 		let (y, chroma) = picture.split_at(width * height);
@@ -276,14 +295,100 @@ impl Stable {
 			}
 		}
 		if length == 0 {
-			return Ok((Vec::new(), false));
+			return Ok(EncodedPacket {
+				data: Vec::new(),
+				keyframe: false,
+				timestamp,
+				epoch: self.epoch,
+			});
 		}
 		let mut frame = Vec::with_capacity(length);
 		encoded.write_vec(&mut frame);
 		let keyframe = matches!(encoded.frame_type(), FrameType::IDR);
 		validate_h264(&frame, keyframe, self.config, !self.produced_output)?;
 		self.produced_output = true;
-		Ok((frame, keyframe))
+		Ok(EncodedPacket {
+			data: frame,
+			keyframe,
+			timestamp,
+			epoch: self.epoch,
+		})
+	}
+
+	fn submit_timestamp(&mut self, timestamp: u32) -> Result<(), &'static str> {
+		if self.timeline.len() >= MAX_STABLE_PENDING_PICTURES {
+			return Err("Stable video encoder has too many pending pictures");
+		}
+		self.timeline.push_back(timestamp);
+		Ok(())
+	}
+
+	fn encode_hardware(
+		&mut self,
+		picture: &[u8],
+		force: bool,
+		timestamp: u32,
+	) -> Result<EncodedPacket, &'static str> {
+		self.submit_timestamp(timestamp)?;
+		let hardware = self
+			.hardware
+			.as_mut()
+			.ok_or("Stable native encoder stopped")?;
+		#[cfg(target_os = "linux")]
+		let frame = hardware.encode(picture, force)?;
+		#[cfg(target_os = "windows")]
+		let frame = {
+			let (y, chroma) =
+				picture.split_at(self.config.width as usize * self.config.height as usize);
+			let (u, v) = chroma.split_at(y.len() / 4);
+			hardware.encode(y, u, v, force)?
+		};
+		#[cfg(target_os = "macos")]
+		let frame = {
+			i420_to_bgra(picture, self.config, &mut self.bgra)?;
+			hardware.encode(
+				&self.bgra,
+				(self.config.width as usize, self.config.height as usize),
+				force,
+			)?
+		};
+		self.finish_hardware(frame, timestamp)
+	}
+
+	fn finish_hardware(
+		&mut self,
+		frame: (Vec<u8>, bool),
+		timestamp: u32,
+	) -> Result<EncodedPacket, &'static str> {
+		if frame.0.is_empty() {
+			#[cfg(target_os = "macos")]
+			{
+				// CompleteFrames makes native macOS encoding synchronous. An
+				// empty callback is a dropped input, rather than delayed output.
+				self.timeline.pop_back();
+			}
+			if self.timeline.len() >= MAX_STABLE_PENDING_PICTURES {
+				return Err("Stable native encoder produced no bounded output");
+			}
+			return Ok(EncodedPacket {
+				data: frame.0,
+				keyframe: false,
+				timestamp,
+				epoch: self.epoch,
+			});
+		}
+		validate_h264(&frame.0, frame.1, self.config, !self.produced_output)?;
+		let timestamp = self
+			.timeline
+			.pop_front()
+			.ok_or("Stable encoder lost its input timestamp")?;
+		self.produced_output = true;
+		Ok(EncodedPacket {
+			data: frame.0,
+			keyframe: frame.1,
+			timestamp,
+			epoch: self.epoch,
+		})
 	}
 }
 
@@ -403,10 +508,108 @@ mod tests {
 		max_bytes: 128 * 1024,
 		profile: Profile::Baseline,
 		codec: VideoCodec::H264,
+		adapter: None,
 	};
 
 	fn software_only(config: Config) -> Encoder {
 		Encoder::software(config).unwrap()
+	}
+
+	#[test]
+	fn stable_native_timestamp_fifo_is_bounded_and_preserves_wrapping_rtp_values() {
+		let picture = vec![128; picture_bytes(CAMERA).unwrap()];
+		let mut source = software_only(CAMERA);
+		let packet = source.encode_at(&picture, false, 0).unwrap();
+		let mut target = software_only(CAMERA);
+		let Implementation::Stable(stable) = &mut target.implementation else {
+			unreachable!("software test constructor selects Stable")
+		};
+		let timestamps = [u32::MAX - 2999, 0, 3000, 6000];
+		for timestamp in timestamps {
+			stable.submit_timestamp(timestamp).unwrap();
+		}
+		assert!(stable.submit_timestamp(9000).is_err());
+		assert_eq!(stable.timeline.len(), MAX_STABLE_PENDING_PICTURES);
+		for timestamp in timestamps {
+			let output = stable
+				.finish_hardware((packet.data.clone(), packet.keyframe), 90_000)
+				.unwrap();
+			assert_eq!(output.timestamp, timestamp);
+		}
+		assert!(stable.timeline.is_empty());
+		stable.submit_timestamp(12000).unwrap();
+		assert!(
+			stable
+				.finish_hardware((vec![1, 2, 3], false), 15000)
+				.is_err()
+		);
+		assert_eq!(stable.timeline.front(), Some(&12000));
+	}
+
+	#[test]
+	fn stable_software_restart_and_rate_replacement_start_a_new_idr_epoch() {
+		let config = Config {
+			profile: Profile::Main,
+			..CAMERA
+		};
+		let picture = vec![128; picture_bytes(config).unwrap()];
+		let mut encoder = software_only(config);
+		let first = encoder.encode_at(&picture, false, u32::MAX - 2999).unwrap();
+		assert!(first.keyframe && !encoder.pending());
+		assert_eq!((first.timestamp, first.epoch), (u32::MAX - 2999, 0));
+		encoder.restart().unwrap();
+		let second = encoder.encode_at(&picture, false, 0).unwrap();
+		assert!(second.keyframe && !encoder.hardware());
+		assert_eq!((second.timestamp, second.epoch), (0, 1));
+		encoder
+			.reconfigure(Config {
+				bit_rate: 450_000,
+				..config
+			})
+			.unwrap();
+		let third = encoder.encode_at(&picture, false, 3000).unwrap();
+		assert!(third.keyframe && !encoder.hardware() && !encoder.pending());
+		assert_eq!((third.timestamp, third.epoch), (3000, 2));
+	}
+
+	#[test]
+	fn stable_adapter_change_and_epoch_exhaustion_preserve_the_active_encoder() {
+		let picture = vec![128; picture_bytes(CAMERA).unwrap()];
+		let mut encoder = software_only(CAMERA);
+		assert_eq!(
+			encoder.reconfigure(Config {
+				adapter: Some(model::VideoAdapter::default()),
+				..CAMERA
+			}),
+			Err("Restart video to change its rendering GPU")
+		);
+		assert_eq!(encoder.epoch(), 0);
+		let Implementation::Stable(stable) = &mut encoder.implementation else {
+			unreachable!("software test constructor selects Stable")
+		};
+		stable.epoch = u64::MAX;
+		assert_eq!(encoder.restart(), Err("Stable encoder epoch exhausted"));
+		let packet = encoder.encode_at(&picture, false, 9000).unwrap();
+		assert!(packet.keyframe && !encoder.hardware());
+		assert_eq!((packet.timestamp, packet.epoch), (9000, u64::MAX));
+	}
+
+	#[cfg(not(target_os = "macos"))]
+	#[test]
+	fn stable_native_pending_output_cannot_accumulate_unbounded_timestamps() {
+		let mut encoder = software_only(CAMERA);
+		let Implementation::Stable(stable) = &mut encoder.implementation else {
+			unreachable!("software test constructor selects Stable")
+		};
+		for index in 0..MAX_STABLE_PENDING_PICTURES {
+			stable.submit_timestamp(index as u32 * 3000).unwrap();
+			let pending = stable.finish_hardware((Vec::new(), false), 9000);
+			assert_eq!(pending.is_ok(), index + 1 < MAX_STABLE_PENDING_PICTURES);
+		}
+		assert_eq!(stable.timeline.len(), MAX_STABLE_PENDING_PICTURES);
+		stable.replace(CAMERA).unwrap();
+		assert!(stable.timeline.is_empty() && !stable.produced_output);
+		assert_eq!(stable.epoch, 1);
 	}
 
 	#[test]

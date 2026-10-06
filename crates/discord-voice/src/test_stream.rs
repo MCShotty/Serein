@@ -384,7 +384,7 @@ async fn exchange(rekey_timeout: bool) {
 				assert!(ready.load(Ordering::Acquire));
 				let samples = (0..STREAM_AUDIO_FRAME).map(|i| ((i/2) as f32 * if i%2 == 0 {0.06} else {0.1}).sin() * 0.3).collect();
 				let _ = audio_tx.try_send(AudioChunk { samples, epoch: epoch.load(Ordering::Acquire) });
-				let _ = frames_tx.try_send(EncodedFrame { data: encoded.clone(), timestamp, keyframe: true, codec: VideoCodec::H264 });
+				let _ = frames_tx.try_send(EncodedFrame { data: encoded.clone(), timestamp, keyframe: true, codec: VideoCodec::H264, epoch: epoch.load(Ordering::Acquire), reset_generation: epoch.load(Ordering::Acquire) });
 				timestamp += 1800;
 				while let Ok(frame) = playback_rx.try_recv() { heard |= frame.iter().any(|sample| sample.abs() > 0.01); }
 				if let Ok(frame) = picture_rx.try_recv() { picture = Some(frame); }

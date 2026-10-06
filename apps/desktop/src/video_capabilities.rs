@@ -18,6 +18,7 @@ use std::{
 
 const QUERY_ARGUMENT: &str = "--query-video-codec";
 const TEST_ARGUMENT: &str = "--test-video-encoder";
+const ADAPTER_ARGUMENT: &str = "--adapter";
 const HELPER_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 const UNKNOWN: HardwareSupport = HardwareSupport {
@@ -37,9 +38,14 @@ enum Helper {
 	Test,
 }
 
-fn request(
-	mut args: impl Iterator<Item = OsString>,
-) -> Option<Result<(Helper, HardwareBackend, VideoCodec), ()>> {
+type HelperRequest = (
+	Helper,
+	HardwareBackend,
+	VideoCodec,
+	Option<model::VideoAdapter>,
+);
+
+fn request(mut args: impl Iterator<Item = OsString>) -> Option<Result<HelperRequest, ()>> {
 	let helper = match args.next()?.to_str()? {
 		QUERY_ARGUMENT => Helper::Query,
 		TEST_ARGUMENT => Helper::Test,
@@ -55,8 +61,21 @@ fn request(
 			.into_iter()
 			.find(|codec| Some(codec.key()) == arg.to_str())
 	});
+	let adapter = match args.next() {
+		None => None,
+		Some(flag) if flag == ADAPTER_ARGUMENT => {
+			let Some(adapter) = args
+				.next()
+				.and_then(|key| model::VideoAdapter::from_helper_key(key.to_str()?))
+			else {
+				return Some(Err(()));
+			};
+			Some(adapter)
+		}
+		_ => return Some(Err(())),
+	};
 	Some(match (backend, codec, args.next()) {
-		(Some(backend), Some(codec), None) => Ok((helper, backend, codec)),
+		(Some(backend), Some(codec), None) => Ok((helper, backend, codec, adapter)),
 		_ => Err(()),
 	})
 }
@@ -64,17 +83,21 @@ fn request(
 /// Exit before GUI, credentials, network clients or capture discovery initialize.
 pub fn probe_command() -> Option<i32> {
 	request(std::env::args_os().skip(1)).map(|request| match request {
-		Ok((helper, backend, codec))
+		Ok((helper, backend, codec, adapter))
 			if discord_voice::video_capabilities::backends().contains(&backend) =>
 		{
 			match helper {
-				Helper::Query => match discord_voice::video_capabilities::query(backend, codec) {
+				Helper::Query => match discord_voice::video_capabilities::query_on_adapter(
+					backend, codec, adapter,
+				) {
 					ProbeResult::Available => 1,
 					ProbeResult::Unavailable => 0,
 					_ => 2,
 				},
 				Helper::Test => {
-					let support = discord_voice::video_capabilities::probe(backend, codec);
+					let support = discord_voice::video_capabilities::probe_on_adapter(
+						backend, codec, adapter,
+					);
 					i32::from(support.camera == ProbeResult::Available)
 						| (i32::from(support.screen == ProbeResult::Available) << 1)
 				}
@@ -221,6 +244,7 @@ enum Update {
 
 fn scan(
 	operation: Operation,
+	adapter: Option<model::VideoAdapter>,
 	executable: &Path,
 	stop: &AtomicBool,
 	send: &mpsc::SyncSender<Update>,
@@ -242,6 +266,9 @@ fn scan(
 			};
 			let mut command = Command::new(executable);
 			command.args([argument, backend.key(), codec.key()]);
+			if let Some(adapter) = adapter {
+				command.args([ADAPTER_ARGUMENT, &adapter.helper_key()]);
+			}
 			let exit = wait_for_helper(&mut command, stop, HELPER_TIMEOUT);
 			if stop.load(Ordering::Acquire) {
 				return;
@@ -262,6 +289,7 @@ fn scan(
 
 fn launch(
 	operation: Operation,
+	adapter: Option<model::VideoAdapter>,
 	stop: Arc<AtomicBool>,
 	send: mpsc::SyncSender<Update>,
 	wake: eframe::egui::Context,
@@ -269,7 +297,7 @@ fn launch(
 	let executable = std::env::current_exe().ok()?;
 	std::thread::Builder::new()
 		.name("video-capabilities".into())
-		.spawn(move || scan(operation, &executable, &stop, &send, &wake))
+		.spawn(move || scan(operation, adapter, &executable, &stop, &send, &wake))
 		.ok()
 }
 
@@ -307,8 +335,21 @@ impl Detector {
 		}
 	}
 
+	#[cfg(test)]
 	pub fn poll(&mut self, demo: bool, ui: &mut ui::MessagingUi, ctx: &eframe::egui::Context) {
-		self.poll_with(demo, ui, ctx, launch);
+		self.poll_on_adapter(demo, ui, ctx, None);
+	}
+
+	pub fn poll_on_adapter(
+		&mut self,
+		demo: bool,
+		ui: &mut ui::MessagingUi,
+		ctx: &eframe::egui::Context,
+		adapter: Option<model::VideoAdapter>,
+	) {
+		self.poll_with(demo, ui, ctx, |operation, stop, send, wake| {
+			launch(operation, adapter, stop, send, wake)
+		});
 	}
 
 	fn poll_with(
@@ -687,11 +728,21 @@ mod tests {
 		assert!(request(args(&["--demo"])).is_none());
 		assert_eq!(
 			request(args(&[QUERY_ARGUMENT, "amf", "av1"])),
-			Some(Ok((Helper::Query, HardwareBackend::Amf, VideoCodec::Av1)))
+			Some(Ok((
+				Helper::Query,
+				HardwareBackend::Amf,
+				VideoCodec::Av1,
+				None
+			)))
 		);
 		assert_eq!(
 			request(args(&[TEST_ARGUMENT, "qsv", "h264"])),
-			Some(Ok((Helper::Test, HardwareBackend::Qsv, VideoCodec::H264)))
+			Some(Ok((
+				Helper::Test,
+				HardwareBackend::Qsv,
+				VideoCodec::H264,
+				None
+			)))
 		);
 		for argument in [QUERY_ARGUMENT, TEST_ARGUMENT] {
 			for values in [
@@ -702,6 +753,40 @@ mod tests {
 			] {
 				assert_eq!(request(args(&values)), Some(Err(())));
 			}
+		}
+	}
+
+	#[test]
+	fn helper_adapter_arguments_preserve_the_running_gpu_and_reject_extra_input() {
+		let adapter = model::VideoAdapter {
+			vendor_id: 0x8086,
+			device_id: 0x56a0,
+			identity: model::VideoAdapterIdentity::WindowsLuid(0x1234),
+		};
+		let key = adapter.helper_key();
+		let args = [TEST_ARGUMENT, "qsv", "h265", ADAPTER_ARGUMENT, &key];
+		assert_eq!(
+			request(args.into_iter().map(OsString::from)),
+			Some(Ok((
+				Helper::Test,
+				HardwareBackend::Qsv,
+				VideoCodec::H265,
+				Some(adapter)
+			)))
+		);
+		for args in [
+			vec![QUERY_ARGUMENT, "qsv", "h265", ADAPTER_ARGUMENT],
+			vec![QUERY_ARGUMENT, "qsv", "h265", ADAPTER_ARGUMENT, "invalid"],
+			vec![
+				QUERY_ARGUMENT,
+				"qsv",
+				"h265",
+				ADAPTER_ARGUMENT,
+				&key,
+				"extra",
+			],
+		] {
+			assert_eq!(request(args.into_iter().map(OsString::from)), Some(Err(())));
 		}
 	}
 

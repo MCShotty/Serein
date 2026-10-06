@@ -62,6 +62,11 @@
         })
     ] ++ lib.optionals isLinux [
         (fetchurl {
+            url = "https://codeload.github.com/KhronosGroup/Vulkan-Headers/tar.gz/refs/tags/v1.3.290";
+            name = "Vulkan-Headers-1.3.290.tar.gz";
+            sha256 = "f38a653bf93cab7a2a229a53d2d53b1cba9a2819e4c0a7de13c54085bde9bcf5";
+        })
+        (fetchurl {
             url = "https://codeload.github.com/FFmpeg/nv-codec-headers/tar.gz/refs/tags/n12.2.72.0";
             name = "nv-codec-headers-12.2.72.0.tar.gz";
             sha256 = "dbeaec433d93b850714760282f1d0992b1254fc3b5a6cb7d76fc1340a1e47563";
@@ -91,7 +96,8 @@
         CC = "${stdenv.cc}/bin/cc";
         CXX = "${stdenv.cc}/bin/c++";
         buildInputs = lib.optionals isDarwin [apple-sdk_15]
-            ++ lib.optionals (isLinux && stdenv.hostPlatform.isx86_64) [libva libdrm];
+            ++ lib.optionals isLinux [libdrm]
+            ++ lib.optionals (isLinux && stdenv.hostPlatform.isx86_64) [libva];
         dontUseCmakeConfigure = true;
         installPhase = ''
             runHook preInstall

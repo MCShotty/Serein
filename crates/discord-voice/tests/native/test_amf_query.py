@@ -22,7 +22,7 @@ def run(include_path):
     c_compiler = shlex.split(os.environ.get("CC", "cc"))
     cpp_compiler = shlex.split(os.environ.get("CXX", "c++"))
     sdk_flags = ["-isystem", str(include)]
-    warnings = ["-Wall", "-Wextra", "-Werror"]
+    warnings = ["-Wall", "-Wextra", "-Werror", "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections"]
     modes = {
         "support": 1,
         "software": 0,
@@ -107,6 +107,28 @@ def run(include_path):
             check=True,
             timeout=5,
         )
+        if (include / "vulkan/vulkan.h").is_file():
+            scoped_library = directory / "scoped-amf.so"
+            scoped_executable = directory / "scoped-query-test"
+            gpu_object = directory / "gpu.o"
+            subprocess.run(c_compiler + ["-std=c11"] + warnings + sdk_flags + [
+                "-DSEREIN_AMF_SCOPED_FIXTURE=1", "-fPIC", "-shared",
+                str(fixture_dir / "video_query_amf_mock.c"), "-o", str(scoped_library),
+            ], check=True)
+            subprocess.run(c_compiler + ["-std=c11"] + warnings + sdk_flags + [
+                "-c", str(source_dir / "video_gpu.c"), "-o", str(gpu_object),
+            ], check=True)
+            subprocess.run(cpp_compiler + ["-std=c++11"] + warnings + sdk_flags + [
+                "-I" + str(source_dir), "-DSEREIN_HAVE_VULKAN_GPU=1",
+                str(source_dir / "video_query_amf.cpp"),
+                str(fixture_dir / "video_query_amf_scoped_test.cpp"), str(gpu_object),
+                "-Wl,--wrap=dlopen", "-Wl,--wrap=serein_video_vulkan_device", "-ldl",
+                "-o", str(scoped_executable),
+            ], check=True)
+            subprocess.run([str(scoped_executable)],
+                env={**environment, "SEREIN_AMF_TEST_RUNTIME": str(scoped_library), "AMF_MOCK_MODE": "scoped"},
+                timeout=5, check=True)
+            print("AMF scoped query: identical models retain exact Vulkan handles; missing targets stay unknown; all objects released")
         print(
             "AMF query: 51 capability cases, invalid codecs, missing/bad runtime "
             "and missing ABI entry point passed; no encoder Init or submitted frames."

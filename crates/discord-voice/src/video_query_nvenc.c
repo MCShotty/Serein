@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include "video_gpu.h"
 
 #if defined(SEREIN_HAVE_NVENC_QUERY) && SEREIN_HAVE_NVENC_QUERY && \
     (defined(_WIN32) || defined(__linux__))
@@ -91,7 +92,8 @@ typedef struct {
 #define SEREIN_NV_MAX_CODEC_GUIDS 64
 
 static int query_adapter(const SereinNvCuda *cuda,
-                         NV_ENCODE_API_FUNCTION_LIST *api, int index, GUID codec)
+                         NV_ENCODE_API_FUNCTION_LIST *api, int index, GUID codec,
+                         int *max_b_frames, int *lookahead)
 {
     CUdevice device;
     CUcontext context = NULL;
@@ -147,6 +149,16 @@ static int query_adapter(const SereinNvCuda *cuda,
             break;
         }
         result = width > 0 && height > 0 ? 1 : 0;
+        if (result == 1 && max_b_frames && lookahead) {
+            caps.capsToQuery = NV_ENC_CAPS_NUM_MAX_BFRAMES;
+            if (api->nvEncGetEncodeCaps(encoder, codec, &caps, max_b_frames) != NV_ENC_SUCCESS) {
+                result = -1;
+                break;
+            }
+            caps.capsToQuery = NV_ENC_CAPS_SUPPORT_LOOKAHEAD;
+            if (api->nvEncGetEncodeCaps(encoder, codec, &caps, lookahead) != NV_ENC_SUCCESS)
+                result = -1;
+        }
         break;
     }
 
@@ -160,7 +172,8 @@ cleanup:
     return result;
 }
 
-int serein_query_nvenc(int codec)
+static int query_nvenc(int codec, const SereinVideoAdapter *target,
+                       int *max_b_frames, int *lookahead)
 {
     static const GUID *const codecs[] = {
         &NV_ENC_CODEC_H264_GUID, &NV_ENC_CODEC_HEVC_GUID, &NV_ENC_CODEC_AV1_GUID
@@ -175,6 +188,9 @@ int serein_query_nvenc(int codec)
     CUresult cuda_status;
     if (codec < 0 || codec > 2)
         return 0;
+    const int selected = target ? serein_video_cuda_device(target) : -1;
+    if (target && selected < 0)
+        return -1;
 #if defined(_WIN32)
     cuda_library = load_library(L"nvcuda.dll", &result);
 #if defined(_WIN64)
@@ -221,7 +237,9 @@ int serein_query_nvenc(int codec)
         goto cleanup;
     incomplete = adapters > SEREIN_NV_MAX_ADAPTERS;
     for (int i = 0; i < adapters && i < SEREIN_NV_MAX_ADAPTERS; i++) {
-        int adapter = query_adapter(&cuda, &api, i, *codecs[codec]);
+        if (target && i != selected)
+            continue;
+        int adapter = query_adapter(&cuda, &api, i, *codecs[codec], max_b_frames, lookahead);
         if (adapter == 1) {
             result = 1;
             goto cleanup;
@@ -237,12 +255,34 @@ cleanup:
     return result;
 }
 
+int serein_query_nvenc(int codec) { return query_nvenc(codec, NULL, NULL, NULL); }
+int serein_query_nvenc_on_adapter(int codec, const SereinVideoAdapter *adapter)
+{ return adapter ? query_nvenc(codec, adapter, NULL, NULL) : -1; }
+int serein_nvenc_features(int codec, const SereinVideoAdapter *adapter,
+                          int *max_b_frames, int *lookahead)
+{
+    if (!adapter || !max_b_frames || !lookahead)
+        return -1;
+    *max_b_frames = *lookahead = 0;
+    return query_nvenc(codec, adapter, max_b_frames, lookahead);
+}
+
 #else
 int serein_query_nvenc(int codec)
 {
     (void)codec;
     /* The dispatcher has already checked that the FFmpeg encoder exists.
      * Missing query SDK support is inconclusive, not unsupported hardware. */
+    return -1;
+}
+int serein_query_nvenc_on_adapter(int codec, const SereinVideoAdapter *adapter)
+{ (void)codec; (void)adapter; return -1; }
+int serein_nvenc_features(int codec, const SereinVideoAdapter *adapter,
+                          int *max_b_frames, int *lookahead)
+{
+    (void)codec; (void)adapter;
+    if (max_b_frames) *max_b_frames = 0;
+    if (lookahead) *lookahead = 0;
     return -1;
 }
 #endif

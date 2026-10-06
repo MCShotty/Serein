@@ -339,6 +339,7 @@ async fn run_inner(
 	};
 	let mut receivers = Receivers::default();
 	let mut next_pli = Instant::now();
+	let mut next_camera_keyframe = Instant::now();
 	let mut watch = VideoWatch::new();
 	let mut metrics = crate::diagnostics::Metrics::new(crate::diagnostics::Scope::Transport);
 	emit(Status::Connecting).map_err(|_| "Call interface closed")?;
@@ -415,7 +416,7 @@ async fn run_inner(
 	let mut speakers_at = Instant::now();
 	loop {
 		tokio::select! {
-			changed=controls.changed()=>{ if changed.is_err(){return Ok(());} },
+			changed=controls.changed()=>{ if changed.is_err(){return Ok(());} video.set_generation(controls.borrow().camera); },
 			// Camera pictures wake their own bounded receive path. Consuming them on
 			// the 20 ms audio tick would cap a selected 60 fps stream at 50 fps.
 			frame=async {
@@ -423,29 +424,31 @@ async fn run_inner(
 					Some(camera)=>camera.recv().await,
 					None=>std::future::pending().await,
 				}
-			}, if camera.is_some()=>{
+			}, if camera.is_some() && video.is_empty()=>{
 				let Some(frame)=frame else {camera=None;video.clear();continue;};
 				let now=Instant::now();
 				let control=*controls.borrow();
-				let enabled=dave.ready && encryption.is_some() && udp.is_some() && !discovering && !resuming
+				let enabled=dave.ready && dave.pending.is_none() && dave.session.is_ready() && encryption.is_some() && udp.is_some() && !discovering && !resuming
 					&& video.available() && control.camera!=0;
-				if !enabled || video.generation!=control.camera || video.stale(now) {video.clear();}
-				video.generation=control.camera;
+				video.set_generation(control.camera);
+				video.set_ready(enabled);
+				if video.stale(now) {video.clear();}
+				let observed=frame.generation==control.camera && video.observe(&frame);
 				if enabled && frame.generation==control.camera && video.is_empty()
 					&& frame.codec==outgoing_codec
-					&& frame.data.len()<=crate::camera_video::MAX_FRAME_BYTES {
+					&& frame.data.len()<=crate::camera_video::MAX_FRAME_BYTES && observed && video.accept(&frame) {
 					if !video.announced {
 						json_send(&mut ws,video.announcement(ssrc,true)).await?;
 						video.announced=true;
 					}
 					let normalized=crate::video::prepare_source(&frame.data,outgoing_codec)?;
 					let encrypted=dave.session.encrypt(davey::MediaType::VIDEO,crate::video::dave_codec(outgoing_codec),&normalized).map_err(|_|"DAVE camera encryption failed")?;
-					video.packetize(&encrypted,frame.timestamp,now)?;
-				}
+					video.packetize(&encrypted,frame.timestamp,frame.keyframe,now)?;
+				} else {frame.keyframe_request.store(true,Ordering::Release);}
 			},
 			_=tokio::time::sleep_until(video.deadline()), if !video.is_empty()=>{
 				let generation=controls.borrow().camera;
-				if !dave.ready || resuming || generation==0 || generation!=video.generation {video.clear();}
+				if !dave.ready || dave.pending.is_some() || !dave.session.is_ready() || resuming || generation==0 || generation!=video.generation {video.clear();}
 				else if let Some(socket)=&udp {
 					let crypto=encryption.as_mut().ok_or("Missing camera transport key")?;
 					for packet in video.next_batch(Instant::now(),crypto)? {
@@ -487,9 +490,10 @@ async fn run_inner(
 					next_pli=now+Duration::from_millis(500);
 				}
 				let control=*controls.borrow();
-				let camera_enabled=enabled && camera.is_some() && udp.is_some() && video.available() && control.camera!=0;
-				if !camera_enabled || video.generation!=control.camera || video.stale(now) {video.clear();}
-				video.generation=control.camera;
+				let camera_enabled=enabled && dave.pending.is_none() && dave.session.is_ready() && camera.is_some() && udp.is_some() && video.available() && control.camera!=0;
+				video.set_generation(control.camera);
+				video.set_ready(camera_enabled);
+				if video.stale(now) {video.clear();}
 				if video.announced && !camera_enabled {
 					json_send(&mut ws,video.announcement(ssrc,camera_enabled)).await?;
 					video.announced=camera_enabled;
@@ -573,6 +577,15 @@ async fn run_inner(
 					discovering=false;continue;
 				}
 				let Some(crypto)=&encryption else{continue;};
+				if video.media_ssrc()!=0 && let Some(feedback)=crypto.feedback(&packet[..length],video.media_ssrc()) {
+					let now=Instant::now();
+					if dave.ready && dave.pending.is_none() && dave.session.is_ready() && !resuming && controls.borrow().camera!=0 && now>=next_camera_keyframe
+						&& (feedback.keyframe || !feedback.nacks.is_empty()) {
+						video.request_keyframe();
+						next_camera_keyframe=now+Duration::from_millis(500);
+					}
+					continue;
+				}
 				let start = metrics.start();
 				let Some(mut rtp)=crypto.open(&packet[..length]) else{metrics.video(Video::OpenFailed,1);continue;};
 				if rtp.payload_type==102 {metrics.video(Video::Rtx,1);let Some((media,sequence))=receivers.restore_rtx(rtp.ssrc,&mut rtp.payload) else{continue;};rtp.ssrc=media;rtp.sequence=sequence;rtp.payload_type=101;}
@@ -598,6 +611,9 @@ async fn run_inner(
 				metrics.finish(crate::diagnostics::Stage::Receive, start);
 			},
 			event=ws.next()=>{
+				// Signaling transitions can begin and end between audio ticks.
+				// Bind the current worker before invalidating its pending pictures.
+				video.set_generation(controls.borrow().camera);
 				let event=match event {
 					// A server crash preserves the voice session. Other close codes remain terminal.
 					Some(Ok(message)) if !matches!(&message, Message::Close(Some(frame)) if u16::from(frame.code)==4015)=>message,
@@ -734,6 +750,7 @@ async fn run_inner(
 							},
 							9=>{
 								if !resuming{return Err("Unexpected voice resumption");}
+								video.clear();
 								if camera.is_some(){json_send(&mut ws,video.announcement(ssrc,false)).await?;}
 								json_send(&mut ws,json!({"op":5,"d":{"speaking":0,"delay":0,"ssrc":ssrc}})).await?;
 								speaking=false;silence=0;
@@ -1017,7 +1034,11 @@ fn invalidate_stream(video: &mut Option<crate::screen::Video>, audio: &mut Optio
 	}
 	if let Some(video) = video {
 		video.ready.store(false, Ordering::Release);
-		video.audio_epoch.fetch_add(1, Ordering::AcqRel);
+		let _ = video
+			.audio_epoch
+			.fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
+				epoch.checked_add(1)
+			});
 		video.keyframe.store(true, Ordering::Release);
 		for _ in 0..video.frames.len() {
 			let _ = video.frames.try_recv();
@@ -1028,6 +1049,11 @@ fn invalidate_stream(video: &mut Option<crate::screen::Video>, audio: &mut Optio
 			}
 		}
 	}
+}
+
+fn screen_frame_current(video: &crate::screen::Video, frame: &crate::screen::EncodedFrame) -> bool {
+	let reset = video.audio_epoch.load(Ordering::Acquire);
+	reset != u64::MAX && frame.reset_generation == reset
 }
 
 /// Send one unofficial Discord Go Live stream on its own voice gateway.
@@ -1211,12 +1237,26 @@ async fn run_stream_inner(
 	let mut awaiting_keyframe = true;
 	let mut outgoing = crate::video::Pacer::new();
 	let mut outgoing_keyframe = false;
+	let mut outgoing_epoch: Option<u64> = None;
+	let mut minimum_encoder_epoch: Option<u64> = None;
+	let mut encoder_was_secure = false;
 	let mut signal_window = Instant::now();
 	let mut signal_count = 0u16;
 	let mut packet = [0u8; MAX_PACKET + 1];
 	let mut tick = tokio::time::interval(Duration::from_millis(20));
 	tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 	loop {
+		let encoder_secure = announced
+			&& dave.ready
+			&& dave.pending.is_none()
+			&& dave.session.is_ready()
+			&& video
+				.as_ref()
+				.is_some_and(|video| video.ready.load(Ordering::Acquire));
+		if encoder_was_secure && !encoder_secure {
+			minimum_encoder_epoch = outgoing_epoch.map(|epoch| epoch.saturating_add(1));
+		}
+		encoder_was_secure = encoder_secure;
 		// A transition must discard the rest of an access unit encrypted with the old
 		// epoch before any further packet is sent, including between paced batches.
 		if !announced
@@ -1232,6 +1272,7 @@ async fn run_stream_inner(
 			outgoing_keyframe = false;
 		}
 		if outgoing.stale(Instant::now()) {
+			minimum_encoder_epoch = outgoing_epoch.map(|epoch| epoch.saturating_add(1));
 			outgoing.clear();
 			history.clear();
 			outgoing_keyframe = false;
@@ -1371,6 +1412,13 @@ async fn run_stream_inner(
 				if frame.data.len()>2*1024*1024 {return Err("Encoded stream frame exceeds the sharing limit");}
 				let secure=announced&&dave.ready&&dave.session.is_ready()&&dave.pending.is_none()&&encryption.is_some()&&!discovering&&video.as_ref().is_some_and(|video|video.ready.load(Ordering::Acquire));
 				if !secure {awaiting_keyframe=true;invalidate_stream(&mut video, &mut share_audio);continue;}
+				if !screen_frame_current(video.as_ref().expect("outgoing screen video"), &frame) {continue;}
+				if minimum_encoder_epoch.is_some_and(|epoch|frame.epoch<epoch)
+					|| outgoing_epoch.is_some_and(|epoch|frame.epoch<epoch) {
+					if let Some(video)=&video {video.keyframe.store(true,Ordering::Release);}
+					continue;
+				}
+				if outgoing_epoch!=Some(frame.epoch) {awaiting_keyframe=true;history.clear();outgoing_epoch=Some(frame.epoch);}
 				if awaiting_keyframe && !frame.keyframe {continue;}
 				let start=metrics.start();
 				let normalized=crate::video::prepare_source(&frame.data,outgoing_codec)?;
@@ -1846,7 +1894,7 @@ mod tests {
 			.extend_from_slice(&[0.75; STREAM_AUDIO_FRAME]);
 		shared.speaking = true;
 		enqueue(vec![0.75; STREAM_AUDIO_FRAME]);
-		let (_, frames) = tokio::sync::mpsc::channel(3);
+		let (frames_send, frames) = tokio::sync::mpsc::channel(3);
 		let mut video = Some(crate::screen::Video {
 			video_settings: VideoSettings::default(),
 			settings: crate::screen::Settings {
@@ -1877,6 +1925,23 @@ mod tests {
 		assert_eq!(epoch, 1);
 		// An in-flight capture can finish after the flush and readiness resumes.
 		video.ready.store(true, Ordering::Release);
+		// A delayed IDR can complete after the queue flush, including one already
+		// restarted for a PLI before this security transition.
+		frames_send
+			.try_send(crate::screen::EncodedFrame {
+				data: vec![0, 0, 1, 0x65, 7],
+				timestamp: 9000,
+				keyframe: true,
+				codec: VideoCodec::H264,
+				epoch: 1,
+				reset_generation: 0,
+			})
+			.unwrap();
+		let mut delayed = video.frames.try_recv().unwrap();
+		assert!(!screen_frame_current(video, &delayed));
+		delayed.reset_generation = epoch;
+		delayed.epoch = 2;
+		assert!(screen_frame_current(video, &delayed));
 		enqueue(vec![0.75; STREAM_AUDIO_FRAME]);
 		assert!(
 			shared

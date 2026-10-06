@@ -2,6 +2,8 @@ fn main() {
 	println!("cargo:rerun-if-env-changed=FFMPEG_DIR");
 	println!("cargo:rerun-if-changed=src/video_encode_ffmpeg.c");
 	println!("cargo:rerun-if-changed=src/video_encode_ffmpeg.h");
+	println!("cargo:rerun-if-changed=src/video_gpu.c");
+	println!("cargo:rerun-if-changed=src/video_gpu.h");
 	for file in [
 		"video_query.c",
 		"video_query_nvenc.c",
@@ -25,6 +27,7 @@ fn main() {
 	let mut native = cc::Build::new();
 	native
 		.file("src/video_encode_ffmpeg.c")
+		.file("src/video_gpu.c")
 		.file("src/video_query.c")
 		.file("src/video_query_nvenc.c")
 		.file("src/video_query_qsv.c")
@@ -110,6 +113,10 @@ fn query_dependencies(
 			.static_crt(target == "windows");
 		for include in includes {
 			amf.include(include);
+		}
+		if target == "linux" && has("vulkan/vulkan.h") {
+			native.define("SEREIN_HAVE_VULKAN_GPU", "1");
+			amf.define("SEREIN_HAVE_VULKAN_GPU", "1");
 		}
 		amf.compile("serein_amf_query");
 	}

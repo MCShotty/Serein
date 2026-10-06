@@ -31,9 +31,14 @@ static NVENCSTATUS NVENCAPI guids(void *encoder, GUID *values, uint32_t size, ui
     return NV_ENC_SUCCESS;
 }
 static NVENCSTATUS NVENCAPI caps(void *encoder, GUID codec, NV_ENC_CAPS_PARAM *params, int *value) {
-    (void)encoder; (void)codec; (void)params;
+    (void)encoder; (void)codec;
     if (mode("caps-error")) return NV_ENC_ERR_GENERIC;
-    *value = mode("zero-dimensions") ? 0 : 8192;
+    if (params->capsToQuery == NV_ENC_CAPS_NUM_MAX_BFRAMES)
+        *value = mode("no-advanced") ? 0 : 3;
+    else if (params->capsToQuery == NV_ENC_CAPS_SUPPORT_LOOKAHEAD)
+        *value = mode("no-advanced") ? 0 : 1;
+    else
+        *value = mode("zero-dimensions") ? 0 : 8192;
     return NV_ENC_SUCCESS;
 }
 static NVENCSTATUS NVENCAPI close_encoder(void *encoder) {

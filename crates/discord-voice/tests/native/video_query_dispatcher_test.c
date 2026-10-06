@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <libavcodec/avcodec.h>
+#include "video_gpu.h"
 #ifdef NDEBUG
 #error Driver fixtures require assertions
 #endif
@@ -22,6 +23,10 @@ int serein_query_nvenc(int codec) { return query(codec); }
 int serein_query_amf(int codec) { return query(codec); }
 int serein_query_qsv(int codec) { return query(codec); }
 int serein_query_videotoolbox(int codec) { return query(codec); }
+int serein_query_nvenc_on_adapter(int codec, const SereinVideoAdapter *a) { assert(a); return query(codec); }
+int serein_query_amf_on_adapter(int codec, const SereinVideoAdapter *a) { assert(a); return query(codec); }
+int serein_query_qsv_on_adapter(int codec, const SereinVideoAdapter *a) { assert(a); return query(codec); }
+int serein_query_videotoolbox_on_adapter(int codec, const SereinVideoAdapter *a) { assert(a); return query(codec); }
 
 int main(void)
 {
@@ -43,6 +48,14 @@ int main(void)
     assert(serein_video_query(1, -1) == -1);
     assert(serein_video_query(1, 3) == -1);
     assert(calls == 0);
+    SereinVideoAdapter adapter = {SEREIN_GPU_PCI, 0x10de, 0x2684, 0, 2, 0, 0, 0};
+    assert(serein_video_query_on_adapter(1, 2, &adapter) == 1 && calls == 1);
+    calls = 0;
+    assert(serein_video_query_on_adapter(4, 2, &adapter) == 0 && calls == 0);
+    assert(serein_video_query_on_adapter(3, 2, &adapter) == 0 && calls == 0);
+    assert(serein_video_query_on_adapter(1, 2, NULL) == -1 && calls == 0);
+    adapter.identity = SEREIN_GPU_UNIDENTIFIED;
+    assert(serein_video_query_on_adapter(1, 2, &adapter) == -1 && calls == 0);
     puts("Driver dispatch: absent encoders and invalid requests never query hardware");
     return 0;
 }
