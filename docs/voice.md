@@ -442,6 +442,11 @@ The native picker has not been opened during synthetic verification.
 
 Source discovery alone does not start streaming. Closing or minimizing a selected source may pause frames or end capture, according to the native API. Raw screen capture accepts source dimensions up to 7680×4320 and 132,710,400 BGRA bytes. Changes to screen-server metadata, lost video permission, leaving the call and logout stop sharing. The sender never starts itself after reconnection.
 
+Windows capture requests border removal when the native `IsBorderRequired` API is
+supported (Windows 11), and keeps the system's default border on Windows 10 builds
+without it or if the capability check fails. This avoids an unsupported border
+request aborting capture startup. Native Windows verification of this correction is pending.
+
 Linux uses the desktop ScreenCast portal and PipeWire. Share Screen opens the system
 screen/window picker after the quality dialog; source discovery never opens that picker.
 The default is 720p30. GStreamer captures bounded raw BGRA pictures. Stable uses

@@ -3775,6 +3775,12 @@ impl MessagingUi {
 	}
 
 	pub fn show(&mut self, ui: &mut egui::Ui, state: &mut State) -> Vec<Command> {
+		self.timeline.download.gif_favorites = state
+			.gifs
+			.favorites
+			.iter()
+			.map(|gif| gif.url.clone())
+			.collect();
 		crate::scroll::apply_preferences(ui.ctx(), self.reading_preferences);
 		let diagnostics_chord = self
 			.keybinds
@@ -5125,6 +5131,9 @@ impl MessagingUi {
 			.show(&ctx, if self.shows_title_bar() { 96.0 } else { 60.0 });
 		if !commands.is_empty() {
 			ctx.request_repaint();
+		}
+		if let Some(gif) = self.timeline.download.gif_favorite_request.take() {
+			state.toggle_gif_favorite(&gif);
 		}
 		commands
 	}
@@ -8778,4 +8787,149 @@ pub fn debug_forward_check(state: &mut State) {
 			.iter()
 			.all(|p| p.delivery != model::Delivery::Sending)
 	);
+}
+
+/// Offline issue #559 check; no transport, image worker or audio device is attached.
+#[cfg(feature = "demo")]
+pub fn debug_gif_favorites_check(mut message: model::Message) -> Vec<model::Gif> {
+	let proxy = "https://images-ext-1.discordapp.net/external/synthetic/https/example.org/wave.gif";
+	let cases = [
+		(
+			"https://cdn.discordapp.com/attachments/1/2/wave.gif?ex=abc&is=def&hm=123",
+			None,
+			false,
+		),
+		("https://example.org/wave.gif", Some(proxy), false),
+		("https://media.tenor.com/synthetic/wave.mp4", None, true),
+	];
+	let mut gifs = Vec::new();
+	for (url, proxy_url, animated) in cases {
+		let media = model::EmbedMedia {
+			url: Some(url.into()),
+			proxy_url: proxy_url.map(str::to_owned),
+			width: 320,
+			height: 200,
+			..Default::default()
+		};
+		let gif = embeds::gif_for_media(&media, None, animated).expect("GIF can be starred");
+		assert_eq!(gif.url, url);
+		assert_eq!(gif.preview, proxy_url.unwrap_or(url));
+		gifs.push(gif);
+	}
+	assert!(
+		embeds::gif_for_media(
+			&model::EmbedMedia {
+				url: Some("https://example.org/still.png".into()),
+				proxy_url: Some(proxy.into()),
+				..Default::default()
+			},
+			None,
+			false
+		)
+		.is_some()
+	); // Proxy itself identifies an animated image.
+	assert!(
+		embeds::gif_for_media(
+			&model::EmbedMedia {
+				url: Some("https://example.org/wave.gif".into()),
+				..Default::default()
+			},
+			None,
+			false
+		)
+		.is_none(),
+		"foreign originals do not authorize a fetch"
+	);
+	for bad in [
+		"https://user@example.org/x.gif",
+		"http://example.org/x.gif",
+		"https://example.org/x.gif\n",
+	] {
+		assert!(!model::valid_gif_favorite_url(bad));
+	}
+	let ctx = egui::Context::default();
+	let mut state = client_core::State::default();
+	let mut images = avatars::Avatars::default();
+	let mut download = DownloadUi::default();
+	message.attachments.clear();
+	message.attachments.push(model::Attachment {
+		id: model::Id(2),
+		filename: "wave.gif".into(),
+		description: None,
+		content_type: Some("image/gif".into()),
+		size: 100,
+		spoiler: false,
+		duration_ms: None,
+		waveform: vec![],
+		media: model::EmbedMedia {
+			url: Some(gifs[0].url.clone()),
+			width: 320,
+			height: 200,
+			..Default::default()
+		},
+	});
+	let mut star = None;
+	for click in [false, true] {
+		let events = star
+			.filter(|_| click)
+			.map(|pos| {
+				vec![
+					egui::Event::PointerMoved(pos),
+					egui::Event::PointerButton {
+						pos,
+						button: egui::PointerButton::Primary,
+						pressed: true,
+						modifiers: Default::default(),
+					},
+					egui::Event::PointerButton {
+						pos,
+						button: egui::PointerButton::Primary,
+						pressed: false,
+						modifiers: Default::default(),
+					},
+				]
+			})
+			.unwrap_or_default();
+		let output = ctx.run_ui(
+			egui::RawInput {
+				screen_rect: Some(egui::Rect::from_min_size(
+					egui::Pos2::ZERO,
+					egui::vec2(640.0, 480.0),
+				)),
+				events,
+				..Default::default()
+			},
+			|ui| {
+				attachments::show(
+					ui,
+					&message,
+					&mut images,
+					&mut None,
+					&mut None,
+					&mut download,
+					&mut audio::AudioUi::default(),
+					&mut video::VideoUi::default(),
+					true,
+					&mut select::Surface::new(ui, "gif-check"),
+					design::MessageCardSurface::Opaque,
+				);
+			},
+		);
+		star = output.shapes.iter().find_map(|shape| match &shape.shape {
+			egui::Shape::Rect(rect) if rect.rect.size() == egui::Vec2::splat(30.0) => {
+				Some(rect.rect.center())
+			}
+			_ => None,
+		});
+		output.drop_without_applying_deltas();
+	}
+	let clicked = download
+		.gif_favorite_request
+		.take()
+		.expect("attachment star click");
+	assert!(state.toggle_gif_favorite(&clicked));
+	assert!(state.is_gif_favorite(&clicked));
+	assert!(state.toggle_gif_favorite(&clicked));
+	assert!(!state.is_gif_favorite(&clicked));
+	gifs
 }

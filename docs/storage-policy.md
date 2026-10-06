@@ -1671,6 +1671,11 @@ peer mute/camera state does not cancel an eligible target. Departure, replacemen
 access loss and target state changes retire obsolete work without an optimistic
 state or additional failure/retry queue.
 
+GIF stars in attachment and gallery widgets retain a per-frame copy of at most
+100 admitted favorite URL keys (512 bytes each) and one at-most-2-KiB pending GIF
+action in the account UI. Account reset clears both. Wire URL metadata is bounded
+by its enclosing 4-KiB entry rather than an additional 1-KiB string restriction;
+the native projection retains its existing URL and allocated-byte limits.
 
 ## Video backend preferences — October 5, 2026
 
