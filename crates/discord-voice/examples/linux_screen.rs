@@ -37,6 +37,9 @@ mod video_backend;
 #[path = "../src/video_encode.rs"]
 mod video_encode;
 #[cfg(target_os = "linux")]
+#[path = "../src/video_gpu.rs"]
+mod video_gpu;
+#[cfg(target_os = "linux")]
 #[path = "../src/video_receive.rs"]
 mod video_receive;
 #[cfg(target_os = "linux")]
@@ -111,7 +114,7 @@ fn main() {
 		let deadline = Instant::now() + Duration::from_secs(5);
 		let mut encoded = 0;
 		let mut last_pts = None;
-		let mut encoder = ScreenEncoder::new(settings, settings.bit_rate(), model::voice_settings::VideoSettings::default()).unwrap();
+		let mut encoder = ScreenEncoder::new_on_adapter(settings, settings.bit_rate(), model::voice_settings::VideoSettings::default(), None, 0, 0).unwrap();
 		while Instant::now() < deadline && encoded < 5 {
 			assert!(!pipeline.failed());
 			if let Some(sample) = pipeline.frames.try_pull_sample(gst::ClockTime::ZERO) {
@@ -120,10 +123,10 @@ fn main() {
 				last_pts = Some(pts);
 				let raw = gstreamer::raw(&sample).unwrap();
 				assert_eq!((raw.width, raw.height), (1280, 720));
-                let (data, keyframe) = encoder.encode(&raw, true).unwrap();
-				if data.is_empty() { continue; }
-				assert!(keyframe);
-				video::validate_source(&data).unwrap();
+				let packet = encoder.encode_at(&raw, true, 0).unwrap();
+				if packet.data.is_empty() { continue; }
+				assert!(packet.keyframe);
+				video::validate_source(&packet.data).unwrap();
 				encoded += 1;
 			}
 			pipeline.changed().await;

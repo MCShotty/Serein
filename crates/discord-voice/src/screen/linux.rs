@@ -369,11 +369,11 @@ pub(super) fn run(
 									keyframe: packet.keyframe,
 									timestamp: packet.timestamp,
 									epoch: packet.epoch,
-									reset_generation: encoder.reset_generation,
+									reset_generation: encoder.reset_generation(),
 								};
 								if ready.load(Ordering::Acquire)
 									&& audio_epoch.load(Ordering::Acquire)
-										== encoder.reset_generation
+										== encoder.reset_generation()
 									&& !stop.load(Ordering::Acquire)
 									&& send.try_send(frame).is_ok()
 								{

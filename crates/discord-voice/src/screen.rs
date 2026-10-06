@@ -606,6 +606,11 @@ impl ScreenEncoder {
 		Ok(())
 	}
 
+	#[cfg(target_os = "linux")]
+	pub(super) fn reset_generation(&self) -> u64 {
+		self.reset_generation
+	}
+
 	pub(super) fn reset_for_security(&mut self, generation: u64) -> Result<bool, &'static str> {
 		if generation == u64::MAX {
 			return Err("Screen security reset generation exhausted");

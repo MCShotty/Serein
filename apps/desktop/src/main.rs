@@ -6218,8 +6218,15 @@ impl eframe::App for Desktop {
 			ctx.request_repaint_after(std::time::Duration::from_millis(50));
 		}
 	}
-	fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
+	fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
 		let ctx = ui.ctx().clone();
+		let title_bar_height = if self.login.is_some() {
+			platform::LOGIN_HEADER_HEIGHT
+		} else if self.state.user.is_some() {
+			ui::design::TITLE_BAR_HEIGHT
+		} else {
+			SIGN_IN_HEADER_HEIGHT
+		};
 		self.tray_window.ui(&ctx);
 		// Change native hints before drawing, so the clear color and panel alpha
 		// agree for the whole frame. OS calls happen only when an effect changes.
@@ -7047,6 +7054,9 @@ impl eframe::App for Desktop {
 		{
 			self.messaging.hide_title_bar = false;
 			self.state.status = error;
+		}
+		if !self.messaging.hide_title_bar {
+			frame.set_traffic_lights_position(&ctx, egui::Rangef::new(0.0, title_bar_height), 12.0);
 		}
 		self.sync_customization(&ctx);
 		self.save_app_preferences();
