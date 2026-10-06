@@ -1,5 +1,8 @@
-#ifndef _WIN32
+#if defined(__linux__)
 #define _POSIX_C_SOURCE 200809L
+#elif defined(__APPLE__)
+/* RTLD_DEFAULT is a Darwin extension hidden by strict POSIX feature selection. */
+#define _DARWIN_C_SOURCE
 #endif
 /* Explicit renderer GPU binding. Never guess a physical device from a vendor,
  * GPU model name, performance preference, or an encoder's default adapter. */

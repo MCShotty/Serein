@@ -467,7 +467,12 @@
       "software fallback with unknown renderer",
       "48-picture ceiling",
       "reordered modes use preset/driver reference buffers; non-B modes retain one reference"
-    ]
+    ],
+    "macos_ci_followup": {
+      "initial_source": "b1e936586e9761e96b859434b2ed26ccaa529997",
+      "job": "https://github.com/MCShotty/Serein/actions/runs/37499865934/job/112393807382",
+      "result": "Native FFmpeg libraries compiled; production C shim failed because strict POSIX features hid RTLD_DEFAULT. Follow-up selects Darwin extensions only for macOS; native CI recheck pending."
+    }
   },
   "formatting": "final workspace and fuzz checks passed",
   "policy": "passed",
@@ -516,7 +521,7 @@
     "crates/discord-voice/src/video_encode_linux.rs": "532b4fd844795a85d9ba773633b67ac2769c384edd7731be920775af3871da67",
     "crates/discord-voice/src/video_encode_macos.rs": "58ed9eff649c494b7cb5e64bc27893d6a818f6d451cef87964a15d691eed56a3",
     "crates/discord-voice/src/video_encode_windows.rs": "fd10eb3e9b56c4b0d1e7e734b35543d6c827ed6c4fed38bea7c6b421baf06374",
-    "crates/discord-voice/src/video_gpu.c": "eae27a3a9bd3230f0e5a69c24186ce3dd19dfde63fa4c5b480d8bf4aadcc2fcf",
+    "crates/discord-voice/src/video_gpu.c": "574c7cade833ed2c601640f71770260a9b59cd8c8cafbc9d38fc32b9a79d8dd4",
     "crates/discord-voice/src/video_gpu.h": "bd65fb82cc7f0b8d2f9874963a85b48c2645f972e3f7a1a8a7288c54d6d2dcff",
     "crates/discord-voice/src/video_gpu.rs": "3ebe60735724de3ed159977ceb0181ea6e7488fc3d1d2bb8678cbf12ee3b50d7",
     "crates/discord-voice/src/video_query.c": "85a6fac494ca6d20b3026a03dcefb928d7a414daa15ef34a0655f93a5e4d5630",
