@@ -60,6 +60,8 @@ pub(crate) fn bgra_to_i420(
 	validate_frame(frame)?;
 	if width == 0
 		|| height == 0
+		|| width > model::voice_settings::VideoResolution::MAX_WIDTH as usize
+		|| height > model::voice_settings::VideoResolution::MAX_HEIGHT as usize
 		|| !width.is_multiple_of(2)
 		|| !height.is_multiple_of(2)
 		|| output.len() != width * height * 3 / 2

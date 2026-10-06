@@ -472,12 +472,12 @@ mod tests {
 		{
 			let mut info = MFT_OUTPUT_STREAM_INFO {
 				dwFlags: 0,
-				cbSize: 1280 * 720 * 3 / 2,
+				cbSize: 1920 * 1080 * 3 / 2,
 				cbAlignment: 0,
 			};
 			assert!(info.cbSize as usize > crate::camera::MAX_ENCODED_BYTES);
 			assert_eq!(
-				output_buffer_size(&info, 1280 * 720 * 4).unwrap(),
+				output_buffer_size(&info, 1920 * 1080 * 4).unwrap(),
 				info.cbSize
 			);
 			assert!(output_buffer_size(&info, 1024).is_err());

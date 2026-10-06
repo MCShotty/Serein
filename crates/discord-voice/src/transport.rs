@@ -263,7 +263,7 @@ pub async fn run(
 	capture: Receiver<CapturedFrame>,
 	playback: SyncSender<Frame>,
 	controls: watch::Receiver<Controls>,
-	camera: Option<Receiver<crate::camera_video::Frame>>,
+	camera: Option<tokio::sync::mpsc::Receiver<crate::camera_video::Frame>>,
 	remote_video: Option<VideoSink>,
 	stream_audio: Option<Receiver<Frame>>,
 	emit: impl Fn(Status) -> Result<(), ()> + Send + 'static,
@@ -288,7 +288,7 @@ pub async fn run_with_identity(
 	capture: Receiver<CapturedFrame>,
 	playback: SyncSender<Frame>,
 	controls: watch::Receiver<Controls>,
-	camera: Option<Receiver<crate::camera_video::Frame>>,
+	camera: Option<tokio::sync::mpsc::Receiver<crate::camera_video::Frame>>,
 	remote_video: Option<VideoSink>,
 	stream_audio: Option<Receiver<Frame>>,
 	emit: impl Fn(Status) -> Result<(), ()> + Send + 'static,
@@ -318,7 +318,7 @@ async fn run_inner(
 	capture: Receiver<CapturedFrame>,
 	playback: SyncSender<Frame>,
 	mut controls: watch::Receiver<Controls>,
-	camera: Option<Receiver<crate::camera_video::Frame>>,
+	mut camera: Option<tokio::sync::mpsc::Receiver<crate::camera_video::Frame>>,
 	remote_video: Option<VideoSink>,
 	stream_audio: Option<Receiver<Frame>>,
 	emit: impl Fn(Status) -> Result<(), ()>,
@@ -373,9 +373,7 @@ async fn run_inner(
 	let mut discovering = false;
 	let mut discovery_deadline = Instant::now();
 	let mut ssrc = 0u32;
-	let mut video = crate::camera_video::Sender::new(outgoing_codec);
-	let mut video_tick = tokio::time::interval(Duration::from_millis(2));
-	video_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+	let mut video = crate::camera_video::Sender::new(video_settings);
 	let mut mixer = crate::mixer::Mixer::default();
 	let mut stream_playout = crate::stream_playout::Playout::default();
 	let mut seq_ack: i64 = -1;
@@ -418,12 +416,42 @@ async fn run_inner(
 	loop {
 		tokio::select! {
 			changed=controls.changed()=>{ if changed.is_err(){return Ok(());} },
-			_=video_tick.tick(), if !video.is_empty()=>{
+			// Camera pictures wake their own bounded receive path. Consuming them on
+			// the 20 ms audio tick would cap a selected 60 fps stream at 50 fps.
+			frame=async {
+				match camera.as_mut() {
+					Some(camera)=>camera.recv().await,
+					None=>std::future::pending().await,
+				}
+			}, if camera.is_some()=>{
+				let Some(frame)=frame else {camera=None;video.clear();continue;};
+				let now=Instant::now();
+				let control=*controls.borrow();
+				let enabled=dave.ready && encryption.is_some() && udp.is_some() && !discovering && !resuming
+					&& video.available() && control.camera!=0;
+				if !enabled || video.generation!=control.camera || video.stale(now) {video.clear();}
+				video.generation=control.camera;
+				if enabled && frame.generation==control.camera && video.is_empty()
+					&& frame.codec==outgoing_codec
+					&& frame.data.len()<=crate::camera_video::MAX_FRAME_BYTES {
+					if !video.announced {
+						json_send(&mut ws,video.announcement(ssrc,true)).await?;
+						video.announced=true;
+					}
+					let normalized=crate::video::prepare_source(&frame.data,outgoing_codec)?;
+					let encrypted=dave.session.encrypt(davey::MediaType::VIDEO,crate::video::dave_codec(outgoing_codec),&normalized).map_err(|_|"DAVE camera encryption failed")?;
+					video.packetize(&encrypted,frame.timestamp,now)?;
+				}
+			},
+			_=tokio::time::sleep_until(video.deadline()), if !video.is_empty()=>{
 				let generation=controls.borrow().camera;
 				if !dave.ready || resuming || generation==0 || generation!=video.generation {video.clear();}
-				else if let Some(packet)=video.next() && let Some(socket)=&udp {
-					udp_failures.send(socket,&packet,"Camera UDP send failed")?;
-				}
+				else if let Some(socket)=&udp {
+					let crypto=encryption.as_mut().ok_or("Missing camera transport key")?;
+					for packet in video.next_batch(Instant::now(),crypto)? {
+						udp_failures.send(socket,&packet,"Camera UDP send failed")?;
+					}
+				} else {video.clear();}
 			},
 			_=tick.tick()=>{
 				let now=Instant::now();
@@ -459,24 +487,12 @@ async fn run_inner(
 					next_pli=now+Duration::from_millis(500);
 				}
 				let control=*controls.borrow();
-				let camera_enabled=enabled && video.available() && control.camera!=0;
-				if !camera_enabled || video.generation!=control.camera {video.clear();}
+				let camera_enabled=enabled && camera.is_some() && udp.is_some() && video.available() && control.camera!=0;
+				if !camera_enabled || video.generation!=control.camera || video.stale(now) {video.clear();}
 				video.generation=control.camera;
 				if video.announced && !camera_enabled {
 					json_send(&mut ws,video.announcement(ssrc,camera_enabled)).await?;
 					video.announced=camera_enabled;
-				}
-				if let Some(camera)=&camera && let Ok(frame)=camera.try_recv()
-					&& camera_enabled && frame.generation==control.camera && video.is_empty()
-					&& frame.codec==outgoing_codec
-					&& frame.data.len()<=crate::camera_video::MAX_FRAME_BYTES {
-					if !video.announced {
-						json_send(&mut ws,video.announcement(ssrc,true)).await?;
-						video.announced=true;
-					}
-					let normalized=crate::video::prepare_source(&frame.data,outgoing_codec)?;
-					let encrypted=dave.session.encrypt(davey::MediaType::VIDEO,crate::video::dave_codec(outgoing_codec),&normalized).map_err(|_|"DAVE camera encryption failed")?;
-					video.packetize(&encrypted,frame.timestamp,encryption.as_mut().ok_or("Missing camera transport key")?)?;
 				}
 				// Preserve ordinary callback batches. Only a real stall (four packet
 				// intervals) discards queued speech; mute/security gates always flush.
@@ -2316,7 +2332,7 @@ mod tests {
 			.unwrap();
 		let (playback, playback_rx) = std::sync::mpsc::sync_channel(8);
 		let (control_tx, control_rx) = watch::channel(Controls::default());
-		let (_camera_tx, camera_rx) = std::sync::mpsc::sync_channel(1);
+		let (_camera_tx, camera_rx) = tokio::sync::mpsc::channel(1);
 		let (status_tx, mut status_rx) = tokio::sync::mpsc::channel(8);
 		let task = tokio::spawn(run_inner(
 			credentials,
@@ -2573,7 +2589,7 @@ mod tests {
 		let (_capture_tx, capture) = std::sync::mpsc::sync_channel(8);
 		let (playback, _playback_rx) = std::sync::mpsc::sync_channel(8);
 		let (control_tx, control_rx) = watch::channel(Controls::default());
-		let (_camera_tx, camera_rx) = std::sync::mpsc::sync_channel(1);
+		let (_camera_tx, camera_rx) = tokio::sync::mpsc::channel(1);
 		let (status_tx, mut status_rx) = tokio::sync::mpsc::channel(8);
 		let task = tokio::spawn(run_inner(
 			credentials,

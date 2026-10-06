@@ -4756,3 +4756,47 @@ Cancelling discovery drops stale messages and restarts on reopening; cancelling
 a test leaves it waiting for an explicit new click. Full local workspace checks
 also stop at missing GLib development metadata. Native platform CI remains the
 standard build validation for this change.
+
+## 8K presets and camera frame-rate controls — October 6, 2026
+
+Baseline `623ef63514c1b68c516bc4b047503cead6b23511`, compared with the task's 8K
+output presets and 15/30/60 fps camera controls. One matched auxiliary native UI
+helper pair on Debian 13, Linux 6.18.44, Intel Xeon Platinum 8573C (five exposed
+logical CPUs), 18,440,136 KiB configured RAM, pinned Rust 1.98.1, opt-level 1/debug 0,
+Mesa Gallium 25.0.7/LLVM 19 software OpenGL. Actual UI/model/core crates use locked
+cached dependencies; this helper excludes production GTK/native desktop adapters.
+Both runs use default Inter, dark appearance, 1120×760 at 100%, Experimental/H.265,
+synthetic driver rows, default camera settings, and no capture or encoding.
+
+| Auxiliary native helper metric | Before | After | Delta |
+| --- | ---: | ---: | ---: |
+| Idle CPU, one logical core | 0.000% | 0.000% | +0.000 percentage points |
+| Sampled peak and settled RSS | 162,140,160 bytes | 163,909,632 bytes | +1,769,472 / +1.091% |
+| Helper executable | 84,238,472 bytes | 84,296,376 bytes | +57,904 / +0.069% |
+
+Six-second warmup, 100 wheel-down events in the settings body, pointer moved out,
+then fifteen one-second `/proc` RSS samples per revision through psutil. CPU uses
+process user+system time deltas, not total host CPU. No children were observed;
+compiler work was stopped during each measurement. Peak and final RSS matched in
+both runs. This single short pair shows a 1.688 MiB settings-rendering RSS
+difference and no measurable idle CPU difference at the timer's resolution; it
+establishes no general performance improvement or regression. Native warnings
+about unavailable font caches/X11 SHM were the same nonfatal helper limitations.
+Raw samples, executable hashes and reproduction are in
+[`pr-evidence/video-8k-resolution`](pr-evidence/video-8k-resolution/README.md).
+
+The standard `cargo xtask package` attempt stops at missing `glib-2.0.pc`; standard
+executable, complete installed-package and compressed-distribution deltas for this
+addition remain unmeasured locally. Earlier package tables describe earlier stages.
+The helper sizes above are not package measurements. Physical 8K/60 fps capture,
+GPU throughput/memory, full-frame/startup timings and sustained leak behavior remain
+unmeasured.
+
+Higher selected presets deliberately increase worker/native surface memory: an
+8K packed BGRA picture is 132,710,400 bytes, RGB 99,532,800 bytes and I420 49,766,400
+bytes, before separately owned codec/capture surfaces. Camera native byte budgets
+follow negotiated geometry with at most 4096 padding bytes per row, within a global
+150,405,120-byte ceiling. Encoded camera caps still start at 128 KiB for 480p and
+scale only by resolution to at most 2 MiB; selected frame rate does not enlarge
+that cap. Camera UI previews remain at most 640×480 RGB, screen previews 640×360
+RGBA. These are component bounds, not a total RSS cap or measured active-media cost.

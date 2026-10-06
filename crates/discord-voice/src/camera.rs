@@ -1,12 +1,12 @@
 //! User-started, ephemeral camera capture. No capture stream starts before `start`.
 
-use model::voice_settings::{VideoCodec, VideoSettings};
+use model::voice_settings::{VideoCodec, VideoFrameRate, VideoResolution, VideoSettings};
 use openh264::formats::{RgbSliceU8, YUVBuffer, YUVSource};
 use std::sync::{
 	Arc, Mutex,
 	atomic::{AtomicBool, Ordering},
 };
-use std::{thread, time::Duration};
+use std::thread;
 
 mod format;
 #[cfg(target_os = "linux")]
@@ -16,17 +16,46 @@ mod windows;
 
 pub const WIDTH: usize = 640;
 pub const HEIGHT: usize = 480;
-pub const MAX_ENCODED_BYTES: usize = 128 * 1024;
+pub const MAX_ENCODED_BYTES: usize = 2 * 1024 * 1024;
+
+/// Keep the default camera's existing allocation budget; larger selected presets
+/// earn progressively larger access units within the shared transport ceiling.
+pub fn encoded_limit(resolution: VideoResolution) -> usize {
+	match resolution {
+		VideoResolution::P480 => 128 * 1024,
+		VideoResolution::P720 => 256 * 1024,
+		VideoResolution::P1080 => 512 * 1024,
+		VideoResolution::P1440 => 1024 * 1024,
+		VideoResolution::P2160 | VideoResolution::P4320 => MAX_ENCODED_BYTES,
+	}
+}
+
+/// Independently decodable pictures, bounded by the selected preset and rate.
+pub fn bit_rate(resolution: VideoResolution, frame_rate: VideoFrameRate) -> u32 {
+	let base = match resolution {
+		VideoResolution::P480 => 600_000,
+		VideoResolution::P720 => 2_000_000,
+		VideoResolution::P1080 => 4_000_000,
+		VideoResolution::P1440 => 8_000_000,
+		VideoResolution::P2160 => 16_000_000,
+		VideoResolution::P4320 => 40_000_000,
+	};
+	(base * (frame_rate.fps() / 15)).min(50_000_000)
+}
 pub const SUPPORTED: bool = cfg!(any(
 	target_os = "macos",
 	target_os = "windows",
 	target_os = "linux"
 ));
-const FRAME_INTERVAL: Duration = Duration::from_nanos(1_000_000_000 / format::FPS as u64);
 // Includes asynchronous teardown: rapid toggles cannot accumulate camera workers.
 static RUNNING: AtomicBool = AtomicBool::new(false);
 
 pub struct Frame {
+	/// Actual encoded picture dimensions; the preview has its own smaller geometry.
+	pub width: u32,
+	pub height: u32,
+	pub preview_width: u32,
+	pub preview_height: u32,
 	pub rgb: Vec<u8>,
 	pub data: Vec<u8>,
 	pub codec: VideoCodec,
@@ -161,48 +190,99 @@ struct CameraEncoder {
 	codec: VideoCodec,
 	yuv: YUVBuffer,
 	i420: Vec<u8>,
+	dimensions: (usize, usize),
 }
 
 impl CameraEncoder {
+	fn config(video: VideoSettings) -> crate::video_encode::Config {
+		let (width, height) = video.camera_resolution.camera_dimensions();
+		crate::video_encode::Config {
+			width,
+			height,
+			fps: video.camera_frame_rate.fps(),
+			bit_rate: bit_rate(video.camera_resolution, video.camera_frame_rate),
+			max_bytes: encoded_limit(video.camera_resolution),
+			profile: crate::video_encode::Profile::Baseline,
+			codec: video.codec,
+		}
+	}
+
 	fn new(video: VideoSettings) -> Result<Self, &'static str> {
-		let encoder = crate::video_backend::Encoder::new(
-			crate::video_encode::Config {
-				width: WIDTH as u32,
-				height: HEIGHT as u32,
-				fps: format::FPS,
-				bit_rate: 600_000,
-				max_bytes: MAX_ENCODED_BYTES,
-				profile: crate::video_encode::Profile::Baseline,
-				codec: video.codec,
-			},
-			video.backend,
-		)?;
+		let config = Self::config(video);
+		let (width, height) = (config.width as usize, config.height as usize);
+		let encoder = crate::video_backend::Encoder::new(config, video.backend)?;
 		Ok(Self {
 			diagnostics: crate::diagnostics::EncoderRegistration::new(false, encoder.hardware()),
 			encoder,
 			codec: video.codec,
-			yuv: YUVBuffer::new(WIDTH, HEIGHT),
-			i420: Vec::with_capacity(WIDTH * HEIGHT * 3 / 2),
+			yuv: YUVBuffer::new(width, height),
+			i420: Vec::with_capacity(width * height * 3 / 2),
+			dimensions: (width, height),
 		})
 	}
 
 	fn encode(&mut self, rgb: Vec<u8>) -> Result<Option<Frame>, &'static str> {
-		if rgb.len() != WIDTH * HEIGHT * 3 {
-			return Err("Camera did not provide a bounded 640×480 RGB frame");
+		let (width, height) = self.dimensions;
+		if rgb.len() != width * height * 3 {
+			return Err("Camera did not provide the selected bounded RGB frame size");
 		}
-		self.yuv.read_rgb8(RgbSliceU8::new(&rgb, (WIDTH, HEIGHT)));
+		self.yuv.read_rgb8(RgbSliceU8::new(&rgb, (width, height)));
 		self.i420.clear();
 		self.i420.extend_from_slice(self.yuv.y());
 		self.i420.extend_from_slice(self.yuv.u());
 		self.i420.extend_from_slice(self.yuv.v());
 		let (data, _) = self.encoder.encode(&self.i420, true)?;
 		self.diagnostics.set(Some(self.encoder.hardware()));
-		Ok((!data.is_empty()).then_some(Frame {
+		if data.is_empty() {
+			return Ok(None);
+		}
+		let (rgb, preview_width, preview_height) = preview_rgb(rgb, width, height)?;
+		Ok(Some(Frame {
+			width: width as u32,
+			height: height as u32,
+			preview_width,
+			preview_height,
 			rgb,
 			data,
 			codec: self.codec,
 		}))
 	}
+}
+
+/// Only the worker sees full-resolution RGB; UI queues retain a small preview.
+fn preview_rgb(
+	rgb: Vec<u8>,
+	width: usize,
+	height: usize,
+) -> Result<(Vec<u8>, u32, u32), &'static str> {
+	if width == 0
+		|| height == 0
+		|| width > format::MAX_CAPTURE_WIDTH
+		|| height > format::MAX_CAPTURE_HEIGHT
+		|| width
+			.checked_mul(height)
+			.and_then(|pixels| pixels.checked_mul(3))
+			!= Some(rgb.len())
+	{
+		return Err("Camera preview dimensions exceed bounds");
+	}
+	let scale = (WIDTH as f64 / width as f64)
+		.min(HEIGHT as f64 / height as f64)
+		.min(1.0);
+	let preview_width = ((width as f64 * scale).round() as usize).clamp(1, WIDTH);
+	let preview_height = ((height as f64 * scale).round() as usize).clamp(1, HEIGHT);
+	if (preview_width, preview_height) == (width, height) {
+		return Ok((rgb, width as u32, height as u32));
+	}
+	let mut preview = vec![0; preview_width * preview_height * 3];
+	for y in 0..preview_height {
+		for x in 0..preview_width {
+			let source = (y * height / preview_height * width + x * width / preview_width) * 3;
+			let target = (y * preview_width + x) * 3;
+			preview[target..target + 3].copy_from_slice(&rgb[source..source + 3]);
+		}
+	}
+	Ok((preview, preview_width as u32, preview_height as u32))
 }
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
@@ -227,11 +307,23 @@ fn run(
 	};
 	#[cfg(target_os = "windows")]
 	{
-		windows::run(shared, device, &mut emit)
+		windows::run(
+			shared,
+			device,
+			video.camera_resolution,
+			video.camera_frame_rate,
+			&mut emit,
+		)
 	}
 	#[cfg(target_os = "linux")]
 	{
-		linux::run(shared, device, &mut emit)
+		linux::run(
+			shared,
+			device,
+			video.camera_resolution,
+			video.camera_frame_rate,
+			&mut emit,
+		)
 	}
 }
 
@@ -300,7 +392,8 @@ mod macos {
 	struct DelegateState {
 		send: SyncSender<Result<Vec<u8>, &'static str>>,
 		shared: Arc<Shared>,
-		last: Mutex<Instant>,
+		cadence: Mutex<format::Cadence>,
+		dimensions: (usize, usize),
 	}
 
 	define_class!(
@@ -323,34 +416,45 @@ mod macos {
 				if state.shared.stopped.load(Ordering::Acquire) {
 					return;
 				}
-				let Ok(mut last) = state.last.try_lock() else {
+				let Ok(mut cadence) = state.cadence.try_lock() else {
 					return;
 				};
-				if last.elapsed() < FRAME_INTERVAL {
+				if !cadence.accept(Instant::now()) {
 					return;
 				}
-				*last = Instant::now();
-				let _ = state.send.try_send(copy_bgra(sample));
+				let _ = state.send.try_send(copy_bgra(sample, state.dimensions));
 			}
 		}
 	);
 
-	fn copy_bgra(sample: &CMSampleBuffer) -> Result<Vec<u8>, &'static str> {
+	fn copy_bgra(
+		sample: &CMSampleBuffer,
+		dimensions: (usize, usize),
+	) -> Result<Vec<u8>, &'static str> {
+		let (width, height) = dimensions;
+		if width == 0
+			|| height == 0
+			|| width > format::MAX_CAPTURE_WIDTH
+			|| height > format::MAX_CAPTURE_HEIGHT
+		{
+			return Err("Camera frame exceeds bounds");
+		}
 		// SAFETY: The sample is valid for this delegate invocation. Retain its image,
 		// verify packed BGRA dimensions/stride before reading, and unlock every path.
 		unsafe {
 			let pixels = sample.image_buffer().ok_or("Camera returned no image")?;
 			let stride = CVPixelBufferGetBytesPerRow(&pixels);
 			let bytes = stride
-				.checked_mul(HEIGHT)
+				.checked_mul(height)
 				.ok_or("Camera frame exceeds bounds")?;
-			if CVPixelBufferGetWidth(&pixels) != WIDTH
-				|| CVPixelBufferGetHeight(&pixels) != HEIGHT
+			if CVPixelBufferGetWidth(&pixels) != width
+				|| CVPixelBufferGetHeight(&pixels) != height
 				|| CVPixelBufferGetPixelFormatType(&pixels) != kCVPixelFormatType_32BGRA
-				|| !(WIDTH * 4..=WIDTH * 4 + 4096).contains(&stride)
+				|| !(width * 4..=width * 4 + format::MAX_STRIDE_PADDING).contains(&stride)
+				|| bytes > format::MAX_RAW_BYTES
 				|| bytes > CVPixelBufferGetDataSize(&pixels)
 			{
-				return Err("Camera did not provide a bounded 640×480 BGRA frame");
+				return Err("Camera did not provide a selected bounded BGRA frame");
 			}
 			if CVPixelBufferLockBaseAddress(&pixels, CVPixelBufferLockFlags::ReadOnly) != 0 {
 				return Err("Camera image could not be read");
@@ -360,12 +464,12 @@ mod macos {
 				Err("Camera returned an empty image")
 			} else {
 				let source = std::slice::from_raw_parts(base.cast::<u8>(), bytes);
-				let mut bgra = vec![0; WIDTH * HEIGHT * 4];
+				let mut bgra = vec![0; width * height * 4];
 				for (row, dest) in source
 					.chunks_exact(stride)
-					.zip(bgra.as_chunks_mut::<{ WIDTH * 4 }>().0)
+					.zip(bgra.chunks_exact_mut(width * 4))
 				{
-					dest.copy_from_slice(&row[..WIDTH * 4]);
+					dest.copy_from_slice(&row[..width * 4]);
 				}
 				Ok(bgra)
 			};
@@ -413,7 +517,11 @@ mod macos {
 		queue: DispatchRetained<DispatchQueue>,
 	}
 
-	fn configure(device: &AVCaptureDevice) -> Result<(), &'static str> {
+	fn configure(
+		device: &AVCaptureDevice,
+		dimensions: (usize, usize),
+		target_fps: u32,
+	) -> Result<(), &'static str> {
 		// SAFETY: Formats/ranges come from this device. Only this worker changes it,
 		// while locked, before capture starts. Endpoint durations stay exact.
 		unsafe {
@@ -422,11 +530,16 @@ mod macos {
 				let size = CMVideoFormatDescriptionGetDimensions(&native.formatDescription());
 				for range in native.videoSupportedFrameRateRanges().iter().take(256) {
 					let (min, max) = (range.minFrameRate(), range.maxFrameRate());
-					let Some(fps) = format::nearest_fps(min, max) else {
+					let Some(fps) = format::nearest_fps_for(min, max, target_fps) else {
 						continue;
 					};
-					let Some(rank) = format::rank(size.width as usize, size.height as usize, fps)
-					else {
+					let Some(rank) = format::rank_for_output_at_rate(
+						size.width as usize,
+						size.height as usize,
+						fps,
+						dimensions,
+						target_fps,
+					) else {
 						continue;
 					};
 					let duration = if fps == min {
@@ -434,7 +547,7 @@ mod macos {
 					} else if fps == max {
 						range.minFrameDuration()
 					} else {
-						CMTime::new(1, format::FPS as i32)
+						CMTime::new(1, target_fps as i32)
 					};
 					if selected.as_ref().is_none_or(|(best, _, _)| rank < *best) {
 						selected = Some((rank, native.clone(), duration));
@@ -442,7 +555,7 @@ mod macos {
 				}
 			}
 			let (_, native, duration) =
-				selected.ok_or("Camera does not offer a capture mode at or below 1280×720")?;
+				selected.ok_or("Camera does not support the selected resolution")?;
 			device
 				.lockForConfiguration()
 				.map_err(|_| "Camera configuration is unavailable")?;
@@ -476,6 +589,9 @@ mod macos {
 			return Ok(());
 		}
 		let mut encoder = CameraEncoder::new(video)?;
+		let target_fps = video.camera_frame_rate.fps();
+		let cadence =
+			format::Cadence::new(target_fps, Instant::now()).ok_or("Invalid camera frame rate")?;
 		let (send, receive) = mpsc::sync_channel(1);
 		let queue = DispatchQueue::new("serein.camera.frames", None);
 		// SAFETY: Only this worker configures/owns the session. Delegate lives until
@@ -505,12 +621,12 @@ mod macos {
 			}
 			session.beginConfiguration();
 			session.setSessionPreset(AVCaptureSessionPresetInputPriority);
-			let configured = configure(&device);
+			let configured = configure(&device, encoder.dimensions, target_fps);
 			session.commitConfiguration();
 			configured?;
 			let format = NSNumber::new_u32(kCVPixelFormatType_32BGRA);
-			let width = NSNumber::new_usize(WIDTH);
-			let height = NSNumber::new_usize(HEIGHT);
+			let width = NSNumber::new_usize(encoder.dimensions.0);
+			let height = NSNumber::new_usize(encoder.dimensions.1);
 			let format_key = NSString::from_str(&kCVPixelBufferPixelFormatTypeKey.to_string());
 			let width_key = NSString::from_str(&kCVPixelBufferWidthKey.to_string());
 			let height_key = NSString::from_str(&kCVPixelBufferHeightKey.to_string());
@@ -529,7 +645,8 @@ mod macos {
 			let allocated = SereinCameraDelegate::alloc().set_ivars(DelegateState {
 				send,
 				shared: shared.clone(),
-				last: Mutex::new(Instant::now() - FRAME_INTERVAL),
+				cadence: Mutex::new(cadence),
+				dimensions: encoder.dimensions,
 			});
 			let delegate: Retained<SereinCameraDelegate> = msg_send![super(allocated), init];
 			output.setSampleBufferDelegate_queue(
@@ -573,7 +690,7 @@ mod macos {
 				}
 			};
 			last_frame = Instant::now();
-			let mut rgb = vec![0; WIDTH * HEIGHT * 3];
+			let mut rgb = vec![0; encoder.dimensions.0 * encoder.dimensions.1 * 3];
 			for (bgra, rgb) in bgra
 				.as_chunks::<4>()
 				.0
@@ -599,6 +716,105 @@ mod macos {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn selected_camera_rate_configures_encoding_and_scales_bitrate_with_a_ceiling() {
+		let default = CameraEncoder::config(VideoSettings::default());
+		assert_eq!(default.fps, 15);
+		assert_eq!(default.bit_rate, 600_000);
+		for rate in VideoFrameRate::ALL {
+			for resolution in VideoResolution::ALL {
+				let config = CameraEncoder::config(VideoSettings {
+					camera_resolution: resolution,
+					camera_frame_rate: rate,
+					..VideoSettings::default()
+				});
+				assert_eq!(config.fps, rate.fps());
+				assert_eq!(config.bit_rate, bit_rate(resolution, rate));
+				assert!(config.bit_rate <= 50_000_000);
+				assert_eq!(config.max_bytes, encoded_limit(resolution));
+			}
+		}
+		assert_eq!(
+			bit_rate(VideoResolution::P480, VideoFrameRate::Fps30),
+			1_200_000
+		);
+		assert_eq!(
+			bit_rate(VideoResolution::P480, VideoFrameRate::Fps60),
+			2_400_000
+		);
+		assert_eq!(
+			bit_rate(VideoResolution::P2160, VideoFrameRate::Fps30),
+			32_000_000
+		);
+		assert_eq!(
+			bit_rate(VideoResolution::P2160, VideoFrameRate::Fps60),
+			50_000_000
+		);
+		assert_eq!(
+			bit_rate(VideoResolution::P4320, VideoFrameRate::Fps60),
+			50_000_000
+		);
+	}
+	#[test]
+	fn encoded_camera_allocations_follow_the_selected_preset() {
+		let default = CameraEncoder::config(VideoSettings::default());
+		assert_eq!((default.width, default.height), (640, 480));
+		assert_eq!(default.max_bytes, 128 * 1024);
+		for (resolution, limit) in [
+			(VideoResolution::P480, 128 * 1024),
+			(VideoResolution::P720, 256 * 1024),
+			(VideoResolution::P1080, 512 * 1024),
+			(VideoResolution::P1440, 1024 * 1024),
+			(VideoResolution::P2160, 2 * 1024 * 1024),
+			(VideoResolution::P4320, 2 * 1024 * 1024),
+		] {
+			let config = CameraEncoder::config(VideoSettings {
+				camera_resolution: resolution,
+				..VideoSettings::default()
+			});
+			assert_eq!(config.max_bytes, limit);
+			assert!(config.max_bytes <= MAX_ENCODED_BYTES);
+		}
+	}
+	#[test]
+	fn selected_camera_resolution_is_encoded_separately_from_its_small_preview() {
+		let mut encoder = CameraEncoder::new(VideoSettings {
+			backend: model::voice_settings::VideoBackend::Experimental,
+			camera_resolution: VideoResolution::P720,
+			..VideoSettings::default()
+		})
+		.unwrap();
+		let mut produced = 0;
+		for value in [0, 127, 255].into_iter().cycle().take(8) {
+			let Some(frame) = encoder.encode(vec![value; 1280 * 720 * 3]).unwrap() else {
+				continue;
+			};
+			produced += 1;
+			assert_eq!((frame.width, frame.height), (1280, 720));
+			assert_eq!((frame.preview_width, frame.preview_height), (640, 360));
+			assert_eq!(frame.rgb.len(), 640 * 360 * 3);
+			let mut decoder = openh264::decoder::Decoder::new().unwrap();
+			let decoded = decoder.decode(&frame.data).unwrap().unwrap();
+			assert_eq!(decoded.dimensions(), (1280, 720));
+		}
+		assert!(produced > 0);
+	}
+
+	#[test]
+	fn high_resolution_preview_is_small_and_preserves_the_picture() {
+		let rgb = vec![126; 3840 * 2160 * 3];
+		let (preview, width, height) = preview_rgb(rgb, 3840, 2160).unwrap();
+		assert_eq!((width, height), (640, 360));
+		assert_eq!(preview.len(), 640 * 360 * 3);
+		assert!(preview.iter().all(|byte| *byte == 126));
+		assert!(preview_rgb(Vec::new(), 7681, 4320).is_err());
+		assert!(preview_rgb(vec![0; 6], 2, 2).is_err());
+		let original = vec![12; WIDTH * HEIGHT * 3];
+		let pointer = original.as_ptr();
+		let (preview, width, height) = preview_rgb(original, WIDTH, HEIGHT).unwrap();
+		assert_eq!((width, height), (WIDTH as u32, HEIGHT as u32));
+		assert_eq!(preview.as_ptr(), pointer);
+	}
 
 	#[test]
 	fn camera_rejects_unbounded_or_nul_device_ids_before_starting_worker() {
@@ -624,6 +840,7 @@ mod tests {
 		let mut encoder = CameraEncoder::new(VideoSettings {
 			backend: model::voice_settings::VideoBackend::Experimental,
 			codec: VideoCodec::H264,
+			..VideoSettings::default()
 		})
 		.unwrap();
 		for length in [0, WIDTH * HEIGHT * 3 - 1, WIDTH * HEIGHT * 3 + 1] {
@@ -657,6 +874,7 @@ mod tests {
 			let mut encoder = CameraEncoder::new(VideoSettings {
 				backend: model::voice_settings::VideoBackend::Experimental,
 				codec: VideoCodec::H264,
+				..VideoSettings::default()
 			})
 			.unwrap();
 			for length in [0, WIDTH * HEIGHT * 3 - 1, WIDTH * HEIGHT * 3 + 1] {
@@ -700,6 +918,7 @@ fn synthetic_camera_encode_workload() {
 	synthetic_camera_encode(VideoSettings {
 		backend: model::voice_settings::VideoBackend::Experimental,
 		codec: VideoCodec::H264,
+		..VideoSettings::default()
 	});
 }
 
