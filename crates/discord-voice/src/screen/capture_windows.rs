@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use windows_capture::{
 	capture::{CaptureControl, Context, GraphicsCaptureApiHandler},
 	frame::Frame,
-	graphics_capture_api::InternalCaptureControl,
+	graphics_capture_api::{GraphicsCaptureApi, InternalCaptureControl},
 	monitor::Monitor,
 	settings::{
 		ColorFormat, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings,
@@ -287,7 +287,12 @@ where
 		} else {
 			CursorCaptureSettings::WithoutCursor
 		},
-		DrawBorderSettings::WithoutBorder,
+		// Hide the border where supported; older Windows must keep the system default.
+		if GraphicsCaptureApi::is_border_settings_supported().unwrap_or(false) {
+			DrawBorderSettings::WithoutBorder
+		} else {
+			DrawBorderSettings::Default
+		},
 		SecondaryWindowSettings::Default,
 		MinimumUpdateIntervalSettings::Default,
 		DirtyRegionSettings::Default,

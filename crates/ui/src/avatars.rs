@@ -1081,7 +1081,9 @@ impl Avatars {
 			.filter(|gif| self.animate_gifs && gif.url.ends_with(".gif"))
 			.map(|gif| model::EmbedMedia {
 				url: Some(gif.url.clone()),
-				proxy_url: None,
+				proxy_url: (!model::valid_gif_preview(&gif.url)
+					&& !model::valid_discord_media_url(&gif.url))
+				.then(|| gif.preview.clone()),
 				width: gif.width,
 				height: gif.height,
 				placeholder: poster
@@ -1092,7 +1094,8 @@ impl Avatars {
 			.as_ref()
 			.or(original.as_ref())
 			.or(embed.image.as_ref())
-			.or(embed.thumbnail.as_ref());
+			.or(embed.thumbnail.as_ref())
+			.or(embed.video.as_ref());
 		self.show_media(
 			ui,
 			media.unwrap_or(&model::EmbedMedia::default()),
