@@ -13,6 +13,7 @@ pub(super) const MAX_RAW_BYTES: usize =
 
 /// A native picture earns its own dimensions plus bounded row padding, never the
 /// full 8K allocation allowance merely because larger presets are available.
+#[cfg(any(test, target_os = "linux", target_os = "windows"))]
 pub(super) fn raw_budget(width: usize, height: usize) -> Option<usize> {
 	if !(1..=MAX_CAPTURE_WIDTH).contains(&width) || !(1..=MAX_CAPTURE_HEIGHT).contains(&height) {
 		return None;

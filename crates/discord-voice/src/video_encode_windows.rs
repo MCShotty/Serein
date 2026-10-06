@@ -449,7 +449,7 @@ mod tests {
 	#[test]
 	fn larger_native_buffer_does_not_relax_encoded_sample_limit() {
 		let _runtime = Runtime::open().unwrap();
-		let limit = crate::camera::MAX_ENCODED_BYTES;
+		let limit = crate::camera::encoded_limit(model::voice_settings::VideoResolution::P480);
 		// Synthetic memory only: no transform, GPU, capture device or transport.
 		unsafe {
 			let capacity = 640 * 480 * 3 / 2;
