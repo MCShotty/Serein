@@ -25,7 +25,8 @@ def run(archive):
         reproduced = root / "reproduced"
         # Only these upstream files are involved; no large build/capture fixture.
         paths = ["configure", "libavcodec/libavcodec.v", "libavutil/libavutil.v", "libavcodec/qsvenc.c",
-                 "libavcodec/amfenc.c", "libavcodec/videotoolboxenc.c", "libavutil/hwcontext_vulkan.c"]
+                 "libavcodec/amfenc.c", "libavcodec/amfenc.h", "libavcodec/amfenc_hevc.c",
+                 "libavcodec/amfenc_av1.c", "libavcodec/videotoolboxenc.c", "libavutil/hwcontext_vulkan.c"]
         with tarfile.open(archive) as source:
             for path in paths:
                 content = source.extractfile("ffmpeg-7.1.5/" + path).read()
@@ -35,15 +36,18 @@ def run(archive):
         patch = recipe.patch_ffmpeg(modified)
         subprocess.run(["patch", "--batch", "--fuzz=0", "-p1"], input=patch, text=True,
                        cwd=reproduced, stdout=subprocess.DEVNULL, check=True)
-        paths.append("libavcodec/serein_qsv_feature_validation.h")
+        original_paths = paths.copy()
+        generated_paths = ["libavcodec/serein_qsv_feature_validation.h", "libavcodec/serein_amf_split_encoding.h"]
+        paths.extend(generated_paths)
         for path in paths:
             assert (modified / path).read_bytes() == (reproduced / path).read_bytes(), path
         subprocess.run(["patch", "--batch", "--fuzz=0", "--reverse", "-p1"], input=patch, text=True,
                        cwd=reproduced, stdout=subprocess.DEVNULL, check=True)
         with tarfile.open(archive) as source:
-            for path in paths[:-1]:
+            for path in original_paths:
                 assert (reproduced / path).read_bytes() == source.extractfile("ffmpeg-7.1.5/" + path).read()
-        assert not (reproduced / paths[-1]).exists()
+        for path in generated_paths:
+            assert not (reproduced / path).exists()
         try:
             recipe.patch_ffmpeg(modified)
         except ValueError:

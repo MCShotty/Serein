@@ -34,7 +34,24 @@ typedef struct SereinAvc {
     int av1_reduced_still;
     int has_output;
     int features;
+    int split_requested;
 } SereinAvc;
+
+/* 1440p includes portrait capture. Never opt into splitting a 1080p
+ * ultrawide just because its pixel count exceeds a 2560x1440 picture. */
+static int wants_split(int width, int height, int backend, int kind)
+{
+    if (kind == 0 || width < 1440 || height < 1440)
+        return 0;
+    if (backend == 1 || backend == 4)
+        return 1;
+#if defined(_WIN32)
+    /* AMF split-frame encoding currently requires DX11 memory. */
+    if (backend == 3)
+        return 1;
+#endif
+    return 0;
+}
 
 /* This callback reads immutable state only, including if libavcodec invokes
  * it from an encoder thread. Reject the size before the default allocator or
@@ -73,6 +90,7 @@ static int configure_backend(SereinAvc *encoder, int backend)
     if (backend == 1) {
         /* AV1 NVENC has no private profile option; the context requests Main. */
         return (av1 || set_option(codec, "profile", h264 && encoder->baseline ? "baseline" : "main")) &&
+               (h264 || set_option(codec, "split_encode_mode", encoder->split_requested ? "2" : "disabled")) &&
                set_option(codec, "preset", "p5") && set_option(codec, "tune", "hq") &&
                set_option(codec, "rc", "cbr") &&
                set_option(codec, "rc-lookahead", encoder->features & 2 ? "16" : "0") &&
@@ -95,6 +113,11 @@ static int configure_backend(SereinAvc *encoder, int backend)
             return set_option(codec, "frame_skipping", "0") && set_option(codec, "bf", "0") &&
                    set_option(codec, "max_b_frames", "0") && set_option(codec, "header_spacing", "1") &&
                    av_opt_set_int(codec->priv_data, "max_au_size", (int64_t)encoder->max_bytes * 8, 0) >= 0;
+        /* The bundled wrapper checks codec-specific engine count on the bound
+         * GPU. Only eligible two-engine DX11 sessions disable PA/filler/boost;
+         * a one-engine device keeps its ordinary quality configuration. */
+        if (!set_option(codec, "split_encode", encoder->split_requested ? "1" : "0"))
+            return 0;
         if (av1)
             return set_option(codec, "skip_frame", "0") && set_option(codec, "header_insertion_mode", "frame");
         return set_option(codec, "skip_frame", "0") && set_option(codec, "header_insertion_mode", "idr") &&
@@ -109,6 +132,18 @@ static int configure_backend(SereinAvc *encoder, int backend)
             !set_option(codec, "forced_idr", "1") ||
             av_opt_set_int(codec->priv_data, "max_frame_size", (int64_t)encoder->max_bytes, 0) < 0)
             return 0;
+        if (!h264) {
+            /* Two tile columns let Intel's runtime use at most two engines on
+             * this GPU. AV1 needs additional rows at 8K to meet MAX_TILE_AREA;
+             * those rows do not increase the requested column/engine count. */
+            const int columns = encoder->split_requested || (av1 && codec->width > 4096) ? 2 : 1;
+            /* Accommodate either 64- or 128-pixel AV1 superblocks. */
+            const int tile_width = ((codec->width + columns * 128 - 1) / (columns * 128)) * 128;
+            const int rows = av1 && (int64_t)tile_width * codec->height > 4096 * 2304 ? 2 : 1;
+            if (av_opt_set_int(codec->priv_data, "tile_cols", columns, 0) < 0 ||
+                av_opt_set_int(codec->priv_data, "tile_rows", rows, 0) < 0)
+                return 0;
+        }
         if (av1)
             return 1;
         if (!set_option(codec, "idr_interval", "0"))
@@ -178,10 +213,10 @@ void *serein_avc_open(int width, int height, int fps, int bitrate, int baseline,
                                       backend, kind, max_bytes, NULL, 0);
 }
 
-void *serein_avc_open_on_adapter(int width, int height, int fps, int bitrate,
+static void *open_with_split(int width, int height, int fps, int bitrate,
                                 int baseline, int backend, int kind,
                                 size_t max_bytes, const SereinVideoAdapter *adapter,
-                                int features)
+                                int features, int allow_split)
 {
     static const char *const names[][5] = {
         {"libopenh264", "h264_nvenc", "h264_videotoolbox", "h264_amf", "h264_qsv"},
@@ -225,6 +260,7 @@ void *serein_avc_open_on_adapter(int width, int height, int fps, int bitrate,
     encoder->baseline = baseline;
     encoder->kind = kind;
     encoder->features = features;
+    encoder->split_requested = allow_split && wants_split(width, height, backend, kind);
     encoder->codec = avcodec_alloc_context3(implementation);
     encoder->frame = av_frame_alloc();
     encoder->packet = av_packet_alloc();
@@ -293,6 +329,22 @@ void *serein_avc_open_on_adapter(int width, int height, int fps, int bitrate,
 failed:
     serein_avc_close(encoder);
     return NULL;
+}
+
+void *serein_avc_open_on_adapter(int width, int height, int fps, int bitrate,
+                                int baseline, int backend, int kind,
+                                size_t max_bytes, const SereinVideoAdapter *adapter,
+                                int features)
+{
+    void *encoder = open_with_split(width, height, fps, bitrate, baseline,
+                                    backend, kind, max_bytes, adapter, features, 1);
+    /* Some older GPUs/drivers reject split mode or two-column tiling. Release
+     * the complete failed context before one conservative retry on the same
+     * physical adapter, codec and quality settings. No second session survives. */
+    if (!encoder && wants_split(width, height, backend, kind))
+        encoder = open_with_split(width, height, fps, bitrate, baseline,
+                                  backend, kind, max_bytes, adapter, features, 0);
+    return encoder;
 }
 
 static size_t start_code_size(const uint8_t *bytes, size_t length, size_t at)

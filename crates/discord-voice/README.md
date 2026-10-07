@@ -110,6 +110,33 @@ VA-API encoders are excluded; Quick Sync uses Linux's VA driver interface for it
 Intel device. Native hardware validation remains pending. Build the pinned LGPL libraries using
 `python3 scripts/build-ffmpeg.py`, then set `FFMPEG_DIR` to `target/ffmpeg/prefix`
 before Cargo; see [platform requirements](../../docs/platform-support.md).
+
+Experimental camera/screen streams request split-frame encoding for H.265/AV1
+when both picture dimensions are at least 1440 pixels, including portrait capture.
+The limit is **two encoder engines per stream on the selected physical GPU**;
+H.264, software and VideoToolbox do not request split mode.
+
+| Backend | Request and limits |
+| --- | --- |
+| NVENC | Explicit two-strip mode, retaining P5/look-ahead/reordering. Single-engine hardware uses one; a rejected initialization retries with split mode disabled. Below 1440p split mode is explicitly disabled. |
+| AMF | Windows/DX11 only. The bundled wrapper checks the selected codec's advertised engine count and optional property before setting the split hint. Exactly two engines are required because AMF has no numeric limit. Eligible requests disable incompatible pre-analysis, pre-encode, filler and high-motion boost, retaining the quality preset. |
+| QSV | Two tile columns permit driver-controlled parallel encoding on this GPU. Negotiated counts are checked before and after initialization; a driver may reduce the count to one but cannot increase it beyond the request. AV1 adds tile rows when required by its maximum tile area at 8K. Hyper Encode across GPUs stays disabled. |
+
+AMF may ignore its hint, including at 1440p: AMD describes driver-dependent
+restrictions such as a 4K minimum. RX 7000 AV1 has one capable VCN, so its ordinary
+configuration is retained. QSV tiling enables parallelism where supported but does
+not certify active engine use. AV1's mandatory tiling can also require two columns
+on very wide pictures below 1440p. A failed optional request releases all native
+resources before one retry with ordinary settings on the same GPU/codec. No extra
+capture worker or persistent encoder session is created. This split path still
+needs physical GPU/interoperability validation; the owner's earlier vendor tests
+cover the preceding implementation.
+
+References: [NVENC SDK split modes](https://github.com/FFmpeg/nv-codec-headers/blob/n12.2.72.0/include/ffnvcodec/nvEncodeAPI.h),
+[AMD's codec/driver restrictions](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/585#issuecomment-3755732553),
+[additional AMF restrictions](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/585#issuecomment-4165598416),
+and [Intel's tile-column pipe selection](https://github.com/intel/media-driver/blob/master/media_softlet/agnostic/common/codec/hal/enc/shared/scalability/encode_scalability_option.cpp).
+
 `run_stream` owns a separate Discord RTC connection, shares the parent
 call's ephemeral `Identity`, and enables outgoing media only after DAVE is ready.
 `video` handles bounded Annex-B/FU-A RTP packetization after DAVE frame encryption.

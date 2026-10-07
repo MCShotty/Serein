@@ -837,3 +837,37 @@ not exercise native audio, upload previews, renderer GPU routing or UI latency.
 Full native GUI screenshots, process CPU/RSS, physical hardware encoding and
 live service compatibility remain unverified. Offline audio and upload regressions
 exercise their actual bounded production helpers without opening devices.
+
+## Two-engine split requests
+
+Baseline `00e39d6` versus the split-request source hashes in the
+[raw measurements](pr-evidence/video-split-encoding/measurements.json).
+Matched optimized FFmpeg 7.1.5 diagnostic builds use the same compiler and
+pinned SDK headers, with assembly/Vulkan/VA disabled and Debian's same-version
+OpenH264/VPL libraries. This is not a standard packaged app comparison.
+
+The [offline workload](pr-evidence/video-split-encoding/presets.c) allocates,
+configures and releases 60,000 HEVC/AV1 contexts across NVENC/AMF/QSV at 1440p;
+it never opens a codec, loads a driver or submits frames. One warmup and five
+alternating samples each; no builds during sampling.
+
+| Diagnostic metric | Baseline | Split requests | Delta |
+| --- | ---: | ---: | ---: |
+| 60,000-context setup median | 1301.148 ms | 1371.227 ms | +70.079 ms / +5.39%; overlapping ranges |
+| Setup sample range | 1181.369-1388.280 ms | 1246.890-1481.352 ms | Five samples per binary |
+| Installed diagnostic libavcodec | 757,600 B | 761,696 B | +4096 B |
+| Installed diagnostic libavutil | 846,680 B | 846,680 B | Unchanged |
+| Unshipped preset benchmark executable | 22,584 B | 26,712 B | +4128 B |
+| Standard app / installed / compressed package | Unmeasured | Unmeasured | Missing GLib development metadata |
+
+The setup median increased; the timing spread prevents attributing a stable
+cost to the change. No GPU encode latency, throughput or quality improvement
+is claimed. Native demo idle CPU/RSS and physical split-frame/interoperability
+validation remain unmeasured. The owner's preceding vendor/native-client tests
+do not cover this addition. [Commands and build limits](pr-evidence/video-split-encoding/README.md)
+record the passed driver/option/cleanup fixtures, sanitizer runs and exact patch
+round trip. Full check/package attempts still stop at missing `glib-2.0.pc`.
+AMF may decline its two-engine hint and eligible requests disable incompatible
+PA/pre-encode/filler/high-motion boost; QSV runtime chooses actual parallelism.
+The request does not add capture workers or simultaneous persistent contexts,
+change the selected GPU, or raise existing packet/picture bounds.

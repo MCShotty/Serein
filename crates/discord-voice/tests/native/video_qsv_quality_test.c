@@ -24,5 +24,13 @@ int main(void)
     assert(!serein_qsv_quality_matches(2, 3, 16, 1, MFX_CODINGOPTION_ON, 15, MFX_RATECONTROL_CBR));
     assert(!serein_qsv_quality_matches(2, 3, 16, 1, MFX_CODINGOPTION_ON, 16, MFX_RATECONTROL_VBR));
     assert(!serein_qsv_quality_matches(2, 3, 16, 0, MFX_CODINGOPTION_ON, 16, MFX_RATECONTROL_CBR));
-    puts("QSV quality: 15 driver-correction cases preserve no-reorder H264, bounded supported B frames, actual lookahead and CBR");
+    assert(serein_qsv_tiles_match(0, 0));
+    assert(serein_qsv_tiles_match(1, 1));
+    assert(!serein_qsv_tiles_match(1, 2));
+    assert(serein_qsv_tiles_match(2, 1));
+    assert(serein_qsv_tiles_match(2, 2));
+    assert(!serein_qsv_tiles_match(2, 0));
+    assert(!serein_qsv_tiles_match(2, 3));
+    assert(!serein_qsv_tiles_match(2, 4));
+    puts("QSV quality: reordering/lookahead/CBR checks and bounded negotiated tile columns passed");
 }

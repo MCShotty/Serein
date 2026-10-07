@@ -31,6 +31,12 @@ def run(prefix):
         recipe = importlib.util.module_from_spec(recipe_spec)
         recipe_spec.loader.exec_module(recipe)
         (out / "serein_qsv_feature_validation.h").write_text(recipe.QSV_FEATURE_VALIDATION)
+        if (include / "AMF/components/ComponentCaps.h").is_file():
+            (out / "serein_amf_split_encoding.h").write_text(recipe.AMF_SPLIT_ENCODING)
+            executable = out / "amf-split-test"
+            subprocess.run([*compiler, *flags, "-I" + str(out), str(here / "video_amf_split_test.c"),
+                            "-o", str(executable)], check=True)
+            subprocess.run([str(executable)], check=True)
         if (include / "ffnvcodec/nvEncodeAPI.h").is_file():
             for name, soname in [("cuda", "libcuda.so.1"), ("nvenc", "libnvidia-encode.so.1")]:
                 subprocess.run([*compiler, *flags, "-fPIC", "-shared",

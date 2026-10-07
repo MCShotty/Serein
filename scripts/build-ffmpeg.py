@@ -88,6 +88,40 @@ static int serein_qsv_quality_matches(int requested_b, unsigned int reference_di
         return 0;
     return 1;
 }
+static int serein_qsv_tiles_match(int requested_columns, unsigned int driver_columns)
+{
+    /* A driver may decline parallelism and return one column, but may never
+     * expand our request beyond the two-engine ceiling. Zero is inconclusive. */
+    return requested_columns <= 0 ||
+        (driver_columns > 0 && driver_columns <= (unsigned int)requested_columns);
+}
+#endif
+"""
+
+AMF_SPLIT_ENCODING = """/* Optional split-frame hint, bounded to this GPU's two codec engines. */
+#ifndef SEREIN_AMF_SPLIT_ENCODING_H
+#define SEREIN_AMF_SPLIT_ENCODING_H
+#include <AMF/components/ComponentCaps.h>
+static int serein_amf_split_eligible(AMFComponent *encoder,
+    const wchar_t *count_name, const wchar_t *split_name)
+{
+    AMFCaps *caps = NULL;
+    AMFVariantStruct count = {0}, flag = {0};
+    int eligible = 0;
+    /* An old runtime may advertise two engines but lack this optional flag. */
+    if (encoder->pVtbl->GetProperty(encoder, split_name, &flag) != AMF_OK ||
+        flag.type != AMF_VARIANT_BOOL)
+        return 0;
+    if (encoder->pVtbl->GetCaps(encoder, &caps) == AMF_OK && caps &&
+        caps->pVtbl->GetProperty(caps, count_name, &count) == AMF_OK &&
+        count.type == AMF_VARIANT_INT64)
+        eligible = count.int64Value == 2;
+    if (caps)
+        caps->pVtbl->Release(caps);
+    /* AMF has no numeric engine limit. Do not enable its boolean multi-engine
+     * hint on devices advertising >2, or borrow engines from another codec. */
+    return eligible;
+}
 #endif
 """
 
@@ -309,6 +343,50 @@ def patch_ffmpeg(tree):
          "    }\n\n"
          "    // low-latency mode: eliminate frame reordering, follow a one-in-one-out encoding mode\n"),
     ]
+    replacements += [("libavcodec/amfenc.h", "    int                 usage;\n",
+                      "    int                 split_encode;\n    int                 usage;\n")]
+    for codec, prefix, boost, filler, preencode in [
+        ("hevc", "AMF_VIDEO_ENCODER_HEVC_", "HIGH_MOTION_QUALITY_BOOST_ENABLE", "FILLER_DATA_ENABLE", "PREENCODE_ENABLE"),
+        ("av1", "AMF_VIDEO_ENCODER_AV1_", "HIGH_MOTION_QUALITY_BOOST", "FILLER_DATA", "RATE_CONTROL_PREENCODE"),
+    ]:
+        relative = f"libavcodec/amfenc_{codec}.c"
+        replacements += [
+            (relative, '#include "amfenc.h"\n',
+             '#include "amfenc.h"\n#include "serein_amf_split_encoding.h"\n'),
+            (relative, "static const AVOption options[] = {\n",
+             "static const AVOption options[] = {\n"
+             '    { "split_encode", "Request at most two codec engines on this DX11 GPU", OFFSET(split_encode), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, VE},\n'),
+            (relative, "    // init encoder\n",
+             "    /* The driver may decline this hint, including below its resolution\n"
+             "     * threshold. Ineligible sessions retain their ordinary quality. */\n"
+             "    if (ctx->split_encode && ctx->context->pVtbl->GetDX11Device(ctx->context, AMF_DX11_1) &&\n"
+             f"        serein_amf_split_eligible(ctx->encoder, {prefix}CAP_NUM_OF_HW_INSTANCES,\n"
+             f"                                  {prefix}MULTI_HW_INSTANCE_ENCODE)) {{\n"
+             f"        AMF_ASSIGN_PROPERTY_BOOL(res, ctx->encoder, {prefix}MULTI_HW_INSTANCE_ENCODE, true);\n"
+             "        if (res == AMF_OK) {\n"
+             f"            AMF_ASSIGN_PROPERTY_BOOL(res, ctx->encoder, {prefix}PRE_ANALYSIS_ENABLE, false);\n"
+             f"            AMF_ASSIGN_PROPERTY_BOOL(res, ctx->encoder, {prefix}{preencode}, false);\n"
+             f"            AMF_ASSIGN_PROPERTY_BOOL(res, ctx->encoder, {prefix}{filler}, false);\n"
+             f"            AMF_ASSIGN_PROPERTY_BOOL(res, ctx->encoder, {prefix}{boost}, false);\n"
+             "        }\n"
+             "    } else {\n"
+             f"        AMF_ASSIGN_PROPERTY_BOOL(res, ctx->encoder, {prefix}MULTI_HW_INSTANCE_ENCODE, false);\n"
+             "    }\n\n    // init encoder\n"),
+        ]
+    replacements += [
+        ("libavcodec/qsvenc.c", "    ret = MFXVideoENCODE_QueryIOSurf(q->session, &q->param, &q->req);\n",
+         "    if ((avctx->codec_id == AV_CODEC_ID_HEVC &&\n"
+         "         !serein_qsv_tiles_match(q->tile_cols, q->exthevctiles.NumTileColumns)) ||\n"
+         "        (avctx->codec_id == AV_CODEC_ID_AV1 &&\n"
+         "         !serein_qsv_tiles_match(q->tile_cols, q->extav1tileparam.NumTileColumns)))\n"
+         "        return AVERROR(ENOSYS);\n\n"
+         "    ret = MFXVideoENCODE_QueryIOSurf(q->session, &q->param, &q->req);\n"),
+        ("libavcodec/qsvenc.c", "    if (!extradata.SPSBufSize || (need_pps && !extradata.PPSBufSize)\n",
+         "    if (avctx->codec_id == AV_CODEC_ID_HEVC &&\n"
+         "        !serein_qsv_tiles_match(q->tile_cols, hevc_tile_buf.NumTileColumns))\n"
+         "        return AVERROR(ENOSYS);\n\n"
+         "    if (!extradata.SPSBufSize || (need_pps && !extradata.PPSBufSize)\n"),
+    ]
     replacements += [
         ("libavcodec/amfenc.c", '#include "libavutil/hwcontext.h"\n',
          '#include "libavutil/hwcontext.h"\n'
@@ -385,6 +463,12 @@ def patch_ffmpeg(tree):
          "        avctx->max_b_frames = q->param.mfx.GopRefDist - 1;\n\n"
          "    if (!extradata.SPSBufSize || (need_pps && !extradata.PPSBufSize)\n"),
     ]
+    replacements += [
+        ("libavcodec/qsvenc.c", "    dump_video_av1_param(avctx, q, ext_buffers);\n",
+         "    if (!serein_qsv_tiles_match(q->tile_cols, av1_extend_tile_buf.NumTileColumns))\n"
+         "        return AVERROR(ENOSYS);\n"
+         "    dump_video_av1_param(avctx, q, ext_buffers);\n"),
+    ]
     for relative, old, new in replacements:
         path = tree / relative
         before = path.read_text()
@@ -399,12 +483,15 @@ def patch_ffmpeg(tree):
         patches.extend(difflib.unified_diff(original.splitlines(keepends=True),
                                            (tree / relative).read_text().splitlines(keepends=True),
                                            fromfile="a/" + relative, tofile="b/" + relative))
-    relative = "libavcodec/serein_qsv_feature_validation.h"
-    if (tree / relative).exists():
-        raise ValueError("FFmpeg QSV feature-validation header already exists")
-    (tree / relative).write_text(QSV_FEATURE_VALIDATION)
-    patches.extend(difflib.unified_diff([], QSV_FEATURE_VALIDATION.splitlines(keepends=True),
-                                       fromfile="/dev/null", tofile="b/" + relative))
+    for relative, contents in [
+        ("libavcodec/serein_qsv_feature_validation.h", QSV_FEATURE_VALIDATION),
+        ("libavcodec/serein_amf_split_encoding.h", AMF_SPLIT_ENCODING),
+    ]:
+        if (tree / relative).exists():
+            raise ValueError(f"FFmpeg generated header already exists: {relative}")
+        (tree / relative).write_text(contents)
+        patches.extend(difflib.unified_diff([], contents.splitlines(keepends=True),
+                                           fromfile="/dev/null", tofile="b/" + relative))
     return "".join(patches)
 
 

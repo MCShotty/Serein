@@ -1,13 +1,42 @@
 /* Exercise the production shim's delayed/reordered packet ABI without drivers. */
+#include <libavcodec/avcodec.h>
+int fixture_open(AVCodecContext *codec, const AVCodec *implementation, AVDictionary **options);
+void fixture_free(AVCodecContext **codec);
+int fixture_send(AVCodecContext *codec, const AVFrame *frame);
+int fixture_receive(AVCodecContext *codec, AVPacket *packet);
+#define avcodec_open2 fixture_open
+#define avcodec_free_context fixture_free
 #define avcodec_send_frame fixture_send
 #define avcodec_receive_packet fixture_receive
 #include "video_encode_ffmpeg.c"
 #undef avcodec_send_frame
 #undef avcodec_receive_packet
+#undef avcodec_open2
+#undef avcodec_free_context
 #include <assert.h>
 
 static int submitted, emitted, never_output;
 static const int64_t decode_order[] = {0, 3, 1, 2};
+static int mock_open, opens, frees, bindings, reject_all;
+static const SereinVideoAdapter *bound_adapter;
+
+int fixture_open(AVCodecContext *codec, const AVCodec *implementation, AVDictionary **options)
+{
+    if (!mock_open)
+        return avcodec_open2(codec, implementation, options);
+    opens++;
+    int64_t split = 0, columns = 0;
+    av_opt_get_int(codec->priv_data, "split_encode_mode", 0, &split);
+    av_opt_get_int(codec->priv_data, "tile_cols", 0, &columns);
+    return reject_all || split == 2 || columns == 2 ? AVERROR(ENOSYS) : 0;
+}
+
+void fixture_free(AVCodecContext **codec)
+{
+    if (mock_open && *codec)
+        frees++;
+    avcodec_free_context(codec);
+}
 
 int fixture_send(AVCodecContext *codec, const AVFrame *frame)
 {
@@ -36,7 +65,12 @@ int fixture_receive(AVCodecContext *codec, AVPacket *packet)
 
 /* Configuration fixtures never identify or load a physical GPU. */
 int serein_video_bind_adapter(AVCodecContext *codec, int backend, const SereinVideoAdapter *adapter)
-{ (void)codec; (void)backend; (void)adapter; assert(0); return 0; }
+{
+    (void)codec; (void)backend;
+    assert(mock_open && adapter == bound_adapter);
+    bindings++;
+    return 1;
+}
 int serein_nvenc_features(int codec, const SereinVideoAdapter *adapter, int *b, int *lookahead)
 { (void)codec; (void)adapter; *b = 2; *lookahead = 1; return 1; }
 
@@ -74,9 +108,88 @@ static void check_presets(void)
     }
 }
 
+static void check_splitting(void)
+{
+    /* width, height, AV1 columns, AV1 rows; includes required AV1 tiling
+     * below our split threshold and a 128-pixel-superblock area boundary. */
+    const int sizes[][4] = {{1920, 1080, 1, 1}, {2560, 1438, 1, 1}, {2560, 1440, 2, 1},
+                           {1440, 2560, 2, 1}, {3840, 2160, 2, 1}, {7680, 4320, 2, 2},
+                           {3840, 1080, 1, 1}, {7680, 1080, 2, 1}, {7296, 2560, 2, 2}};
+    const char *names[][3] = {{"hevc_nvenc", "hevc_amf", "hevc_qsv"},
+                              {"av1_nvenc", "av1_amf", "av1_qsv"}};
+    const int backends[] = {1, 3, 4};
+    for (unsigned int s = 0; s < sizeof(sizes)/sizeof(sizes[0]); s++) {
+        const int width = sizes[s][0], height = sizes[s][1];
+        const int request = width >= 1440 && height >= 1440;
+        assert(wants_split(width, height, 1, 1) == request);
+        assert(wants_split(width, height, 4, 2) == request);
+        assert(!wants_split(width, height, 1, 0));
+        assert(!wants_split(width, height, 0, 1));
+        assert(!wants_split(width, height, 2, 1));
+#if !defined(_WIN32)
+        assert(!wants_split(width, height, 3, 1));
+#endif
+        for (int kind = 1; kind <= 2; kind++) {
+            for (unsigned int b = 0; b < sizeof(backends)/sizeof(backends[0]); b++) {
+                const AVCodec *implementation = avcodec_find_encoder_by_name(names[kind - 1][b]);
+                if (!implementation)
+                    continue;
+                AVCodecContext *codec = avcodec_alloc_context3(implementation);
+                assert(codec);
+                codec->width = width; codec->height = height;
+                SereinAvc encoder = {.codec = codec, .kind = kind, .features = 2, .split_requested = request};
+                assert(configure_backend(&encoder, backends[b]));
+                int64_t value, rows;
+                if (backends[b] == 1) {
+                    assert(av_opt_get_int(codec->priv_data, "split_encode_mode", 0, &value) == 0);
+                    assert(value == (request ? 2 : 15));
+                    assert(av_opt_get_int(codec->priv_data, "rc-lookahead", 0, &value) == 0 && value == 16);
+                } else if (backends[b] == 3) {
+                    assert(av_opt_get_int(codec->priv_data, "split_encode", 0, &value) == 0 && value == request);
+                } else {
+                    assert(av_opt_get_int(codec->priv_data, "tile_cols", 0, &value) == 0);
+                    assert(value == (kind == 2 ? sizes[s][2] : request ? 2 : 1));
+                    assert(av_opt_get_int(codec->priv_data, "tile_rows", 0, &rows) == 0);
+                    assert(rows == (kind == 2 ? sizes[s][3] : 1));
+                    assert(av_opt_get_int(codec->priv_data, "look_ahead_depth", 0, &value) == 0 && value == 16);
+                }
+                avcodec_free_context(&codec);
+            }
+        }
+    }
+    /* Refused optional split mode retries once without discarding lookahead,
+     * the selected codec, or the selected GPU. No real driver is loaded. */
+    static const SereinVideoAdapter adapter = {0};
+    bound_adapter = &adapter;
+    mock_open = 1;
+    for (int backend = 1; backend <= 4; backend += 3) {
+        const char *name = backend == 1 ? "hevc_nvenc" : "hevc_qsv";
+        if (!avcodec_find_encoder_by_name(name))
+            continue;
+        opens = frees = bindings = reject_all = 0;
+        void *encoder = serein_avc_open_on_adapter(2560, 1440, 30, 8000000, 0,
+                                                  backend, 1, 4096, &adapter, 2);
+        assert(encoder && opens == 2 && frees == 1 && bindings == 2);
+        assert(((SereinAvc *)encoder)->features == 2 && !((SereinAvc *)encoder)->split_requested);
+        serein_avc_close(encoder);
+        assert(frees == 2);
+        reject_all = 1;
+        opens = frees = bindings = 0;
+        assert(!serein_avc_open_on_adapter(2560, 1440, 30, 8000000, 0,
+                                           backend, 1, 4096, &adapter, 2));
+        assert(opens == 2 && frees == 2 && bindings == 2);
+        opens = frees = bindings = 0;
+        assert(!serein_avc_open_on_adapter(1920, 1080, 30, 8000000, 0,
+                                           backend, 1, 4096, &adapter, 2));
+        assert(opens == 1 && frees == 1 && bindings == 1);
+    }
+    mock_open = 0;
+}
+
 int main(void)
 {
     check_presets();
+    check_splitting();
     uint8_t input[64 * 64 * 3 / 2] = {0}, output[4096];
     SereinVideoAdapter unknown = {0};
     /* A supplied unidentified renderer must still permit software fallback. */
@@ -110,6 +223,6 @@ int main(void)
     assert(submitted == 48);
     serein_avc_close(encoder);
     assert(!serein_avc_open_on_adapter(64, 64, 30, 100000, 0, 1, 0, sizeof(output), NULL, 1));
-    puts("NVENC P5/lookahead options, delayed/reordered PTS, software fallback and 48-picture bound passed");
+    puts("Presets, 1440p/two-engine split policy, same-GPU retry/cleanup, delayed PTS and 48-picture bound passed");
     return 0;
 }
