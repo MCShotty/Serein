@@ -4998,3 +4998,77 @@ the separate playback CPU complaint in issue #556 is not resolved by URL admissi
 The small archive difference supports no runtime-performance claim. Raw package
 sizes and the changed source hash are in
 [the size record](pr-evidence/attachment-storage-selectors/package-sizes.json).
+
+## PR 567 review corrections — October 7, 2026
+
+Compared original PR head `5b54b63fe3684309dc15d7a7ec7d53c96d70d504`
+with reviewed runtime `737756718e5a675413bc0b33cf97087c429cc927`, which also
+merges main `38d919d7`. These are the review corrections **plus upstream changes**,
+not an isolated encoder optimization or the entire PR compared with main.
+Host: Windows 11 Home 10.0.26200, Ryzen 7 7800X3D/16 logical CPUs,
+33,410,678,784 bytes RAM, Rust 1.98.1. Other builds ran concurrently.
+
+Both standard `cargo xtask package` builds passed with voice, normal fat LTO and
+no demo/developer-session features, using the same locally built pinned
+FFmpeg 7.1.5/OpenH264 2.6.0 prefix. All three packaged DLL hashes match between
+builds. NSIS is unavailable, so no local installer executable was generated.
+The installed metric sums regular-file bytes; ZIP uses Python `zipfile`, sorted
+relative paths, DEFLATE level 6 and no enclosing directory. Every entry CRC was
+verified. Packages were measured before this evidence-only appendix.
+
+| Metric | Original PR | Review plus main | Delta |
+| --- | ---: | ---: | ---: |
+| Standard executable | 85,376,000 B | 85,985,792 B | +609,792 B / +0.7142% |
+| Installed files (239 each) | 122,857,425 B | 123,467,254 B | +609,829 B / +0.4964% |
+| Compressed ZIP | 78,476,318 B | 78,737,079 B | +260,761 B / +0.3323% |
+
+The Windows MFT regression uses the exact original wait methods and corrected
+helper with a synthetic NeedInput event followed by an empty event queue.
+One warmup per path and five alternating optimized calls in one process gave
+baseline samples 251.4037, 250.8659, 251.1911, 250.2568 and 250.5980 ms
+(median **250.8659 ms**, then failure). The corrected path returns pending output
+while retaining input credit; samples were 200, 200, 200, 400 and 200 ns. Those
+small values are near timer/optimized-harness overhead, not a useful speedup
+ratio. This demonstrates removal of the artificial 250 ms timeout, not real
+MFT/GPU encoding latency. The original regression fails and the corrected
+regression passes. Reproduce with
+`python docs/pr-evidence/pr567-review/measure_mft_wait.py`; outputs stay in
+`target/pr567-review/mft-event-flow`.
+
+Both packaged executables also passed the real **RTX 5070 Ti NVENC** driver
+queries and bounded synthetic encoder helpers for H.264, H.265 and AV1. NVIDIA
+Windows driver version: 32.0.15.9186. An explicitly enumerated DXGI LUID selected
+the same physical GPU; no software fallback was allowed. Each codec produced
+validated keyframe/configuration output at camera 640×480/15 fps and screen
+1280×720/30 fps. Query exit codes were all 1 (Available), test codes all 3 (both
+presets), with empty stderr and no timeout. The helper exits before GUI,
+credentials, network or capture initialization. These checks do not independently
+decode GPU output, exercise renderer selection, establish sustained throughput,
+or validate 8K/60 fps or Discord interoperability. The workspace tests separately
+encode and independently decode software H.264, including 1440p and forced IDRs.
+
+To repeat the GPU checks, build the included `adapter_ids.cpp` in a Microsoft
+Developer PowerShell using `cl /nologo /EHsc /Fe:target/adapter_ids.exe
+/Fo:target/adapter_ids.obj docs/pr-evidence/pr567-review/adapter_ids.cpp /link
+dxgi.lib`, then run `target/adapter_ids.exe`. LUIDs are session-local; use the
+fresh NVIDIA key in this Python snippet, run from the packaged worktree:
+
+```python
+import subprocess
+adapter = "REPLACE_WITH_FRESH_NVIDIA_ADAPTER_KEY"
+for operation in ("--query-video-codec", "--test-video-encoder"):
+    for codec in ("h264", "h265", "av1"):
+        result = subprocess.run(
+            ["dist/serein.exe", operation, "nvenc", codec, "--adapter", adapter],
+            stdin=subprocess.DEVNULL, timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        print(operation, codec, result.returncode)
+```
+
+The changed workspace check passed: 1,349 tests, 29 ignored, strict Clippy,
+formatting, policy and production compilation. No process CPU/RSS, frame-time,
+physical camera/audio, AMF/QSV/VideoToolbox or live-call measurement is claimed.
+The advisory scan still reports inherited unmaintained `ttf-parser 0.25.1`
+(RUSTSEC-2026-0192), reproduced on main. Raw samples, helper exit codes and artifact
+hashes are in [the review record](pr-evidence/pr567-review/results.json).
