@@ -264,5 +264,6 @@
     "Standard voice-enabled application executable, installed package and compressed package (GLib development metadata unavailable)",
     "Native process CPU/RSS, UI/search latency and startup",
     "Hardware driver encodes, live interoperability and application-wide leak detection"
-  ]
+  ],
+  "documentation_followup_commit": "a76e030d749ef558e687bbff6dc592a7dddec244"
 }
