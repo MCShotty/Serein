@@ -2369,6 +2369,9 @@ impl State {
 			self.navigation_index.bytes.set(None);
 		}
 		let access_changed = envelope.event.changes_access();
+		if access_changed && self.search_access_changed(&envelope.event) {
+			self.clear_search();
+		}
 		// Command permissions are evaluated live from `permissions`; member, role and channel
 		// updates keep the index. Only a lost bot conversation invalidates its own index.
 		if let Event::Unavailable(channel) = &envelope.event
@@ -3756,6 +3759,13 @@ impl State {
 		}
 	}
 	fn remove_channels(&mut self, removed: &BTreeSet<Id>) {
+		// Check scope before removing navigation identity, including sibling search hits.
+		if removed
+			.iter()
+			.any(|channel| self.search_covers_channel(*channel))
+		{
+			self.clear_search();
+		}
 		self.invalidate_navigation();
 		self.last_viewed_threads.retain(|id| !removed.contains(id));
 		for id in removed {

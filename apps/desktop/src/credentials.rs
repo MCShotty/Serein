@@ -79,6 +79,7 @@ impl Store {
 							restore,
 							|| platform::save_account_session(account, &secret),
 							|| platform::save_session(&secret),
+							platform::forget_session,
 						);
 						Outcome::AccountSaved(account, keyed, launch)
 					}
@@ -270,12 +271,22 @@ fn save_account(
 	restore: bool,
 	save_keyed: impl FnOnce() -> Result<(), CredentialError>,
 	save_launch: impl FnOnce() -> Result<(), CredentialError>,
+	forget_launch: impl FnOnce() -> Result<(), CredentialError>,
 ) -> (
 	Result<(), CredentialError>,
 	Option<Result<(), CredentialError>>,
 ) {
 	let keyed = save_keyed();
-	let launch = (restore && keyed.is_ok()).then(save_launch);
+	let launch = (restore && keyed.is_ok()).then(|| {
+		let saved = save_launch();
+		if saved.is_err() {
+			// The owner explicitly replaced launch restore. Leaving its old token
+			// after updating the keyed entry would lose the ownership comparison used
+			// by ForgetAccount. Preserve keyed logins, and retire only stale restore.
+			forget_launch()?;
+		}
+		saved
+	});
 	(keyed, launch)
 }
 
@@ -351,7 +362,7 @@ pub fn loaded_status(result: &Result<Option<SessionSecret>, CredentialError>) ->
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use std::cell::Cell;
+	use std::cell::{Cell, RefCell};
 
 	fn synthetic(marker: &str) -> SessionSecret {
 		SessionSecret::from_owner_input(format!("SYNTHETIC_LOGIN_{marker}")).unwrap()
@@ -492,13 +503,19 @@ mod tests {
 				|| {
 					launch.set(true);
 					Ok(())
-				}
+				},
+				|| panic!("keyed save failed; launch must stay untouched")
 			),
 			(Err(CredentialError::Unavailable), None)
 		);
 		assert!(!launch.get());
 		assert_eq!(
-			save_account(false, || Ok(()), || panic!("unchanged launch")),
+			save_account(
+				false,
+				|| Ok(()),
+				|| panic!("unchanged launch"),
+				|| panic!("unchanged launch")
+			),
 			(Ok(()), None)
 		);
 		assert_eq!(
@@ -508,15 +525,88 @@ mod tests {
 				|| {
 					launch.set(true);
 					Ok(())
-				}
+				},
+				|| panic!("successful replacement cannot clear restore")
 			),
 			(Ok(()), Some(Ok(())))
 		);
 		assert!(launch.get());
 		assert_eq!(
-			save_account(true, || Ok(()), || Err(CredentialError::Unavailable)),
+			save_account(
+				true,
+				|| Ok(()),
+				|| Err(CredentialError::Unavailable),
+				|| {
+					launch.set(false);
+					Ok(())
+				}
+			),
 			(Ok(()), Some(Err(CredentialError::Unavailable)))
 		);
+		assert!(
+			!launch.get(),
+			"failed replacement retires stale launch restore"
+		);
+	}
+
+	#[test]
+	fn failed_launch_replacement_never_removes_keyed_logins_and_reports_cleanup_failure() {
+		let keyed = Cell::new(false);
+		let cleanup = Cell::new(false);
+		assert_eq!(
+			save_account(
+				true,
+				|| {
+					keyed.set(true);
+					Ok(())
+				},
+				|| Err(CredentialError::Unavailable),
+				|| {
+					cleanup.set(true);
+					Err(CredentialError::TimedOut)
+				}
+			),
+			(Ok(()), Some(Err(CredentialError::TimedOut)))
+		);
+		assert!(keyed.get() && cleanup.get());
+	}
+
+	#[test]
+	fn later_forget_cannot_restore_old_token_after_failed_launch_replacement() {
+		let keyed = RefCell::new(Some("ACCOUNT_B_OLD"));
+		let launch = RefCell::new(Some("ACCOUNT_B_OLD"));
+		assert_eq!(
+			save_account(
+				true,
+				|| {
+					*keyed.borrow_mut() = Some("ACCOUNT_B_NEW");
+					Ok(())
+				},
+				|| Err(CredentialError::Unavailable),
+				|| {
+					*launch.borrow_mut() = None;
+					Ok(())
+				}
+			),
+			(Ok(()), Some(Err(CredentialError::Unavailable)))
+		);
+		assert_eq!(*keyed.borrow(), Some("ACCOUNT_B_NEW"));
+		// Add account keeps keyed sessions; forgetting B on the signed-out account
+		// list must not leave B's previously valid launch token behind.
+		assert_eq!(
+			forget_account(
+				model::Id(7),
+				|_| Ok(keyed.borrow().map(synthetic)),
+				|| Ok(launch.borrow().map(synthetic)),
+				|| panic!("failed replacement already cleared stale restore"),
+				|_| {
+					*keyed.borrow_mut() = None;
+					Ok(())
+				}
+			),
+			Ok(())
+		);
+		assert!(keyed.borrow().is_none() && launch.borrow().is_none());
 	}
 
 	#[test]

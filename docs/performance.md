@@ -5120,3 +5120,46 @@ UI Automation focus fallback. The unavailable computer-use pipe is not used.
 The tree read is no full accessibility audit. Workspace checks pass (1,166 tests
 passed, 27 ignored), and the font subset reproduces byte-for-byte. All content
 is synthetic; live Discord, microphone and calls remain unverified.
+
+## Runtime bug hunt — October 7, 2026
+
+Compared baseline `8003ae068679fecb67cd02c4bc5e6fbedf37ffee` with this task's
+client-core search corrections. The measured after build uses the working tree
+before adding this documentation; the source blob IDs and binary hashes are in
+[the raw measurements](pr-evidence/runtime-bug-hunt/measurements.json).
+Both actual `replay-bench` binaries use Rust 1.98.1, the pinned lockfile, normal
+release fat LTO and no optional features. The baseline uses a detached worktree;
+both builds share the same writable Cargo cache and target directory, with the
+baseline binary copied aside before building the changed sources.
+
+Host: Linux x86-64, Intel Xeon Platinum 8573C, five exposed logical CPUs and
+17 GiB exposed RAM. After one warmup per binary, five measured runs per binary
+use alternating pair order. No task compiler or native fixture process runs
+during sampling; variation from the shared host remains. The existing workload
+applies 100,000 synthetic message events, checks the 500-record / 4 MiB timeline
+bounds and verifies logout releases retained timeline data.
+
+| Metric / method | Baseline | After | Delta |
+| --- | ---: | ---: | ---: |
+| Reducer elapsed median (five runs) | 99.675228 ms | 95.818134 ms | −3.857094 ms (−3.87%); noisy |
+| Reducer elapsed sample range | 94.165187–106.522434 ms | 87.880852–107.966072 ms | Overlapping ranges |
+| Retained timeline estimate | 331,992–332,477 B / 500 records | 331,992–332,477 B / 500 records | Unchanged |
+| Release replay executable | 1,511,512 B | 1,516,760 B | +5,248 B (+0.3472%) |
+| Standard voice-enabled app, installed and compressed package | Unmeasured | Unmeasured | Missing `glib-2.0.pc` prevents both builds |
+
+This workload does not exercise permission changes with an open search or
+desktop credential/cache failure handling. Its timing is a general reducer
+regression check, with no performance improvement claim. The executable size
+is for the reducer tool, not the installed application. Native UI CPU/RSS,
+startup, search latency and application-wide leak detection are unmeasured.
+The full workspace check and standard package attempt stop at missing GLib
+development metadata. Native before/after screenshots for search retirement
+and account cleanup status are consequently unavailable.
+
+Offline native encoder query/configuration fixtures also pass with AddressSanitizer,
+UndefinedBehaviorSanitizer and leak detection enabled. Both `CC` and `CXX`
+receive sanitizer flags; the AMF C ABI mock has no C++ RTTI, so only its C++
+vptr check is excluded with `-fno-sanitize=vptr`. This covers the compiled
+query/shim fixtures and their synthetic resource counters, not the full app,
+physical vendor drivers or the separately built FFmpeg libraries. No live
+account, microphone, camera or screen capture was used.

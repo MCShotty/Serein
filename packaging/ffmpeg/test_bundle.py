@@ -5,6 +5,7 @@ import ctypes
 import json
 import hashlib
 import io
+import mmap
 import os
 import re
 from pathlib import Path
@@ -34,6 +35,76 @@ def native_codec(prefix, system, mode=ctypes.DEFAULT_MODE):
 
 
 class BundleTest(unittest.TestCase):
+    @staticmethod
+    def darwin_prefix(root):
+        prefix = root / "prefix"
+        libraries = prefix / "lib"
+        libraries.mkdir(parents=True)
+        for name in bundle.LIBRARIES["Darwin"]:
+            (libraries / name).write_bytes(("old " + name).encode())
+        provenance = prefix / "share/serein-ffmpeg"
+        (provenance / "source").mkdir(parents=True)
+        (provenance / "build.json").write_text(json.dumps({
+            "system": "Darwin", "nvenc": False, "amf": False, "qsv": False,
+            "sources": {"ffmpeg": builder.SOURCES["ffmpeg"]},
+        }))
+        for name in ("configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "COPYING.LGPLv2.1",
+                     "OpenH264-LICENSE", "source/ffmpeg-7.1.5.tar.xz", "source/openh264-2.6.0-source.tar.bz2"):
+            (provenance / name).write_bytes(b"synthetic source/notice")
+        return prefix
+
+    @unittest.skipUnless(os.name == "posix", "Darwin-style source aliases require POSIX symlinks")
+    def test_darwin_restage_replaces_library_inode_and_preserves_open_mapping(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prefix = self.darwin_prefix(root)
+            stage = root / "dist"
+            frameworks = stage / "Serein.app/Contents/Frameworks"
+            with patch.object(bundle.platform, "system", return_value="Darwin"):
+                bundle.bundle(stage, prefix)
+                for name in bundle.LIBRARIES["Darwin"]:
+                    target = frameworks / name
+                    target.chmod(0o644)
+                    inode = target.stat().st_ino
+                    old = target.read_bytes()
+                    source = prefix / "lib" / name
+                    actual = source.with_suffix(source.suffix + ".actual")
+                    source.rename(actual)
+                    source.symlink_to(actual.name)
+                    actual.write_bytes(("new " + name).encode())
+                    with target.open("rb") as opened, mmap.mmap(opened.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
+                        bundle.bundle(stage, prefix)
+                        self.assertNotEqual(target.stat().st_ino, inode)
+                        self.assertEqual(opened.read(), old)
+                        self.assertEqual(mapped[:], old)
+                    self.assertFalse(target.is_symlink())
+                    self.assertEqual(target.read_bytes(), actual.read_bytes())
+                    self.assertEqual(target.stat().st_mode & 0o777, 0o644)
+                    self.assertEqual({path.name for path in frameworks.iterdir()}, set(bundle.LIBRARIES["Darwin"]))
+
+    def test_darwin_failed_staging_preserves_library_and_removes_temporary(self):
+        for operation in ("copy", "replace"):
+            with self.subTest(operation=operation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                prefix = self.darwin_prefix(root)
+                stage = root / "dist"
+                frameworks = stage / "Serein.app/Contents/Frameworks"
+                with patch.object(bundle.platform, "system", return_value="Darwin"):
+                    bundle.bundle(stage, prefix)
+                    target = frameworks / bundle.LIBRARIES["Darwin"][0]
+                    old = target.read_bytes()
+                    inode = target.stat().st_ino
+                    def fail_copy(source, destination):
+                        Path(destination).write_bytes(b"partial staging")
+                        raise OSError("synthetic copy failure")
+                    failure = patch.object(bundle.shutil, "copyfile", side_effect=fail_copy) if operation == "copy" else \
+                        patch.object(bundle.os, "replace", side_effect=OSError("synthetic replace failure"))
+                    with failure, self.assertRaisesRegex(OSError, "synthetic .* failure"):
+                        bundle.bundle(stage, prefix)
+                    self.assertEqual(target.stat().st_ino, inode)
+                    self.assertEqual(target.read_bytes(), old)
+                    self.assertEqual({path.name for path in frameworks.iterdir()}, set(bundle.LIBRARIES["Darwin"]))
+
     def test_matching_stamp_rejects_incomplete_prefix_without_native_build(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

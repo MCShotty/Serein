@@ -949,6 +949,7 @@ struct Desktop {
 	cache: Option<cache::Cache>,
 	cache_pending: usize,
 	cache_clears: cache::HistoryClears,
+	cache_forgets: cache::AccountForgets,
 	cache_error: bool,
 	cache_status: &'static str,
 	appearance: egui::ThemePreference,
@@ -2210,6 +2211,7 @@ impl Desktop {
 			cache,
 			cache_pending,
 			cache_clears: Default::default(),
+			cache_forgets: Default::default(),
 			cache_error: false,
 			cache_status: "Loading local appearance…",
 			appearance: egui::ThemePreference::System,
@@ -2483,6 +2485,10 @@ impl Desktop {
 			self.request_session_end(ctx, SessionEnd::Logout);
 			return;
 		}
+		if self.cache_forgets.contains(account) {
+			self.retry_account_forgets();
+			return;
+		}
 		let queued = self
 			.store
 			.as_mut()
@@ -2495,6 +2501,7 @@ impl Desktop {
 	}
 	fn account_forgotten(
 		&mut self,
+		generation: u64,
 		account: model::Id,
 		result: Result<(), platform::CredentialError>,
 		include_missing: bool,
@@ -2510,12 +2517,12 @@ impl Desktop {
 			{
 				return;
 			}
-			if self.queue_cache_for(account, cache::Operation::Forget) {
-				self.messaging.accounts.retain(|saved| saved.id != account);
-				self.credential_status = "Saved login removed; removing local account data…";
+			if self.cache_forgets.request(generation, account) {
+				self.credential_status =
+					"Saved login removed; waiting to remove local account data…";
 			} else {
 				self.cache_error = true;
-				self.cache_status = "Saved login removed, but local account data removal could not be queued. Try again.";
+				self.cache_status = "Saved login removed, but too many account cleanups are pending. Wait for local storage and try again.";
 			}
 		} else {
 			self.credential_status = if result == Err(platform::CredentialError::Invalid) {
@@ -2526,6 +2533,28 @@ impl Desktop {
 			self.messaging
 				.toasts
 				.push(ui::design::Level::Error, self.credential_status);
+		}
+	}
+	fn retry_account_forgets(&mut self) {
+		if self.state.demo || self.fixture_only || self.state.auth == AuthState::Authenticating {
+			return;
+		}
+		let Some(cache) = &self.cache else { return };
+		let active_account = self.state.user.as_ref().map(|user| user.id);
+		for _ in 0..model::MAX_SAVED_ACCOUNTS {
+			let Some(account) = self
+				.cache_forgets
+				.next(self.state.generation, active_account)
+			else {
+				break;
+			};
+			if !cache.queue(self.state.generation, account, cache::Operation::Forget) {
+				break;
+			}
+			self.cache_forgets.queued(account);
+			self.cache_pending += 1;
+			self.messaging.accounts.retain(|saved| saved.id != account);
+			self.credential_status = "Saved login removed; removing local account data…";
 		}
 	}
 
@@ -4814,7 +4843,8 @@ impl Desktop {
 		let busy = self.state.auth == AuthState::Authenticating
 			|| self.forgetting
 			|| self.cache_pending > 0
-			|| self.cache_clears.pending();
+			|| self.cache_clears.pending()
+			|| self.cache_forgets.pending();
 		let show = attention
 			|| busy || self.state.status != "Disconnected"
 			|| (!self.fixture_only
@@ -5522,8 +5552,7 @@ impl Desktop {
 							self.credential_status = "Login saved in the OS credential store"
 						}
 						Some(Err(_)) => {
-							self.credential_status =
-								"Account login saved, but launch restore could not be updated"
+							self.credential_status = "Account login saved, but automatic restore failed; a previous launch login may remain"
 						}
 						None if result == Err(platform::CredentialError::NoStore) => {
 							self.messaging.toasts.push(
@@ -5536,7 +5565,7 @@ impl Desktop {
 				}
 
 				credentials::Outcome::AccountForgotten(account, result) => {
-					self.account_forgotten(account, result, false);
+					self.account_forgotten(generation, account, result, false);
 				}
 				credentials::Outcome::Forgotten(account, result) => {
 					self.forgetting = false;
@@ -5549,7 +5578,7 @@ impl Desktop {
 						}
 					};
 					if let Some(account) = account {
-						self.account_forgotten(account, result, true);
+						self.account_forgotten(generation, account, result, true);
 					}
 				}
 			}
@@ -5878,6 +5907,8 @@ impl Desktop {
 				};
 			}
 		}
+		// Process READY first so a new session can supersede its own old deletion.
+		self.retry_account_forgets();
 		// Network and store workers request repaint only when their outcomes change.
 		if let Some(connection) = &self.connection {
 			connection.set_typing_channel(self.state.typing_scope());
@@ -6549,6 +6580,7 @@ impl eframe::App for Desktop {
 				|| self.avatar_cleanup.is_some()
 				|| self.cache_pending > 0
 				|| self.cache_clears.pending()
+				|| self.cache_forgets.pending()
 				|| (!self.fixture_only && self.app_settings.state.needs_attention())
 				|| (!self.fixture_only && self.reading.needs_attention())
 				|| (!self.fixture_only && self.game_activity.needs_attention())
@@ -7228,6 +7260,11 @@ impl eframe::App for Desktop {
 			if self.cache_clears.pending() {
 				notes.push(
 					"Cached history cleanup is pending; closing now may leave deleted messages on disk.",
+				);
+			}
+			if self.cache_forgets.pending() {
+				notes.push(
+					"Local account data removal is waiting for storage; closing now may leave account data on disk.",
 				);
 			}
 			if !self.fixture_only && self.app_settings.state.needs_attention() {

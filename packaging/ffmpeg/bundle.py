@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import tempfile
 
 
 LIBRARIES = {
@@ -13,6 +14,20 @@ LIBRARIES = {
     "Darwin": ("libavcodec-serein.61.dylib", "libavutil-serein.59.dylib", "libopenh264.8.dylib"),
     "Windows": ("avcodec-serein-61.dll", "avutil-serein-59.dll", "openh264.dll"),
 }
+
+
+def replace_darwin_library(origin, destination):
+    # A launched app may still map this inode, and macOS caches its code signature.
+    # Replace the file after staging completes, as xtask does for the executable.
+    with tempfile.NamedTemporaryFile(prefix=f".{destination.name}.", suffix=".staging",
+                                     dir=destination.parent, delete=False) as temporary:
+        staging = Path(temporary.name)
+    try:
+        shutil.copyfile(origin, staging)
+        shutil.copymode(destination if destination.exists() else origin, staging)
+        os.replace(staging, destination)
+    finally:
+        staging.unlink(missing_ok=True)
 
 
 def bundle(root, prefix=None):
@@ -40,7 +55,10 @@ def bundle(root, prefix=None):
         origin = prefix / ("bin" if system == "Windows" else "lib") / name
         # Installed linker aliases are intentionally dereferenced: package archives
         # contain regular files, preserving the existing no-symlink payload policy.
-        shutil.copyfile(origin, libraries / name)
+        if system == "Darwin":
+            replace_darwin_library(origin, libraries / name)
+        else:
+            shutil.copyfile(origin, libraries / name)
     for name in ("build.json", "configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE"):
         shutil.copyfile(provenance / name, source / name)
     if system == "Linux":
