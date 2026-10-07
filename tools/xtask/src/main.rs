@@ -419,6 +419,7 @@ fn package() -> Result<(), String> {
 		"NotoSansCJK-LICENSE.txt",
 		"NotoSansArabic-OFL.txt",
 		"NotoSansMath-OFL.txt",
+		"NotoSansSymbols2-OFL.txt",
 		"Inter-OFL.txt",
 	] {
 		std::fs::copy(

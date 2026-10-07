@@ -7903,6 +7903,10 @@ mod composer_tests {
 		let mut state = test_support::demo_state();
 		state.demo = false; // Exercise normal command admission using synthetic loaded data.
 		state.guild_folders = Some(Default::default()); // Folder fetch is outside this presence-only scenario.
+		// Forum sidebar loading is outside this presence-only scenario.
+		state
+			.channels
+			.retain(|entry| !matches!(entry.kind, 15 | 16));
 		let channel = state.selected.unwrap();
 		let guild = state
 			.channels
