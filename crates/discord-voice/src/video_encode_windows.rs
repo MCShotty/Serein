@@ -58,6 +58,7 @@ pub(crate) struct Encoder {
 	duration: i64,
 	need_input: usize,
 	have_output: usize,
+	force_keyframe_pending: bool,
 	provides_samples: bool,
 	max_bytes: usize,
 	max_buffer_bytes: usize,
@@ -172,9 +173,14 @@ impl Encoder {
 				max_buffer_bytes,
 				need_input: 0,
 				have_output: 0,
+				force_keyframe_pending: false,
 				provides_samples,
 			})
 		}
+	}
+
+	pub(crate) fn submitted_frames(&self) -> i64 {
+		self.frame
 	}
 
 	#[allow(dead_code)] // Retained native API; stream owners now restart atomically.
@@ -212,8 +218,14 @@ impl Encoder {
 		force_keyframe: bool,
 		fill: impl FnOnce(&mut [u8]) -> Result<(), &'static str>,
 	) -> Result<(Vec<u8>, bool), &'static str> {
-		self.wait_for_events(false)?;
-		if force_keyframe {
+		self.force_keyframe_pending |= force_keyframe;
+		if !self.wait_for_events(false)? {
+			// Some async MFTs withhold NeedInput until ready output is drained.
+			// Return that frame now; preserve the keyframe request for the next input.
+			self.wait_for_events(true)?;
+			return self.take_output();
+		}
+		if self.force_keyframe_pending {
 			// SAFETY: Codec control is called on the owning worker before this input sample.
 			unsafe {
 				self.codec
@@ -251,11 +263,12 @@ impl Encoder {
 			sample
 				.SetSampleDuration(self.duration)
 				.map_err(|_| FAILED)?;
-			self.frame += 1;
 			self.transform
 				.ProcessInput(0, &sample, 0)
 				.map_err(|_| FAILED)?;
 		}
+		self.frame += 1;
+		self.force_keyframe_pending = false;
 		if self.wait_for_events(true)? {
 			self.take_output()
 		} else {
@@ -328,7 +341,7 @@ fn wait_for_events(
 	while if output {
 		*have_output == 0
 	} else {
-		*need_input == 0
+		*need_input == 0 && *have_output == 0
 	} {
 		if Instant::now() >= deadline {
 			return Err(FAILED);
@@ -346,6 +359,9 @@ fn wait_for_events(
 	}
 	if output {
 		*have_output -= 1;
+	} else if *have_output != 0 {
+		// Leave both credits untouched: the caller must drain output first.
+		return Ok(false);
 	} else {
 		*need_input -= 1;
 	}
@@ -499,6 +515,34 @@ fn sample_bytes(sample: &IMFSample, max_bytes: usize) -> Result<Vec<u8>, &'stati
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn ready_output_does_not_wait_for_an_input_request() {
+		for queued_input in [0, 1] {
+			let (mut input, mut output) = (queued_input, 1);
+			assert!(!wait_for_events(&mut input, &mut output, false, || unreachable!()).unwrap());
+			assert_eq!((input, output), (queued_input, 1));
+			assert!(wait_for_events(&mut input, &mut output, true, || unreachable!()).unwrap());
+			assert_eq!((input, output), (queued_input, 0));
+		}
+		let (mut input, mut output) = (0, 0);
+		assert!(
+			!wait_for_events(&mut input, &mut output, false, || Ok(Some(
+				METransformHaveOutput.0
+			)))
+			.unwrap()
+		);
+		assert_eq!((input, output), (0, 1));
+		assert!(wait_for_events(&mut input, &mut output, true, || unreachable!()).unwrap());
+		// A driver may issue its next input request only after ProcessOutput.
+		assert!(
+			wait_for_events(&mut input, &mut output, false, || Ok(Some(
+				METransformNeedInput.0
+			)))
+			.unwrap()
+		);
+		assert_eq!((input, output), (0, 0));
+	}
 
 	#[test]
 	fn delayed_mft_output_preserves_input_credit_and_drains_output_first() {

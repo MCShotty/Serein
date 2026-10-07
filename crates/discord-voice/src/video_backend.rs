@@ -334,6 +334,8 @@ impl Stable {
 			.hardware
 			.as_mut()
 			.ok_or("Stable native encoder stopped")?;
+		#[cfg(target_os = "windows")]
+		let before = hardware.submitted_frames();
 		#[cfg(target_os = "linux")]
 		let frame = hardware.encode(picture, force)?;
 		#[cfg(target_os = "windows")]
@@ -352,14 +354,23 @@ impl Stable {
 				force,
 			)?
 		};
-		self.finish_hardware(frame, timestamp)
+		#[cfg(target_os = "windows")]
+		let submitted = hardware.submitted_frames() != before;
+		#[cfg(not(target_os = "windows"))]
+		let submitted = true;
+		self.finish_hardware(frame, timestamp, submitted)
 	}
 
 	fn finish_hardware(
 		&mut self,
 		frame: (Vec<u8>, bool),
 		timestamp: u32,
+		submitted: bool,
 	) -> Result<EncodedPacket, &'static str> {
+		if !submitted {
+			// An output-only call drained an older picture without accepting this capture.
+			self.timeline.pop_back();
+		}
 		if frame.0.is_empty() {
 			#[cfg(target_os = "macos")]
 			{
@@ -532,7 +543,7 @@ mod tests {
 		assert_eq!(stable.timeline.len(), MAX_STABLE_PENDING_PICTURES);
 		for timestamp in timestamps {
 			let output = stable
-				.finish_hardware((packet.data.clone(), packet.keyframe), 90_000)
+				.finish_hardware((packet.data.clone(), packet.keyframe), 90_000, true)
 				.unwrap();
 			assert_eq!(output.timestamp, timestamp);
 		}
@@ -540,10 +551,34 @@ mod tests {
 		stable.submit_timestamp(12000).unwrap();
 		assert!(
 			stable
-				.finish_hardware((vec![1, 2, 3], false), 15000)
+				.finish_hardware((vec![1, 2, 3], false), 15000, true)
 				.is_err()
 		);
 		assert_eq!(stable.timeline.front(), Some(&12000));
+	}
+
+	#[test]
+	fn output_only_native_call_keeps_only_submitted_timestamps() {
+		let mut encoder = software_only(CAMERA);
+		let picture = vec![128; picture_bytes(CAMERA).unwrap()];
+		let packet = encoder.encode_at(&picture, true, 3000).unwrap();
+		let Implementation::Stable(stable) = &mut encoder.implementation else {
+			unreachable!()
+		};
+		stable.submit_timestamp(3000).unwrap();
+		stable.submit_timestamp(6000).unwrap();
+		stable.submit_timestamp(9000).unwrap();
+		let drained = stable
+			.finish_hardware((packet.data.clone(), true), 9000, false)
+			.unwrap();
+		assert_eq!(drained.timestamp, 3000);
+		assert_eq!(stable.timeline.iter().copied().collect::<Vec<_>>(), [6000]);
+		stable.submit_timestamp(12000).unwrap();
+		let next = stable
+			.finish_hardware((packet.data, true), 12000, true)
+			.unwrap();
+		assert_eq!(next.timestamp, 6000);
+		assert_eq!(stable.timeline.iter().copied().collect::<Vec<_>>(), [12000]);
 	}
 
 	#[test]
@@ -603,7 +638,7 @@ mod tests {
 		};
 		for index in 0..MAX_STABLE_PENDING_PICTURES {
 			stable.submit_timestamp(index as u32 * 3000).unwrap();
-			let pending = stable.finish_hardware((Vec::new(), false), 9000);
+			let pending = stable.finish_hardware((Vec::new(), false), 9000, true);
 			assert_eq!(pending.is_ok(), index + 1 < MAX_STABLE_PENDING_PICTURES);
 		}
 		assert_eq!(stable.timeline.len(), MAX_STABLE_PENDING_PICTURES);
