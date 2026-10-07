@@ -212,7 +212,7 @@ impl Encoder {
 		force_keyframe: bool,
 		fill: impl FnOnce(&mut [u8]) -> Result<(), &'static str>,
 	) -> Result<(Vec<u8>, bool), &'static str> {
-		self.wait_for_input()?;
+		self.wait_for_events(false)?;
 		if force_keyframe {
 			// SAFETY: Codec control is called on the owning worker before this input sample.
 			unsafe {
@@ -256,25 +256,17 @@ impl Encoder {
 				.ProcessInput(0, &sample, 0)
 				.map_err(|_| FAILED)?;
 		}
-		self.wait_for_output()?;
-		self.take_output()
+		if self.wait_for_events(true)? {
+			self.take_output()
+		} else {
+			// Normal-mode MFTs may need more pictures before producing output.
+			// Preserve the input credit and let the bounded caller submit the next one.
+			Ok((Vec::new(), false))
+		}
 	}
 
-	fn wait_for_input(&mut self) -> Result<(), &'static str> {
-		self.wait_until(|encoder| encoder.need_input != 0)?;
-		self.need_input -= 1;
-		Ok(())
-	}
-
-	fn wait_for_output(&mut self) -> Result<(), &'static str> {
-		self.wait_until(|encoder| encoder.have_output != 0)?;
-		self.have_output -= 1;
-		Ok(())
-	}
-
-	fn wait_until(&mut self, ready: impl Fn(&Self) -> bool) -> Result<(), &'static str> {
-		let deadline = Instant::now() + Duration::from_millis(250);
-		while !ready(self) {
+	fn wait_for_events(&mut self, output: bool) -> Result<bool, &'static str> {
+		wait_for_events(&mut self.need_input, &mut self.have_output, output, || {
 			// SAFETY: Event polling stays on the worker that owns this MFT.
 			let event = unsafe { self.events.GetEvent(MF_EVENT_FLAG_NO_WAIT) };
 			match event {
@@ -282,23 +274,12 @@ impl Encoder {
 					if event.GetStatus().map_err(|_| FAILED)?.is_err() {
 						return Err(FAILED);
 					}
-					match event.GetType().map_err(|_| FAILED)? as i32 {
-						kind if kind == METransformNeedInput.0 => self.need_input += 1,
-						kind if kind == METransformHaveOutput.0 => self.have_output += 1,
-						kind if kind == MEError.0 => return Err(FAILED),
-						_ => {}
-					}
+					Ok(Some(event.GetType().map_err(|_| FAILED)? as i32))
 				},
-				Err(error) if error.code() == MF_E_NO_EVENTS_AVAILABLE => {
-					if Instant::now() >= deadline {
-						return Err(FAILED);
-					}
-					std::thread::sleep(Duration::from_millis(1));
-				}
-				Err(_) => return Err(FAILED),
+				Err(error) if error.code() == MF_E_NO_EVENTS_AVAILABLE => Ok(None),
+				Err(_) => Err(FAILED),
 			}
-		}
-		Ok(())
+		})
 	}
 
 	fn take_output(&self) -> Result<(Vec<u8>, bool), &'static str> {
@@ -335,6 +316,40 @@ impl Encoder {
 			Ok((data, keyframe))
 		}
 	}
+}
+
+fn wait_for_events(
+	need_input: &mut usize,
+	have_output: &mut usize,
+	output: bool,
+	mut poll: impl FnMut() -> Result<Option<i32>, &'static str>,
+) -> Result<bool, &'static str> {
+	let deadline = Instant::now() + Duration::from_millis(250);
+	while if output {
+		*have_output == 0
+	} else {
+		*need_input == 0
+	} {
+		if Instant::now() >= deadline {
+			return Err(FAILED);
+		}
+		match poll()? {
+			Some(kind) if kind == METransformNeedInput.0 => *need_input += 1,
+			Some(kind) if kind == METransformHaveOutput.0 => *have_output += 1,
+			Some(kind) if kind == MEError.0 => return Err(FAILED),
+			Some(_) => {}
+			None if output && *need_input != 0 => return Ok(false),
+			None => {
+				std::thread::sleep(Duration::from_millis(1));
+			}
+		}
+	}
+	if output {
+		*have_output -= 1;
+	} else {
+		*need_input -= 1;
+	}
+	Ok(true)
 }
 
 fn force_keyframe_value() -> VARIANT {
@@ -484,6 +499,38 @@ fn sample_bytes(sample: &IMFSample, max_bytes: usize) -> Result<Vec<u8>, &'stati
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn delayed_mft_output_preserves_input_credit_and_drains_output_first() {
+		let (mut input, mut output) = (0, 0);
+		let mut events = std::collections::VecDeque::from([METransformNeedInput.0]);
+		// A normal-mode encoder asks for its second input before its first output.
+		assert!(
+			!wait_for_events(&mut input, &mut output, true, || { Ok(events.pop_front()) }).unwrap()
+		);
+		assert_eq!((input, output), (1, 0));
+		assert!(wait_for_events(&mut input, &mut output, false, || unreachable!()).unwrap());
+		assert_eq!((input, output), (0, 0));
+		assert!(
+			wait_for_events(&mut input, &mut output, true, || Ok(Some(
+				METransformHaveOutput.0
+			)))
+			.unwrap()
+		);
+		assert_eq!((input, output), (0, 0));
+		// Drain already queued output even when a new input credit arrives first.
+		let mut events =
+			std::collections::VecDeque::from([METransformNeedInput.0, METransformHaveOutput.0]);
+		assert!(wait_for_events(&mut input, &mut output, true, || Ok(events.pop_front())).unwrap());
+		assert_eq!((input, output), (1, 0));
+		(input, output) = (1, 1);
+		assert!(wait_for_events(&mut input, &mut output, true, || unreachable!()).unwrap());
+		assert_eq!((input, output), (1, 0));
+		for event in [Ok(Some(MEError.0)), Err("poll failed")] {
+			assert!(wait_for_events(&mut input, &mut output, true, || event).is_err());
+		}
+	}
+
 	#[test]
 	fn larger_native_buffer_does_not_relax_encoded_sample_limit() {
 		let _runtime = Runtime::open().unwrap();
