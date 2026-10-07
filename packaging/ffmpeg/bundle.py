@@ -56,6 +56,12 @@ def bundle(root, prefix=None):
         shutil.copyfile(provenance / "AMF-LICENSE", source / "AMF-LICENSE")
         name = "AMF-1.4.36-headers.tar"
         shutil.copyfile(provenance / "source" / name, source / "source" / name)
+        if system == "Linux":
+            for name in ("Vulkan-Headers-LICENSE.md", "Vulkan-Headers-LICENSES/Apache-2.0.txt",
+                         "Vulkan-Headers-LICENSES/MIT.txt", "source/Vulkan-Headers-1.3.290.tar.gz"):
+                destination = source / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(provenance / name, destination)
     if recipe["qsv"]:
         for name in ("oneVPL-LICENSE", "oneVPL-third-party-programs.txt"):
             shutil.copyfile(provenance / name, source / name)

@@ -63,6 +63,9 @@ def stage_payload(root, stage, prefix="usr"):
     if (root / "ffmpeg-source/AMF-LICENSE").is_file():
         copy(root / "ffmpeg-source/AMF-LICENSE", doc / "ffmpeg-source/AMF-LICENSE")
         copy(root / "ffmpeg-source/source/AMF-1.4.36-headers.tar", doc / "ffmpeg-source/source/AMF-1.4.36-headers.tar")
+        for name in ("Vulkan-Headers-LICENSE.md", "Vulkan-Headers-LICENSES/Apache-2.0.txt",
+                     "Vulkan-Headers-LICENSES/MIT.txt", "source/Vulkan-Headers-1.3.290.tar.gz"):
+            copy(root / "ffmpeg-source" / name, doc / "ffmpeg-source" / name)
     if (root / "ffmpeg-source/oneVPL-LICENSE").is_file():
         for name in ("oneVPL-LICENSE", "oneVPL-third-party-programs.txt", "source/libvpl-2.14.0.tar.gz"):
             copy(root / "ffmpeg-source" / name, doc / "ffmpeg-source" / name)

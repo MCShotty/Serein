@@ -44,6 +44,12 @@ class NativePackageTest(unittest.TestCase):
                          "source/nv-codec-headers-12.2.72.0.tar.gz", "AMF-LICENSE", "source/AMF-1.4.36-headers.tar",
                          "oneVPL-LICENSE", "oneVPL-third-party-programs.txt", "source/libvpl-2.14.0.tar.gz"):
                 (staged / "ffmpeg-source" / name).write_text("synthetic FFmpeg provenance\n")
+            vulkan_files = ("Vulkan-Headers-LICENSE.md", "Vulkan-Headers-LICENSES/Apache-2.0.txt",
+                            "Vulkan-Headers-LICENSES/MIT.txt", "source/Vulkan-Headers-1.3.290.tar.gz")
+            for name in vulkan_files:
+                path = staged / "ffmpeg-source" / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("synthetic Vulkan source/notice\n")
             (staged / "ffmpeg-source/source/AMF-1.4.36.tar.gz").write_text("full SDK must not ship\n")
             (staged / "lib/libvpl.so.2").write_text("dynamic dispatcher must not ship\n")
             for name in ["README.md", "LICENSE-MIT", "LICENSE-APACHE", "THIRD_PARTY_NOTICES.md"]:
@@ -90,6 +96,8 @@ class NativePackageTest(unittest.TestCase):
                         shutil.copyfile(artifact, ARTIFACTS / artifact.name)
                 if FORMAT == "dir":
                     listing = "\n".join(packaging.payload_files(staged / "linux-root"))
+                    for name in vulkan_files:
+                        self.assertIn("ffmpeg-source/" + name, listing)
                     for excluded in ["debug.log", "stale.log", "stale.deb", "previous.deb", "stale-nested.log"]:
                         self.assertNotIn(excluded, listing)
                     self.assertIn("licenses/voice/", listing)
@@ -119,6 +127,8 @@ class NativePackageTest(unittest.TestCase):
             self.assertIn("licenses/voice/", listing)
             self.assertIn("usr/lib/serein/libavcodec-serein.so.61", listing)
             self.assertIn("ffmpeg-source/source/ffmpeg-7.1.5.tar.xz", listing)
+            for name in vulkan_files:
+                self.assertIn("ffmpeg-source/" + name, listing)
             for name in ("openh264-2.6.0-source.tar.bz2", "AMF-1.4.36-headers.tar", "libvpl-2.14.0.tar.gz",
                          "AMF-LICENSE", "oneVPL-LICENSE", "oneVPL-third-party-programs.txt"):
                 self.assertIn(name, listing)

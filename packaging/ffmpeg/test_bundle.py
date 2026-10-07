@@ -126,7 +126,7 @@ class BundleTest(unittest.TestCase):
                         with self.assertRaisesRegex(ValueError, "Incomplete FFmpeg prefix"):
                             builder.build(args)
                         target.write_bytes(original)
-                    if system != "Windows":
+                    if system != "Windows" and os.name == "posix":
                         alias = prefix / aliases[0]
                         alias.unlink()
                         alias.symlink_to(Path(libraries[0]).name)
@@ -342,6 +342,8 @@ class BundleTest(unittest.TestCase):
 
                 with patch.object(builder.platform, "system", return_value=system), \
                         patch.dict(os.environ, {**compilers, "VSCMD_ARG_TGT_ARCH": "x86_64"}), \
+                        patch.object(builder, "posix", side_effect=lambda path: str(path)), \
+                        patch.object(Path, "symlink_to"), \
                         patch.object(builder, "fetch", return_value=root / "source.tar"), \
                         patch.object(builder, "openh264_source", return_value=root / "openh264.tar"), \
                         patch.object(builder, "amf_headers", return_value=root / "amf.tar"), \
@@ -508,6 +510,12 @@ class BundleTest(unittest.TestCase):
                     (notices / name).write_text("synthetic source/notice")
                 if system == "Linux":
                     (notices / "serein-openh264.patch").write_text("synthetic private ABI patch")
+                vulkan_files = ("Vulkan-Headers-LICENSE.md", "Vulkan-Headers-LICENSES/Apache-2.0.txt",
+                                "Vulkan-Headers-LICENSES/MIT.txt", "source/Vulkan-Headers-1.3.290.tar.gz")
+                for name in vulkan_files:
+                    path = notices / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("synthetic Vulkan source/notice")
                 (notices / "private.log").write_text("must not ship")
                 stage = root / "dist"
                 with patch.object(bundle.platform, "system", return_value=system):
@@ -522,6 +530,9 @@ class BundleTest(unittest.TestCase):
                 self.assertEqual("AMF-1.4.36-headers.tar" in names, nvenc)
                 self.assertNotIn("AMF-1.4.36.tar.gz", names)
                 self.assertEqual("libvpl-2.14.0.tar.gz" in names, nvenc)
+                source = stage / ("Serein.app/Contents/Resources/ffmpeg-source" if system == "Darwin" else "ffmpeg-source")
+                for name in vulkan_files:
+                    self.assertEqual((source / name).is_file(), system == "Linux", name)
 
     def test_source_checksum_mismatch_fails_without_using_archive(self):
         with tempfile.TemporaryDirectory() as directory:
