@@ -112,18 +112,20 @@ Intel device. Native hardware validation remains pending. Build the pinned LGPL 
 before Cargo; see [platform requirements](../../docs/platform-support.md).
 
 Experimental camera/screen streams request split-frame encoding for H.265/AV1
-when both picture dimensions are at least 1440 pixels, including portrait capture.
+from 1440p on NVENC/QSV and from 4K (3840×2160 or portrait 2160×3840) on AMF.
+NVENC/QSV require both dimensions to be at least 1440 pixels; AMF requires a
+short edge of at least 2160 pixels and a long edge of at least 3840 pixels.
 The limit is **two encoder engines per stream on the selected physical GPU**;
 H.264, software and VideoToolbox do not request split mode.
 
 | Backend | Request and limits |
 | --- | --- |
 | NVENC | Explicit two-strip mode, retaining P5/look-ahead/reordering. Single-engine hardware uses one; a rejected initialization retries with split mode disabled. Below 1440p split mode is explicitly disabled. |
-| AMF | Windows/DX11 only. The bundled wrapper checks the selected codec's advertised engine count and optional property before setting the split hint. Exactly two engines are required because AMF has no numeric limit. Eligible requests disable incompatible pre-analysis, pre-encode, filler and high-motion boost, retaining the quality preset. |
+| AMF | Windows/DX11 only, from 4K. At 1440p the ordinary configuration retains supported pre-analysis/16-frame lookahead and HEVC quality / AV1 balanced presets. The bundled wrapper checks the selected codec's advertised engine count and optional property before setting the split hint. Exactly two engines are required because AMF has no numeric limit. Eligible requests disable incompatible pre-analysis, pre-encode, filler and high-motion boost, retaining the quality preset. |
 | QSV | Two tile columns permit driver-controlled parallel encoding on this GPU. Negotiated counts are checked before and after initialization; a driver may reduce the count to one but cannot increase it beyond the request. AV1 adds tile rows when required by its maximum tile area at 8K. Hyper Encode across GPUs stays disabled. |
 
-AMF may ignore its hint, including at 1440p: AMD describes driver-dependent
-restrictions such as a 4K minimum. RX 7000 AV1 has one capable VCN, so its ordinary
+AMF may ignore its hint even at 4K because of driver-dependent restrictions.
+RX 7000 AV1 has one capable VCN, so its ordinary
 configuration is retained. QSV tiling enables parallelism where supported but does
 not certify active engine use. AV1's mandatory tiling can also require two columns
 on very wide pictures below 1440p. A failed optional request releases all native

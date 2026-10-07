@@ -1,6 +1,7 @@
 # Two-engine split encoding evidence
 
-Baseline: `00e39d6d6ed90b313a1c98a7daadb2cdd2f9d49e`. Changed source hashes,
+Historical baseline: `00e39d6d6ed90b313a1c98a7daadb2cdd2f9d49e`, changed commit:
+`3c9055552f3f9254310327d89ff3a82673909f95`. Changed source hashes,
 compiler/configuration, library hashes/sizes and all timing samples are in
 [measurements.json](measurements.json).
 
@@ -53,3 +54,16 @@ libavutil remains 846,680 bytes. The unshipped benchmark executable grows
 22,584 -> 26,712 bytes. No performance improvement is claimed. Native idle
 CPU/RSS, complete app/package sizes, engine activity, hardware throughput/quality
 and split-path interoperability remain unmeasured.
+
+## Subsequent AMF 4K threshold adjustment
+
+AMF now requests optional split mode only at 3840×2160 or above (also in
+portrait), retaining supported pre-analysis/16-frame lookahead and the existing
+HEVC quality / AV1 balanced presets at 1440p. NVENC/QSV keep their 1440p threshold;
+the two-engine ceiling and FFmpeg libraries are unchanged. The updated production
+encoding fixture passes normally and with ASan/UBSan/LeakSanitizer against the
+same changed diagnostic prefix. It covers both dimension boundaries, portrait
+and preserved AMF PA/lookahead/quality. Workspace formatting passes; full check
+and package attempts remain blocked by missing GLib development metadata.
+No UI changed. The historical timing samples above measure commit `3c90555`,
+not this later threshold adjustment; physical GPU performance remains unmeasured.

@@ -110,11 +110,14 @@ static void check_presets(void)
 
 static void check_splitting(void)
 {
-    /* width, height, AV1 columns, AV1 rows; includes required AV1 tiling
-     * below our split threshold and a 128-pixel-superblock area boundary. */
-    const int sizes[][4] = {{1920, 1080, 1, 1}, {2560, 1438, 1, 1}, {2560, 1440, 2, 1},
-                           {1440, 2560, 2, 1}, {3840, 2160, 2, 1}, {7680, 4320, 2, 2},
-                           {3840, 1080, 1, 1}, {7680, 1080, 2, 1}, {7296, 2560, 2, 2}};
+    /* width, height, AV1 columns, AV1 rows, AMF request; includes required
+     * AV1 tiling below our split threshold, a superblock-area boundary and
+     * the AMF 4K boundary in both orientations. */
+    const int sizes[][5] = {{1920, 1080, 1, 1, 0}, {2560, 1438, 1, 1, 0}, {2560, 1440, 2, 1, 0},
+                           {1440, 2560, 2, 1, 0}, {3838, 2160, 2, 1, 0}, {3840, 2158, 2, 1, 0},
+                           {2560, 2160, 2, 1, 0}, {3840, 2160, 2, 1, 1}, {2160, 3840, 2, 1, 1},
+                           {2160, 3838, 2, 1, 0}, {2158, 3840, 2, 1, 0}, {7680, 4320, 2, 2, 1},
+                           {3840, 1080, 1, 1, 0}, {7680, 1080, 2, 1, 0}, {7296, 2560, 2, 2, 1}};
     const char *names[][3] = {{"hevc_nvenc", "hevc_amf", "hevc_qsv"},
                               {"av1_nvenc", "av1_amf", "av1_qsv"}};
     const int backends[] = {1, 3, 4};
@@ -123,12 +126,17 @@ static void check_splitting(void)
         const int request = width >= 1440 && height >= 1440;
         assert(wants_split(width, height, 1, 1) == request);
         assert(wants_split(width, height, 4, 2) == request);
+        assert(split_resolution(width, height, 3) == sizes[s][4]);
         assert(!wants_split(width, height, 1, 0));
         assert(!wants_split(width, height, 0, 1));
         assert(!wants_split(width, height, 2, 1));
-#if !defined(_WIN32)
+#if defined(_WIN32)
+        assert(wants_split(width, height, 3, 1) == sizes[s][4]);
+        assert(wants_split(width, height, 3, 2) == sizes[s][4]);
+#else
         assert(!wants_split(width, height, 3, 1));
 #endif
+        assert(!wants_split(width, height, 3, 0));
         for (int kind = 1; kind <= 2; kind++) {
             for (unsigned int b = 0; b < sizeof(backends)/sizeof(backends[0]); b++) {
                 const AVCodec *implementation = avcodec_find_encoder_by_name(names[kind - 1][b]);
@@ -137,7 +145,10 @@ static void check_splitting(void)
                 AVCodecContext *codec = avcodec_alloc_context3(implementation);
                 assert(codec);
                 codec->width = width; codec->height = height;
-                SereinAvc encoder = {.codec = codec, .kind = kind, .features = 2, .split_requested = request};
+                /* Inspect AMF's Windows request with real option tables without
+                 * loading its DX11 driver on this offline Linux fixture. */
+                const int backend_request = backends[b] == 3 ? split_resolution(width, height, 3) : request;
+                SereinAvc encoder = {.codec = codec, .kind = kind, .features = 2, .split_requested = backend_request};
                 assert(configure_backend(&encoder, backends[b]));
                 int64_t value, rows;
                 if (backends[b] == 1) {
@@ -145,7 +156,15 @@ static void check_splitting(void)
                     assert(value == (request ? 2 : 15));
                     assert(av_opt_get_int(codec->priv_data, "rc-lookahead", 0, &value) == 0 && value == 16);
                 } else if (backends[b] == 3) {
-                    assert(av_opt_get_int(codec->priv_data, "split_encode", 0, &value) == 0 && value == request);
+                    assert(av_opt_get_int(codec->priv_data, "split_encode", 0, &value) == 0 && value == sizes[s][4]);
+                    /* A non-split session retains PA/lookahead and its requested
+                     * quality. The bundled wrapper disables PA only if a split
+                     * request is accepted on a two-engine DX11 device. */
+                    assert(av_opt_get_int(codec->priv_data, "preanalysis", 0, &value) == 0 && value == 1);
+                    assert(av_opt_get_int(codec->priv_data, "pa_lookahead_buffer_depth", 0, &value) == 0 && value == 16);
+                    const AVOption *quality = av_opt_find(codec->priv_data, kind == 1 ? "quality" : "balanced", "quality", 0, 0);
+                    assert(quality && av_opt_get_int(codec->priv_data, "quality", 0, &value) == 0);
+                    assert(value == quality->default_val.i64);
                 } else {
                     assert(av_opt_get_int(codec->priv_data, "tile_cols", 0, &value) == 0);
                     assert(value == (kind == 2 ? sizes[s][2] : request ? 2 : 1));
@@ -223,6 +242,6 @@ int main(void)
     assert(submitted == 48);
     serein_avc_close(encoder);
     assert(!serein_avc_open_on_adapter(64, 64, 30, 100000, 0, 1, 0, sizeof(output), NULL, 1));
-    puts("Presets, 1440p/two-engine split policy, same-GPU retry/cleanup, delayed PTS and 48-picture bound passed");
+    puts("Presets, NVENC/QSV 1440p and AMF 4K split policy, preserved AMF PA/quality, same-GPU retry/cleanup, delayed PTS and 48-picture bound passed");
     return 0;
 }

@@ -37,11 +37,19 @@ typedef struct SereinAvc {
     int split_requested;
 } SereinAvc;
 
-/* 1440p includes portrait capture. Never opt into splitting a 1080p
- * ultrawide just because its pixel count exceeds a 2560x1440 picture. */
+/* Use picture dimensions, including portrait capture, rather than pixel count:
+ * AMF keeps its ordinary PA/quality settings below 4K; NVENC/QSV start at 1440p.
+ * A 1080p ultrawide does not qualify for either optional split request. */
+static int split_resolution(int width, int height, int backend)
+{
+    if (backend == 3)
+        return width >= 2160 && height >= 2160 && (width >= 3840 || height >= 3840);
+    return width >= 1440 && height >= 1440;
+}
+
 static int wants_split(int width, int height, int backend, int kind)
 {
-    if (kind == 0 || width < 1440 || height < 1440)
+    if (kind == 0 || !split_resolution(width, height, backend))
         return 0;
     if (backend == 1 || backend == 4)
         return 1;

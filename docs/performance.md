@@ -840,7 +840,7 @@ exercise their actual bounded production helpers without opening devices.
 
 ## Two-engine split requests
 
-Baseline `00e39d6` versus the split-request source hashes in the
+Historical baseline `00e39d6` versus split-request commit `3c90555`, whose source hashes are in the
 [raw measurements](pr-evidence/video-split-encoding/measurements.json).
 Matched optimized FFmpeg 7.1.5 diagnostic builds use the same compiler and
 pinned SDK headers, with assembly/Vulkan/VA disabled and Debian's same-version
@@ -871,3 +871,12 @@ AMF may decline its two-engine hint and eligible requests disable incompatible
 PA/pre-encode/filler/high-motion boost; QSV runtime chooses actual parallelism.
 The request does not add capture workers or simultaneous persistent contexts,
 change the selected GPU, or raise existing packet/picture bounds.
+
+The subsequent AMF threshold adjustment starts its optional split request at
+3840×2160 (or portrait 2160×3840), preserving supported PA/16-frame lookahead
+and the existing quality presets at 1440p. NVENC/QSV retain their 1440p threshold.
+The production option fixture checks both edges of the AMF 4K boundary, portrait
+capture and retained PA/lookahead/quality without loading a driver. The FFmpeg
+libraries and engine cap are unchanged; the historical measurements above do
+not measure this adjustment. Physical GPU encode performance, native idle CPU/RSS
+and standard package sizes remain unavailable in this environment.
