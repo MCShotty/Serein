@@ -3824,6 +3824,19 @@ impl MessagingUi {
 		}
 	}
 
+	fn toggle_gif_favorite(&mut self, ctx: &egui::Context, state: &mut State, gif: &model::Gif) {
+		if !state.toggle_gif_favorite(gif) {
+			let message = if state.gifs.sync_pending.is_some() {
+				"gif-favorites-sync-pending"
+			} else {
+				"gif-favorites-toggle-failed"
+			};
+			self.toasts
+				.push(design::Level::Warning, crate::i18n::translate(message));
+		}
+		ctx.request_repaint();
+	}
+
 	pub fn show(&mut self, ui: &mut egui::Ui, state: &mut State) -> Vec<Command> {
 		self.timeline.download.gif_favorites = state
 			.gifs
@@ -4657,7 +4670,7 @@ impl MessagingUi {
 						self.cancel_upload_requested |=
 							std::mem::take(&mut self.timeline.cancel_upload);
 						if let Some(gif) = self.timeline.gif_favorite.take() {
-							state.toggle_gif_favorite(&gif);
+							self.toggle_gif_favorite(&ctx, state, &gif);
 						}
 						match self.timeline.invite_action.take() {
 							Some(invites::Action::OpenGuild(guild))
@@ -5176,18 +5189,21 @@ impl MessagingUi {
 		self.onboarding.show(&ctx, state, &mut commands);
 		self.scroll.clear_if_unbound(&ctx);
 		self.scroll.paint(&ctx);
+		if let Some(gif) = self.timeline.download.gif_favorite_request.take() {
+			self.toggle_gif_favorite(&ctx, state, &gif);
+		}
 		// Clear the title bar and channel header so a notice never sits on the chrome.
 		self.toasts
 			.show(&ctx, if self.shows_title_bar() { 96.0 } else { 60.0 });
 		if !commands.is_empty() {
 			ctx.request_repaint();
 		}
-		if let Some(gif) = self.timeline.download.gif_favorite_request.take() {
-			state.toggle_gif_favorite(&gif);
-		}
 		commands
 	}
 }
+
+#[cfg(test)]
+mod gif_favorite_tests;
 
 #[cfg(test)]
 mod composer_tests {
