@@ -55,7 +55,11 @@ unsafe extern "C" {
 	#[cfg(target_os = "linux")]
 	fn serein_video_cuda_device(adapter: *const Adapter) -> i32;
 	#[cfg(target_os = "linux")]
-	fn serein_video_drm_device(adapter: *const Adapter, path: *mut i8, capacity: usize) -> i32;
+	fn serein_video_drm_device(
+		adapter: *const Adapter,
+		path: *mut std::ffi::c_char,
+		capacity: usize,
+	) -> i32;
 }
 
 pub(crate) fn query_on_adapter(backend: i32, codec: i32, adapter: VideoAdapter) -> i32 {
@@ -73,7 +77,7 @@ pub(crate) fn cuda_device(adapter: VideoAdapter) -> Option<u32> {
 
 #[cfg(target_os = "linux")]
 pub(crate) fn drm_device(adapter: VideoAdapter) -> Option<String> {
-	let mut path = [0_i8; 80];
+	let mut path = [0 as std::ffi::c_char; 80];
 	// SAFETY: The fixed-width adapter and writable buffer outlive this call;
 	// success guarantees a terminating zero within the supplied capacity.
 	let found =
