@@ -36,6 +36,21 @@ outgoing GPU-only GStreamer encoding. Transport queues, encryption gates, camera
 capture ceilings and persistent storage are unchanged. FFmpeg libraries, source
 and build recipes are installed package material; media is never recorded.
 
+## Profile board games (October 7, 2026)
+
+Board metadata uses the existing on-demand profile worker and RAM profile cache,
+within the unchanged 64-KiB retained-profile limit and 256-KiB profile wire limit.
+The parser admits eight widget envelopes, retains at most one of each of four
+supported kinds, and caps their games at 1/5/20/20 respectively. Each game retains
+at most 512 name bytes, 1,024 comment bytes and three ASCII tags of 64 bytes each;
+image references are validated service hashes. Names and image hashes use at most
+two sequential requests with 25 IDs and 256 KiB response bytes each. Optional
+enrichment is accepted only when the entire profile remains within its budget.
+No polling, new queues or profile persistence are added. Current cancellation,
+generation checks, cache expiry, logout and account isolation still apply.
+Visible cover/icon images use the existing credential-free image worker and
+bounded account image cache; arbitrary game-supplied URLs are never fetched.
+
 ## Voice audio host lifetime (October 7, 2026)
 
 Each active voice device set retains its CPAL host and reuses it for default-device
@@ -646,7 +661,7 @@ The owner explicitly withdrew the no-storage policy on 2026-09-09. Local files, 
 | Selected upload source | Up to ten session-only paths (4096 encoded bytes each), filenames (256 UTF-8 bytes each) and size/modified metadata; 500,000,000 bytes total, read in 64 KiB chunks | Removal, send completion/failure, cancellation or session teardown; sources are never copied to recovery/cache files or deleted |
 | Drafts | 64 globally, at most 2 MiB content; each draft at most 16,032 UTF-8 bytes (4,000 Unicode characters plus the silent prefix) | Clear draft, confirmed send, or account logout |
 | Appearance | One application-wide SQLite row: Light or Dark; absent means System | Select System to remove the override; retained across account logout |
-| Reading/layout | One application-wide SQLite row with eight bounded scalar fields | Reset reading and layout removes only this override; retained across account logout |
+| Reading/layout | One application-wide SQLite row with bounded scalar fields, including the double-click reaction opt-in and Unicode preset | Reset reading and layout removes only this override; retained across account logout |
 | Theme preset | One application-wide SQLite row (`theme_variant`, ≤32-byte key such as `onyx`); absent means Default | Select Default to remove it; unknown keys are ignored; retained across account logout |
 | SQLite working files | DELETE journal mode, in-memory temporary tables, 2 MiB page cache; transaction journal may temporarily add disk usage | SQLite transaction completion; normal SQLite crash recovery |
 | Voice credentials, DAVE identities/keys and PCM/Opus audio | Session memory only; one call, bounded media queues; no recording or audio cache | Hangup, failure, logout and application teardown; no forensic-erasure claim |
@@ -1709,3 +1724,7 @@ changing settings does not allocate another encoder or renegotiate an active str
 Camera previews stop on a settings change and require another explicit start.
 The existing camera/screen pixel, encoded-byte and packet/queue limits remain.
 No new capture files, media cache, driver installer or secrets are persisted.
+
+Schema 28 adds the device-wide double-click reaction preset to the reading settings singleton. The bounded index selects one of six Unicode emoji, defaults to ❤️, and persists independently of session emoji recommendations.
+
+Schema 29 adds a bounded boolean opt-in for double-click reactions, disabled for new and migrated settings. The selected Unicode preset is retained while disabled; Reset chat restores the disabled default.

@@ -114,6 +114,7 @@ impl DiscordApi {
 			Action::OpenDm(id)
 			| Action::CloseDm(id)
 			| Action::Block { user: id, .. }
+			| Action::Ignore { user: id, .. }
 			| Action::Mute { channel: id, .. } => id,
 		};
 		if id.0 == 0 {
@@ -204,6 +205,20 @@ impl DiscordApi {
 					},
 					&format!("/users/@me/relationships/{user}"),
 					blocked.then(|| json!({"type": 2})),
+				)
+				.await
+				.map(|_| ()),
+			// Unverified: the route mirrors the official web client's ignore toggle; no checked
+			// reference documents it. The gateway's `user_ignored` flag confirms the outcome.
+			Action::Ignore { user, ignored } => self
+				.request(
+					if *ignored {
+						Method::PUT
+					} else {
+						Method::DELETE
+					},
+					&format!("/users/@me/relationships/{user}/ignore"),
+					None,
 				)
 				.await
 				.map(|_| ()),

@@ -353,7 +353,10 @@ When enabled by the input profile, Sonora 0.2.0 (a Rust port of WebRTC AEC3) run
 the audio worker, before denoising, microphone gain and Opus encoding. It uses mixed
 speaker output after software volume and resampling, including silence on
 underrun/deafen, as the echo reference. Devices and encryption changes recreate
-the processor; mute transitions and dropped callback frames reset its history.
+the processor; resuming the microphone and dropped callback frames reset its history.
+Capture and playback have separate privacy generations, so muting the microphone
+preserves speaker playback. Echo-reference frames carry the capture generation;
+partial references reset whenever that generation changes.
 Echo cancellation can be changed independently in Custom and is bypassed in Studio.
 No SDK account, model downloads or additional device access are needed.
 Optional digital automatic gain control follows denoising, with a maximum 20 dB gain;

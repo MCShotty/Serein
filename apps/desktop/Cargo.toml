@@ -94,3 +94,7 @@ required-features = ["demo"]
 # Keep unsafe denied throughout the app; only gpu::physical_identity permits it.
 [lints.rust]
 unsafe_code = "deny"
+
+[[example]]
+name = "double_click_settings"
+required-features = ["demo"]

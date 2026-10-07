@@ -158,6 +158,7 @@ fn form(
 				let response = design::input(
 					ui,
 					egui::TextEdit::singleline(value)
+						.align(egui::Align2::LEFT_CENTER)
 						.id(inputs.id(id))
 						.char_limit(1024),
 				)

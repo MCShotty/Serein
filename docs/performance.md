@@ -5163,3 +5163,67 @@ vptr check is excluded with `-fno-sanitize=vptr`. This covers the compiled
 query/shim fixtures and their synthetic resource counters, not the full app,
 physical vendor drivers or the separately built FFmpeg libraries. No live
 account, microphone, camera or screen capture was used.
+
+## Role name gradients — October 4, 2026
+
+Compared baseline `6313e271e9c34b39069eb20787afb1476741b21c` with the role gradient
+implementation on Windows 11 Pro, AMD Ryzen 5 5600G, 12 logical CPUs and approximately
+32 GiB RAM, using pinned Rust 1.98.1. Both standard voice-inclusive portable packages
+use `cargo xtask package`, no default/demo features and normal fat LTO. NSIS is absent,
+so no installer was produced. Installed bytes sum regular files in `dist`; ZIP bytes
+use PowerShell `Compress-Archive -Path dist/* -CompressionLevel Optimal`.
+
+| Metric | Baseline | After | Delta |
+| --- | ---: | ---: | ---: |
+| Standard executable | 84,442,112 B | 84,451,840 B | +9,728 B / +0.0115% |
+| Portable installed files | 88,615,308 B | 88,625,036 B | +9,728 B / +0.0110% |
+| Complete portable ZIP | 49,397,126 B | 49,399,197 B | +2,071 B / +0.0042% |
+| Reducer replay median | 77.0771 ms | 78.0503 ms | +0.9732 ms / +1.26% |
+| Retained timeline estimate | 331,992–332,477 B | 331,992–332,477 B | unchanged |
+
+Replay uses the existing release `replay-bench` workload of 100,000 synthetic events.
+Build each revision once with `cargo build --release --locked -p replay-bench`, then
+run its executable directly: one warmup per revision and five alternating measured
+runs each, with no concurrent build. Both retained 500 records. The installed app and
+the owner's debug preview were left running during both sets. The small timing increase
+does not establish a UI regression or improvement; this reducer workload does not
+exercise gradient rendering. Raw samples and executable hashes are recorded in
+[the measurements](pr-evidence/role-gradients/measurements.json).
+
+The synthetic native demo passed a five-second startup smoke check on WGPU/Dx12,
+NVIDIA GeForce RTX 5070 Ti. Native screenshot automation was unavailable because its
+helper pipe could not be opened. Before/after visual inspection, native idle CPU/RSS,
+frame/startup latency and GPU memory remain unmeasured. No live Discord, microphone
+or voice traffic was tested. The PR remains draft for missing native visual evidence
+and two pre-existing Gateway loopback failures, reproduced on baseline with
+`Protocol(MissingConnectionUpgradeHeader)`.
+
+## PR #567 upstream conflict resolution — October 7, 2026
+
+Compared the verified release reducer from feature head
+`11abe5a3700cfe0ec734808931d3791922d98b12` with the merged working tree including
+upstream `20230cb91b0117fe4c888d70867fa600704dcad4`. Both use Rust 1.98.1, normal
+fat LTO and no optional features; the merged build uses the updated upstream
+lockfile. Separate binary paths preserve the baseline. Complete reducer source
+blob IDs, executable hashes, warmups and samples are in
+`docs/pr-evidence/pr567-conflict-resolution/measurements.json`.
+
+Linux / Intel Xeon Platinum 8573C, five exposed logical CPUs, 17 GiB exposed RAM;
+one warmup and five measured runs per binary, with alternating pair order and no
+active task compiler during sampling. The workload replays 100,000 synthetic
+events and verifies the bounded 500-record timeline and logout release.
+
+| Metric | Baseline | Merged | Delta / method |
+| --- | ---: | ---: | --- |
+| Reducer median | 125.050355 ms | 144.784515 ms | +19.734160 ms (+15.78%); wide, overlapping sample ranges |
+| Reducer sample range | 83.038196–158.760550 ms | 122.432188–168.732948 ms | Five samples each; shared-host scheduling noise |
+| Retained timeline estimate | 331,992–332,477 B / 500 records | 331,992–332,477 B / 500 records | Unchanged; not process RSS |
+| Release reducer executable | 1,516,760 B | 1,527,472 B | +10,712 B (+0.71%); not the application package |
+| Standard voice-enabled app / installed / compressed package | Unmeasured | Unmeasured | Both full check and package attempts stop at missing `glib-2.0.pc` |
+
+The measured median increased; the large timing spread prevents attributing that
+change to the merge. No performance improvement is claimed. This reducer does
+not exercise native audio, upload previews, renderer GPU routing or UI latency.
+Full native GUI screenshots, process CPU/RSS, physical hardware encoding and
+live service compatibility remain unverified. Offline audio and upload regressions
+exercise their actual bounded production helpers without opening devices.

@@ -80,7 +80,7 @@ The native attachment video adapter also uses **symphonia-codec-aac 0.6.1**
 the other Symphonia codecs, and ship through the same package copy step.
 
 The egui main experiment pins the egui/eframe ecosystem to upstream commit
-`35b9cbf27afd1756f5896bdd1325f155a415c054` (version 0.36.2, MIT OR Apache-2.0).
+`72bc6574978d87fe0929b1d590c35222e6fd8935` (version 0.36.2, MIT OR Apache-2.0).
 It adds unicode-properties 0.1.4 (MIT/Apache-2.0) and updates glifo to 0.3.0 and
 vello_common/vello_cpu to 0.2.0 (Apache-2.0 OR MIT). Epaint bundled fonts and
 their separate license obligations are unchanged. Clipboard support is explicitly
@@ -327,3 +327,5 @@ retain the same CC BY 4.0 attribution and license as the atlas, as described in
 - `simplecss-0.2.2-LICENSE-MIT`: SHA-256 `0b5f24524360e15bcf9fb79bca875f5aa62f01f94f2988e23238c7ec0e6e8784`; unmodified registry `simplecss-0.2.2`/LICENSE-MIT.
 - `svgtypes-0.16.1-LICENSE-APACHE`: SHA-256 `a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2`; unmodified registry `svgtypes-0.16.1`/LICENSE-APACHE.
 - `svgtypes-0.16.1-LICENSE-MIT`: SHA-256 `f3c9fe731c701ed77fd5fbaac573872af04dc5869385eb9bd5e3c73c42713814`; unmodified registry `svgtypes-0.16.1`/LICENSE-MIT.
+
+The locally patched **gpu-allocator 0.28.0** retains its MIT/Apache-2.0 licenses under `vendor/gpu-allocator`. Only the Windows binding version bounds are widened to include 0.62 patch releases, aligning Direct3D types with wgpu-hal. See `vendor/gpu-allocator/SEREIN-PATCH.md` for provenance; allocator source is unchanged. The license texts also ship under `licenses/dependencies`.

@@ -298,6 +298,7 @@ attachments-media-menu-unavailable-for-synthetic-attachments = Indisponível par
 attachments-open-original-open-original = Abra o original…
 # Context: pending_card
 attachments-pending-card-remove-attachment = Remover anexo
+attachments-loading-card-preparing = Preparando…
 # Context: show_status
 attachments-show-status-cancel-download = Cancelar download
 # Context: show_status
@@ -809,6 +810,10 @@ emoji-picker-gif-body-searching-klipy = Pesquisando KLIPY…
 # Context: gif_body
 emoji-picker-gif-body-trending-gifs = Tendências de GIFs
 # Context: gif_body
+emoji-picker-gif-body-retry = Tentar novamente
+# Context: gif_body
+emoji-picker-gif-body-no-trending-gifs-right-now = Pesquise um GIF ou tente novamente mais tarde.
+# Context: gif_body
 emoji-picker-gif-body-try-a-different-search-term = Experimente um termo de pesquisa diferente.
 # Context: gif_grid
 emoji-picker-gif-grid-favorite = Favorito
@@ -834,6 +839,8 @@ emoji-picker-popup-hover-an-emoji-to-preview-it = Passe o mouse sobre um emoji p
 emoji-picker-popup-no-matching-emoji = Nenhum emoji correspondente.
 # Context: popup
 emoji-picker-popup-retry-sticker-packs = Tentar novamente pacotes de adesivos
+# Context: popup
+emoji-picker-popup-requires-nitro = Requer Nitro para usar aqui
 # Context: popup
 emoji-picker-popup-search-results = Resultados da pesquisa
 # Context: popup
@@ -2050,6 +2057,20 @@ profiles-more-menu-add-friend-nickname = Adicionar apelido de amigo
 profiles-more-menu-add-note = Adicionar nota
 # Context: more_menu
 profiles-more-menu-block = Bloquear
+profiles-view-full-profile = Ver perfil completo
+profiles-copy-username = Copiar nome de usuário
+profiles-username-unavailable = Abra este perfil para carregar o nome de usuário
+profiles-ignore = Ignorar
+profiles-unignore = Deixar de ignorar
+profiles-ignore-hint = Usa a configuração Ignorar do Discord sem bloquear. A pessoa não é notificada.
+profiles-report-user-profile = Denunciar perfil de usuário
+profiles-report-hint = Abre o formulário de suporte do Discord no navegador e copia o ID do usuário
+profiles-show-activity = ATIVIDADE
+profiles-show-connections = CONEXÕES
+profiles-show-friends-since = AMIGOS DESDE
+profiles-show-note = NOTA
+profiles-show-note-hint = Clique para adicionar uma nota
+profiles-show-note-only-you = Visível apenas para você
 # Context: more_menu
 profiles-more-menu-copy-webhook-id = Copiar ID do webhook
 # Context: more_menu
@@ -2118,6 +2139,8 @@ profiles-show-view-profile-picture = Ver foto do perfil
 ## crates/ui/src/reactions.rs
 # Context: add_button
 reactions-add-button-add-reaction = Adicionar reação
+# Context: quick_button
+reactions-quick-react = Reagir com { $emoji }
 # Context: show
 reactions-show-reactions-unavailable = Reações indisponíveis
 # Context: show
@@ -3439,6 +3462,12 @@ settings-chat-settings-channel-list = Lista de canais
 settings-chat-settings-show-channels-you-cannot-currently-access = Mostrar canais que você não pode acessar no momento.
 # Context: chat_settings
 settings-chat-settings-show-hidden-channels = Mostrar canais ocultos
+# Context: chat_settings
+settings-chat-settings-emoji = Emojis
+# Context: chat_settings
+settings-chat-settings-suggest-nitro-emojis = Sugerir emojis que exigem Nitro
+# Context: chat_settings
+settings-chat-settings-suggest-nitro-emojis-description = Oferecer emojis animados e de outros servidores nas sugestões de : e no seletor sem Nitro. Quando desativado, eles ficam ocultos nas sugestões e bloqueados no seletor.
 # Context: close_control
 settings-close-control-close-settings-esc = Fechar configurações (Esc)
 # Context: colour_preset_settings
@@ -3736,6 +3765,10 @@ timeline-deleted-message-actions-toggle-deleted-highlight = Alternar destaque ex
 timeline-loading-messages-loading-messages = Carregando mensagens
 # Context: message_actions
 timeline-message-actions-copy = Cópia
+# Context: message_actions
+timeline-message-actions-copy-message-id = Copiar ID da mensagem
+# Context: message_actions
+timeline-message-actions-copy-message-link = Copiar link da mensagem
 # Context: message_actions
 timeline-message-actions-create-thread = Criar tópico…
 # Context: message_actions
@@ -4449,3 +4482,13 @@ screen-macos-system-picker = Escolher com o seletor do macOS
 screen-macos-system-picker-kind = Seletor de conteúdo do sistema
 
 member-in-voice = No chat de voz
+
+profiles-board = Board
+profiles-board-unavailable = This profile’s board is unavailable.
+profiles-board-empty = No games on this board yet.
+profiles-board-show-more = Show more
+profiles-board-show-less = Show less
+profiles-activity-empty = Nenhuma atividade compartilhada.
+profiles-mutuals-empty = Nothing to show here.
+
+reading-double-click-reaction = Double-click reaction

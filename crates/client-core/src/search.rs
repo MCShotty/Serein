@@ -514,6 +514,8 @@ mod tests {
 								| model::permissions::READ_MESSAGE_HISTORY,
 							name: "Synthetic everyone".into(),
 							color: 0,
+							secondary_color: None,
+							tertiary_color: None,
 							position: 0,
 							hoist: false,
 						}]),

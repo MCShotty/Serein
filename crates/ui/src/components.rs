@@ -770,6 +770,7 @@ fn select(
 			}
 			if c.kind != 3 || c.options.len() > 10 {
 				let mut edit = egui::TextEdit::singleline(query)
+					.align(egui::Align2::LEFT_CENTER)
 					.hint_text(crate::i18n::translate("components-select-search-options"))
 					.char_limit(64);
 				if let Some(id) = query_id {
@@ -983,7 +984,7 @@ fn field(
 				let edit = if c.style == Some(2) {
 					egui::TextEdit::multiline(value).desired_rows(5)
 				} else {
-					egui::TextEdit::singleline(value)
+					egui::TextEdit::singleline(value).align(egui::Align2::LEFT_CENTER)
 				};
 				let response = ui.add(
 					edit.id(inputs.id(("field", ui.scope_id().value())))

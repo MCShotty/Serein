@@ -299,6 +299,7 @@ attachments-media-menu-unavailable-for-synthetic-attachments = Unavailable for s
 attachments-open-original-open-original = Open original…
 # Context: pending_card
 attachments-pending-card-remove-attachment = Remove attachment
+attachments-loading-card-preparing = Preparing…
 # Context: show_status
 attachments-show-status-cancel-download = Cancel download
 # Context: show_status
@@ -810,6 +811,10 @@ emoji-picker-gif-body-searching-klipy = Searching KLIPY…
 # Context: gif_body
 emoji-picker-gif-body-trending-gifs = Trending GIFs
 # Context: gif_body
+emoji-picker-gif-body-retry = Retry
+# Context: gif_body
+emoji-picker-gif-body-no-trending-gifs-right-now = Search for a GIF or try again later.
+# Context: gif_body
 emoji-picker-gif-body-try-a-different-search-term = Try a different search term.
 # Context: gif_grid
 emoji-picker-gif-grid-favorite = Favorite
@@ -835,6 +840,8 @@ emoji-picker-popup-hover-an-emoji-to-preview-it = Hover an emoji to preview it
 emoji-picker-popup-no-matching-emoji = No matching emoji.
 # Context: popup
 emoji-picker-popup-retry-sticker-packs = Retry sticker packs
+# Context: popup
+emoji-picker-popup-requires-nitro = Requires Nitro to use here
 # Context: popup
 emoji-picker-popup-search-results = Search results
 # Context: popup
@@ -2054,6 +2061,20 @@ profiles-more-menu-add-friend-nickname = Add Friend Nickname
 profiles-more-menu-add-note = Add Note
 # Context: more_menu
 profiles-more-menu-block = Block
+profiles-view-full-profile = View Full Profile
+profiles-copy-username = Copy Username
+profiles-username-unavailable = Open this profile to load the username
+profiles-ignore = Ignore
+profiles-unignore = Unignore
+profiles-ignore-hint = Uses Discord's Ignore setting without blocking. They are not notified.
+profiles-report-user-profile = Report User Profile
+profiles-report-hint = Opens Discord's support form in your browser and copies the user ID for it
+profiles-show-activity = ACTIVITY
+profiles-show-connections = CONNECTIONS
+profiles-show-friends-since = FRIENDS SINCE
+profiles-show-note = NOTE
+profiles-show-note-hint = Click to add a note
+profiles-show-note-only-you = Only visible to you
 # Context: more_menu
 profiles-more-menu-copy-webhook-id = Copy webhook ID
 # Context: more_menu
@@ -2122,6 +2143,8 @@ profiles-show-view-profile-picture = View profile picture
 ## crates/ui/src/reactions.rs
 # Context: add_button
 reactions-add-button-add-reaction = Add reaction
+# Context: quick_button
+reactions-quick-react = React with { $emoji }
 # Context: show
 reactions-show-reactions-unavailable = Reactions unavailable
 # Context: show
@@ -3443,6 +3466,12 @@ settings-chat-settings-channel-list = Channel list
 settings-chat-settings-show-channels-you-cannot-currently-access = Show channels you cannot currently access.
 # Context: chat_settings
 settings-chat-settings-show-hidden-channels = Show hidden channels
+# Context: chat_settings
+settings-chat-settings-emoji = Emoji
+# Context: chat_settings
+settings-chat-settings-suggest-nitro-emojis = Suggest emojis that need Nitro
+# Context: chat_settings
+settings-chat-settings-suggest-nitro-emojis-description = Offer animated and other servers' emojis in : suggestions and the picker without Nitro. When off, they are hidden from suggestions and locked in the picker.
 # Context: close_control
 settings-close-control-close-settings-esc = Close settings (Esc)
 # Context: colour_preset_settings
@@ -3740,6 +3769,10 @@ timeline-deleted-message-actions-toggle-deleted-highlight = Toggle Deleted Highl
 timeline-loading-messages-loading-messages = Loading messages
 # Context: message_actions
 timeline-message-actions-copy = Copy
+# Context: message_actions
+timeline-message-actions-copy-message-id = Copy Message ID
+# Context: message_actions
+timeline-message-actions-copy-message-link = Copy Message Link
 # Context: message_actions
 timeline-message-actions-create-thread = Create Thread…
 # Context: message_actions
@@ -4556,3 +4589,13 @@ voice-video-encoder-test-no-success = No hardware encoder passed this test
 settings-chat-box = Chat Box
 settings-convert-emoticons = Automatically convert emoticons in your messages to emoji
 settings-convert-emoticons-description = Convert standalone emoticons such as :) to 🙂 when sending or editing messages. Code and links stay unchanged.
+
+profiles-board = Board
+profiles-board-unavailable = This profile’s board is unavailable.
+profiles-board-empty = No games on this board yet.
+profiles-board-show-more = Show more
+profiles-board-show-less = Show less
+profiles-activity-empty = No activity shared.
+profiles-mutuals-empty = Nothing to show here.
+
+reading-double-click-reaction = Double-click reaction
