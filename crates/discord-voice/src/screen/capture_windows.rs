@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use windows_capture::{
 	capture::{CaptureControl, Context, GraphicsCaptureApiHandler},
 	frame::Frame,
-	graphics_capture_api::InternalCaptureControl,
+	graphics_capture_api::{GraphicsCaptureApi, InternalCaptureControl},
 	monitor::Monitor,
 	settings::{
 		ColorFormat, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings,
@@ -137,7 +137,7 @@ impl GraphicsCaptureApiHandler for Handler {
 		{
 			self.0.stop.store(true, Ordering::Release);
 			control.stop();
-			return Err("Captured frame exceeds the 4K limit");
+			return Err("Captured frame exceeds the 8K limit");
 		}
 		let mut buffer = frame.buffer().map_err(|_| {
 			self.0.stop.store(true, Ordering::Release);
@@ -150,7 +150,7 @@ impl GraphicsCaptureApiHandler for Handler {
 		};
 		if stride < row_bytes || source_len > MAX_RAW_BYTES {
 			self.0.stop.store(true, Ordering::Release);
-			return Err("Captured frame stride exceeds the 4K limit");
+			return Err("Captured frame stride exceeds the 8K limit");
 		}
 		let source = buffer.as_raw_buffer();
 		if source.len() < source_len {
@@ -198,12 +198,7 @@ impl Capture {
 		audio_epoch: Arc<AtomicU64>,
 		pending: Arc<AtomicBool>,
 	) -> Result<Self, &'static str> {
-		if settings.width == 0
-			|| settings.height == 0
-			|| settings.width > MAX_FRAME_WIDTH
-			|| settings.height > MAX_FRAME_HEIGHT
-			|| settings.fps == 0
-		{
+		if !settings.valid() {
 			return Err("Invalid screen capture settings");
 		}
 		let mut capture = match settings.source {
@@ -276,7 +271,7 @@ where
 		return Err("Selected source dimensions are unavailable");
 	};
 	if width == 0 || height == 0 || width > MAX_FRAME_WIDTH || height > MAX_FRAME_HEIGHT {
-		return Err("Selected source exceeds the 4K capture limit");
+		return Err("Selected source exceeds the 8K capture limit");
 	}
 	let flags = Flags {
 		frames,
@@ -292,7 +287,12 @@ where
 		} else {
 			CursorCaptureSettings::WithoutCursor
 		},
-		DrawBorderSettings::WithoutBorder,
+		// Hide the border where supported; older Windows must keep the system default.
+		if GraphicsCaptureApi::is_border_settings_supported().unwrap_or(false) {
+			DrawBorderSettings::WithoutBorder
+		} else {
+			DrawBorderSettings::Default
+		},
 		SecondaryWindowSettings::Default,
 		MinimumUpdateIntervalSettings::Default,
 		DirtyRegionSettings::Default,

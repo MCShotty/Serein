@@ -60,12 +60,36 @@ SOURCES = {
         "url": "https://codeload.github.com/intel/libvpl/tar.gz/refs/tags/v2.14.0",
         "sha256": "7c6bff1c1708d910032c2e6c44998ffff3f5fdbf06b00972bc48bf2dd9e5ac06",
     },
+    "vulkan-headers": {
+        "file": "Vulkan-Headers-1.3.290.tar.gz",
+        "url": "https://codeload.github.com/KhronosGroup/Vulkan-Headers/tar.gz/refs/tags/v1.3.290",
+        "sha256": "f38a653bf93cab7a2a229a53d2d53b1cba9a2819e4c0a7de13c54085bde9bcf5",
+    },
 }
 
 OPENH264_APIS = (
     "WelsCreateSVCEncoder", "WelsDestroySVCEncoder", "WelsGetDecoderCapability",
     "WelsCreateDecoder", "WelsDestroyDecoder", "WelsGetCodecVersion", "WelsGetCodecVersionEx",
 )
+
+QSV_FEATURE_VALIDATION = """/* Serein's negotiated quality contract; no frame submission or allocation. */
+#ifndef SEREIN_QSV_FEATURE_VALIDATION_H
+#define SEREIN_QSV_FEATURE_VALIDATION_H
+static int serein_qsv_quality_matches(int requested_b, unsigned int reference_distance,
+    int requested_depth, int requested_extbrc, unsigned int driver_extbrc,
+    unsigned int driver_depth, unsigned int driver_rate_control)
+{
+    if (requested_b == 0 && reference_distance != 1)
+        return 0;
+    if (requested_b > 0 && (!reference_distance || reference_distance > (unsigned int)requested_b + 1))
+        return 0;
+    if (requested_depth > 0 && (requested_extbrc <= 0 || driver_extbrc != MFX_CODINGOPTION_ON ||
+        driver_depth != (unsigned int)requested_depth || driver_rate_control != MFX_RATECONTROL_CBR))
+        return 0;
+    return 1;
+}
+#endif
+"""
 
 
 def run(*args, cwd=None, env=None):
@@ -230,9 +254,10 @@ def encoder_names(backends):
 
 
 def hardware_options(system, backends):
-    options = ["--disable-mediafoundation", "--disable-encoder=h264_vaapi,hevc_vaapi,av1_vaapi", "--disable-vulkan", "--disable-dxva2"]
-    options += (["--enable-vaapi", "--enable-libdrm"] if system == "Linux" and backends["qsv"] else
-                ["--disable-vaapi", "--disable-libdrm"])
+    options = ["--disable-mediafoundation", "--disable-encoder=h264_vaapi,hevc_vaapi,av1_vaapi", "--disable-dxva2"]
+    options += ["--enable-vulkan" if system == "Linux" and backends["amf"] else "--disable-vulkan"]
+    options += ["--enable-vaapi" if system == "Linux" and backends["qsv"] else "--disable-vaapi"]
+    options += ["--enable-libdrm" if system == "Linux" and (backends["qsv"] or backends["amf"]) else "--disable-libdrm"]
     options += ["--enable-d3d11va" if system == "Windows" and (backends["qsv"] or backends["amf"]) else "--disable-d3d11va"]
     options += (["--enable-ffnvcodec", "--enable-nvenc"] if backends["nvenc"] else
                 ["--disable-ffnvcodec", "--disable-nvenc"])
@@ -246,21 +271,140 @@ def hardware_options(system, backends):
 
 def patch_ffmpeg(tree):
     patches = []
+    originals = {}
     replacements = [("libavcodec/libavcodec.v", "LIBAVCODEC_MAJOR", "SEREIN_LIBAVCODEC_MAJOR"),
                     ("libavutil/libavutil.v", "LIBAVUTIL_MAJOR", "SEREIN_LIBAVUTIL_MAJOR"),
                     ("libavcodec/qsvenc.c", "ret = av_new_packet(&pkt.pkt, q->packet_size);",
                      "ret = ff_get_encode_buffer(avctx, &pkt.pkt, q->packet_size, 0);"),
                     ("configure", 'hevc_qsv_encoder_select="hevcparse qsvenc"',
                      'hevc_qsv_encoder_select="hevcparse hevc_sei qsvenc"')]
+    # FFmpeg7.1's VT encoder otherwise silently chooses an unrelated GPU.
+    # This public VideoToolbox specification is resolved dynamically so an
+    # older SDK can compile, while an OS lacking the key fails closed. Keep
+    # these changes in the bundled LGPL source patch beside the pristine tar.
+    replacements += [
+        ("libavcodec/qsvenc.c", '#include "qsvenc.h"\n',
+         '#include "qsvenc.h"\n#include "serein_qsv_feature_validation.h"\n'),
+        ("libavcodec/videotoolboxenc.c", "    int allow_sw;\n",
+         "    int64_t gpu_registry_id;\n    int allow_sw;\n"),
+        ("libavcodec/videotoolboxenc.c", "#define COMMON_OPTIONS \\\n",
+         "#define COMMON_OPTIONS \\\n"
+         '    { "gpu_registry_id", "Require encoding on this Metal GPU registry ID", OFFSET(gpu_registry_id), AV_OPT_TYPE_INT64, \\\n'
+         "        { .i64 = 0 }, INT64_MIN, INT64_MAX, VE }, \\\n"),
+        ("libavcodec/videotoolboxenc.c", "    // low-latency mode: eliminate frame reordering, follow a one-in-one-out encoding mode\n",
+         "    if (vtctx->gpu_registry_id) {\n"
+         '        CFStringRef *key = (CFStringRef *)dlsym(RTLD_DEFAULT, "kVTVideoEncoderSpecification_RequiredEncoderGPURegistryID");\n'
+         "        CFNumberRef number;\n"
+         "        if (!key || !*key) {\n"
+         "            CFRelease(enc_info);\n"
+         "            return AVERROR(ENOSYS);\n"
+         "        }\n"
+         "        number = CFNumberCreate(NULL, kCFNumberSInt64Type, &vtctx->gpu_registry_id);\n"
+         "        if (!number) {\n"
+         "            CFRelease(enc_info);\n"
+         "            return AVERROR(ENOMEM);\n"
+         "        }\n"
+         "        CFDictionarySetValue(enc_info, *key, number);\n"
+         "        CFRelease(number);\n"
+         "    }\n\n"
+         "    // low-latency mode: eliminate frame reordering, follow a one-in-one-out encoding mode\n"),
+    ]
+    replacements += [
+        ("libavcodec/amfenc.c", '#include "libavutil/hwcontext.h"\n',
+         '#include "libavutil/hwcontext.h"\n'
+         '#if CONFIG_VULKAN\n#include "libavutil/hwcontext_vulkan.h"\n'
+         '#include <AMF/core/VulkanAMF.h>\n#endif\n'),
+        ("libavcodec/amfenc.c", "#if CONFIG_D3D11VA\nstatic int amf_init_from_d3d11_device",
+         "#if CONFIG_VULKAN\n"
+         "static int amf_init_from_vulkan_device(AVCodecContext *avctx, AVVulkanDeviceContext *hwctx)\n"
+         "{\n"
+         "    AmfContext *ctx = avctx->priv_data;\n"
+         "    AMFContext1 *context1 = NULL;\n"
+         "    AMFGuid guid = IID_AMFContext1();\n"
+         "    AMFVulkanDevice device = {0};\n"
+         "    AMF_RESULT result;\n"
+         "    if (!hwctx->inst || !hwctx->phys_dev || !hwctx->act_dev)\n"
+         "        return AVERROR(EINVAL);\n"
+         "    result = ctx->context->pVtbl->QueryInterface(ctx->context, &guid, (void **)&context1);\n"
+         "    if (result != AMF_OK || !context1)\n"
+         "        return AVERROR(ENOSYS);\n"
+         "    device.cbSizeof = sizeof(device);\n"
+         "    device.hInstance = hwctx->inst;\n"
+         "    device.hPhysicalDevice = hwctx->phys_dev;\n"
+         "    device.hDevice = hwctx->act_dev;\n"
+         "    result = context1->pVtbl->InitVulkan(context1, &device);\n"
+         "    context1->pVtbl->Release(context1);\n"
+         "    return result == AMF_OK ? 0 : AVERROR(ENODEV);\n"
+         "}\n#endif\n\n"
+         "#if CONFIG_D3D11VA\nstatic int amf_init_from_d3d11_device"),
+        ("libavcodec/amfenc.c", "        switch (device_ctx->type) {\n",
+         "        switch (device_ctx->type) {\n"
+         "#if CONFIG_VULKAN\n"
+         "        case AV_HWDEVICE_TYPE_VULKAN:\n"
+         "            ret = amf_init_from_vulkan_device(avctx, device_ctx->hwctx);\n"
+         "            if (ret < 0)\n"
+         "                return ret;\n"
+         "            break;\n"
+         "#endif\n"),
+        ("libavutil/hwcontext_vulkan.c", "        dev_select.drm_major = major(drm_node_info.st_dev);\n",
+         "        dev_select.drm_major = major(drm_node_info.st_rdev);\n"),
+        ("libavutil/hwcontext_vulkan.c", "        dev_select.drm_minor = minor(drm_node_info.st_dev);\n",
+         "        dev_select.drm_minor = minor(drm_node_info.st_rdev);\n"),
+        ("libavutil/hwcontext_vulkan.c", "    if (select->has_uuid) {\n",
+         "    /* Explicit DRM selection may never fall through to vendor/model matching. */\n"
+         "    if (select->has_drm && !(p->vkctx.extensions & FF_VK_EXT_DEVICE_DRM)) {\n"
+         "        av_log(ctx, AV_LOG_ERROR, \"Exact DRM adapter selection requires VK_EXT_physical_device_drm.\\n\");\n"
+         "        err = AVERROR(ENOSYS);\n"
+         "        goto end;\n"
+         "    }\n\n"
+         "    if (select->has_uuid) {\n"),
+        ("libavcodec/qsvenc.c", "    ret = MFXVideoENCODE_QueryIOSurf(q->session, &q->param, &q->req);\n",
+         "    /* Never silently add reordered pictures or drop requested quality features.\n"
+         "     * Startup can retry conservative settings on this same physical adapter. */\n"
+         "    if (!serein_qsv_quality_matches(avctx->max_b_frames, q->param.mfx.GopRefDist,\n"
+         "        q->look_ahead_depth, q->extbrc, q->extco2.ExtBRC,\n"
+         "        q->extco2.LookAheadDepth, q->param.mfx.RateControlMethod))\n"
+         "        return AVERROR(ENOSYS);\n"
+         "    if (q->param.mfx.GopRefDist > 0)\n"
+         "        avctx->max_b_frames = q->param.mfx.GopRefDist - 1;\n\n"
+         "    ret = MFXVideoENCODE_QueryIOSurf(q->session, &q->param, &q->req);\n"),
+        ("libavcodec/qsvenc.c", "    q->packet_size = q->param.mfx.BufferSizeInKB * q->param.mfx.BRCParamMultiplier * 1000;\n    dump_video_av1_param(avctx, q, ext_buffers);\n",
+         "    if (!serein_qsv_quality_matches(avctx->max_b_frames, q->param.mfx.GopRefDist,\n"
+         "        q->look_ahead_depth, q->extbrc, co2.ExtBRC,\n"
+         "        co2.LookAheadDepth, q->param.mfx.RateControlMethod))\n"
+         "        return AVERROR(ENOSYS);\n"
+         "    if (q->param.mfx.GopRefDist > 0)\n"
+         "        avctx->max_b_frames = q->param.mfx.GopRefDist - 1;\n"
+         "    q->packet_size = q->param.mfx.BufferSizeInKB * q->param.mfx.BRCParamMultiplier * 1000;\n    dump_video_av1_param(avctx, q, ext_buffers);\n"),
+        ("libavcodec/qsvenc.c", "    if (!extradata.SPSBufSize || (need_pps && !extradata.PPSBufSize)\n",
+         "    if (!serein_qsv_quality_matches(avctx->max_b_frames, q->param.mfx.GopRefDist,\n"
+         "        q->look_ahead_depth, q->extbrc, co2.ExtBRC,\n"
+         "        co2.LookAheadDepth, q->param.mfx.RateControlMethod))\n"
+         "        return AVERROR(ENOSYS);\n"
+         "    if (q->param.mfx.GopRefDist > 0)\n"
+         "        avctx->max_b_frames = q->param.mfx.GopRefDist - 1;\n\n"
+         "    if (!extradata.SPSBufSize || (need_pps && !extradata.PPSBufSize)\n"),
+    ]
     for relative, old, new in replacements:
         path = tree / relative
         before = path.read_text()
+        originals.setdefault(relative, before)
         if before.count(old) != 1:
             raise ValueError(f"Expected exactly one FFmpeg source patch target: {relative}")
         after = before.replace(old, new)
-        patches.extend(difflib.unified_diff(before.splitlines(keepends=True), after.splitlines(keepends=True),
-                                           fromfile="a/" + relative, tofile="b/" + relative))
         path.write_text(after)
+    # Multiple edits to the same upstream file must become one coherent diff.
+    # Sequential overlapping diffs apply forward but cannot reverse reliably.
+    for relative, original in originals.items():
+        patches.extend(difflib.unified_diff(original.splitlines(keepends=True),
+                                           (tree / relative).read_text().splitlines(keepends=True),
+                                           fromfile="a/" + relative, tofile="b/" + relative))
+    relative = "libavcodec/serein_qsv_feature_validation.h"
+    if (tree / relative).exists():
+        raise ValueError("FFmpeg QSV feature-validation header already exists")
+    (tree / relative).write_text(QSV_FEATURE_VALIDATION)
+    patches.extend(difflib.unified_diff([], QSV_FEATURE_VALIDATION.splitlines(keepends=True),
+                                       fromfile="/dev/null", tofile="b/" + relative))
     return "".join(patches)
 
 
@@ -316,10 +460,20 @@ def validate_completed_build(prefix, system, backends):
     if system == "Linux":
         provenance.append("serein-openh264.patch")
     if backends["nvenc"]:
+        required += ["include/ffnvcodec/nvEncodeAPI.h", "include/ffnvcodec/dynlink_cuda.h"]
         provenance += ["nv-codec-headers-README", "source/nv-codec-headers-12.2.72.0.tar.gz"]
     if backends["amf"]:
+        required += ["include/AMF/core/Factory.h", "include/AMF/components/ComponentCaps.h",
+                     "include/AMF/components/VideoEncoderVCE.h", "include/AMF/components/VideoEncoderHEVC.h",
+                     "include/AMF/components/VideoEncoderAV1.h"]
         provenance += ["AMF-LICENSE", "source/AMF-1.4.36-headers.tar"]
+        if system == "Linux":
+            required += ["include/vulkan/vulkan.h", "include/vulkan/vulkan_core.h"]
+            provenance += ["Vulkan-Headers-LICENSE.md", "Vulkan-Headers-LICENSES/Apache-2.0.txt",
+                           "Vulkan-Headers-LICENSES/MIT.txt", "source/Vulkan-Headers-1.3.290.tar.gz"]
     if backends["qsv"]:
+        required += ["include/vpl/mfxdispatcher.h", "include/vpl/mfxstructures.h", "lib/pkgconfig/vpl.pc",
+                     "lib/vpl.lib" if system == "Windows" else "lib/libvpl.a"]
         provenance += ["oneVPL-LICENSE", "oneVPL-third-party-programs.txt", "source/libvpl-2.14.0.tar.gz"]
     required += ["share/serein-ffmpeg/" + name for name in provenance]
     for name in required:
@@ -366,6 +520,8 @@ def build(args):
     archives["openh264-source"] = openh264_source(cache, args.offline)
     if backends["amf"]:
         archives["amf-headers"] = amf_headers(cache, args.offline)
+        if system == "Linux":
+            archives["vulkan-headers"] = fetch(SOURCES["vulkan-headers"], cache, args.offline)
     trees = {name: unpack(archive, work / name) for name, archive in archives.items()}
     # Keep host GStreamer's FFmpeg in its own ELF symbol namespace. A distinct
     # SONAME alone cannot prevent LIBAVCODEC_61/LIBAVUTIL_59 interposition.
@@ -396,6 +552,8 @@ def build(args):
     if system == "Windows":
         # FFmpeg/pkgconf's -lopenh264 must select the shared import library.
         shutil.copyfile(prefix / "lib/openh264_dll.lib", prefix / "lib/openh264.lib")
+    if "vulkan-headers" in trees:
+        shutil.copytree(trees["vulkan-headers"] / "include", prefix / "include", dirs_exist_ok=True)
     if nvenc:
         run("make", f"PREFIX={posix(prefix)}", "install", cwd=trees["nv-codec-headers"], env=env)
     if backends["amf"]:
@@ -504,6 +662,9 @@ def build(args):
         shutil.copyfile(trees["nv-codec-headers"] / "README", notices / "nv-codec-headers-README")
     if backends["amf"]:
         shutil.copyfile(trees["amf-headers"] / "LICENSE.txt", notices / "AMF-LICENSE")
+    if "vulkan-headers" in trees:
+        shutil.copyfile(trees["vulkan-headers"] / "LICENSE.md", notices / "Vulkan-Headers-LICENSE.md")
+        shutil.copytree(trees["vulkan-headers"] / "LICENSES", notices / "Vulkan-Headers-LICENSES")
     if backends["qsv"]:
         shutil.copyfile(trees["onevpl"] / "LICENSE", notices / "oneVPL-LICENSE")
         shutil.copyfile(trees["onevpl"] / "third-party-programs.txt", notices / "oneVPL-third-party-programs.txt")

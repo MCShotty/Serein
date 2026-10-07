@@ -458,9 +458,14 @@ October 2: camera capture now selects formats near the existing 640×480,
 15 fps stream, with a 1280×720 native input ceiling and the existing bounded
 1920×1080 DirectShow fallback. Device-format/rate
 selection does not change Discord signaling or establish live interoperability.
+October 6: outgoing camera presets now extend through 7680×4320, with 15/30/60 fps
+selection and a preserved 640×480/15 fps default. Higher resolution requires a
+sufficient native capture mode; the selected frame rate requests the closest
+supported native interval and caps encoding, without guaranteeing sustained fps.
+Existing incoming H.264 playback remains capped at 1080p. Physical 8K/60 fps capture
+and official-client viewing remain unverified.
 Native limits, platform requirements and the owner-operated validation gate are in
-[Camera in calls](voice.md#camera-in-calls-macos-windows-and-linux). Receiving video
-and recording remain unsupported. This section supersedes older camera-exclusion
+[Camera in calls](voice.md#camera-in-calls-macos-windows-and-linux). Camera recording remains unsupported. This section supersedes older camera-exclusion
 statements in the historical voice/screen-sharing notes below.
 
 ## Outgoing screen sharing — September 11, 2026
@@ -584,8 +589,8 @@ encoders. Quick Sync on Linux uses the iHD
 VA driver interface for its device. These hardware paths and actual runtime
 availability remain unverified locally. The pipeline has one source
 queue (at most 7680×4320 / 132,710,400 bytes per buffer; PipeWire negotiates 2–4 buffers), one raw frame per encode/preview
-branch (at most 33,177,600 bytes each), one raw appsink frame per branch
-(screen ≤33,177,600 bytes; preview ≤925,696 bytes including padding), and the existing
+branch (screen at most 132,710,400 bytes), one raw appsink frame per branch
+(screen ≤132,710,400 bytes; preview ≤925,696 bytes including padding), and the existing
 three-frame / 6-MiB encoded transport queue. Each processing stage can additionally hold
 its current buffer. Driver, compositor and codec surface pools are separate native
 allocations. Raw queues discard old frames before encoding; encoded pressure blocks
@@ -636,7 +641,7 @@ permission, virtual device, output rerouting or recording file is added.
 
 Gateway opcodes 18/19 and STREAM_CREATE/STREAM_SERVER_UPDATE/STREAM_DELETE are unofficial normal-user behavior, checked against [discord.py-self](https://github.com/dolfies/discord.py-self/blob/master/discord/gateway.py). A separate RTC connection uses the stream RTC server/channel IDs and the parent call session, sharing one ephemeral DAVE signing identity. The `rtc_server_id - 1` MLS group mapping comes from [discord-native-voice](https://github.com/dolfies/discord-native-voice/blob/master/discord/ext/native_voice/stream_client.py); it is not an official protocol guarantee. Explicit selected-codec negotiation and UDP transport are required; mismatches fail visibly. Video is DAVE-encrypted before matching H.264 RFC 6184, H.265 RFC 7798 or AV1 RTP packetization and per-packet transport AEAD. There is no plaintext fallback. [DAVE protocol](https://github.com/discord/dave-protocol/blob/main/protocol.md) supplies the encryption requirement.
 
-Screen source discovery and capture occur off the UI/audio threads. Application-owned source lists are capped at 64 labels of 256 bytes. Raw BGRA frames are capped at 3840×2160/33,177,600 bytes; macOS requests the selected output dimensions. Windows prechecks source size and stops on oversized callback frames, but its upstream driver adapter can resize its native GPU pool before that callback. One raw frame and three encoded frames can be queued; H264 frames are capped at 2 MiB, encrypted packetization at 2,048 fragments of at most 1,200 transport bytes. Quality presets target 4–16 Mbps, with frame dropping under load. They are limits/targets, not measured delivery guarantees.
+Screen source discovery and capture occur off the UI/audio threads. Application-owned source lists are capped at 64 labels of 256 bytes. Raw BGRA frames are capped at 7680×4320/132,710,400 bytes; macOS requests the selected output dimensions. Windows prechecks source size and stops on oversized callback frames, but its upstream driver adapter can resize its native GPU pool before that callback. One raw frame and three encoded frames can be queued; encoded frames are capped at 2 MiB, encrypted packetization at 2,048 fragments of at most 1,200 transport bytes. Quality presets run through 1440p, 4K and 8K and target 2–50 Mbps, with frame dropping under load. They are limits/targets, not measured delivery guarantees. Camera has separate saved resolution and 15/30/60 fps choices through 8K, requiring a supported native camera mode; local previews remain bounded. Existing incoming playback remains capped at 1080p, and high-resolution transmission to the official client requires owner-operated validation.
 
 Call and stream transports send an eight-byte native UDP ping after discovery and every
 five seconds, including receive-only streams and muted calls. The packet uses the
@@ -2239,7 +2244,6 @@ whose original compression request is not implemented. Synthetic localhost tests
 verify local behavior without any real hosted upload or Discord session. Live service
 acceptance, link embedding and other-platform native interaction remain unverified.
 
-
 ## Video backend and codec selection — October 5, 2026
 
 Voice & Video defaults to Stable/H.264 using the original platform encoders.
@@ -2255,3 +2259,20 @@ bounded packetization have synthetic roundtrip fixtures, which do not prove live
 Discord playback. Physical AMD/Intel/NVIDIA/Apple encoders and official-client
 H.265/AV1/DAVE interoperability remain unverified; AV1 final-OBU size handling
 especially requires a paired live check. See [voice settings](voice.md#video-backend-and-codec-settings).
+
+## GIF favorites admission — October 6, 2026
+
+The frecency decoder accepts the schema's absent optional version block (version
+zero), default map values, and long URL metadata within the existing 4 KiB wire
+entry budget. A long, undisplayable favorite no longer rejects the whole catalog;
+it survives edits verbatim. Truncated, duplicate and over-budget catalogs still
+fail closed, and writes still require version and read-back confirmation.
+Unsupported-format and unconfirmed-save errors now retain their specific messages.
+Issue #559 supplied no response payload, so its live failure remains unverified.
+
+Message stars also cover uploaded GIF attachments, image galleries, video-only
+GIF embeds and external GIFs with an admitted Discord media proxy. Shared HTTPS
+links may come from any host; this does not authorize fetching arbitrary origins.
+Previews still use the existing provider/Discord media admission and bounded
+pipeline. The original share URL, including attachment signatures, is retained.
+The offline debug check is `cargo run --locked -p serein --features demo --example gif_favorites`.

@@ -39,6 +39,7 @@ impl Settings {
 		self.state.failed = !accepted;
 		accepted
 	}
+	/// Marks changed, valid device preferences for asynchronous persistence.
 	pub fn observe(&mut self, ui: &ui::MessagingUi) {
 		let value = AppPreferences {
 			window_geometry: self.current.window_geometry,
@@ -48,6 +49,7 @@ impl Settings {
 			update_nightly: ui.updates.nightly,
 			notification_options: ui.notification_options,
 			show_hidden_channels: ui.show_hidden_channels,
+			convert_emoticons: ui.convert_emoticons,
 			hide_title_bar: ui.hide_title_bar,
 			hide_window_decorations: ui.hide_window_decorations,
 			gpu_preference: ui.gpu_preference,
@@ -80,6 +82,7 @@ impl Settings {
 			}
 		}
 	}
+	/// Restores saved device preferences, including the opt-in composer conversion.
 	pub fn apply(&self, ui: &mut ui::MessagingUi) {
 		let value = &self.current;
 		ui.language = ui::i18n::Language::from_preference(value.language.as_deref());
@@ -89,6 +92,7 @@ impl Settings {
 		ui.updates.nightly = value.update_nightly;
 		ui.notification_options = value.notification_options;
 		ui.show_hidden_channels = value.show_hidden_channels;
+		ui.convert_emoticons = value.convert_emoticons;
 		ui.hide_title_bar = value.hide_title_bar;
 		ui.hide_window_decorations = value.hide_window_decorations;
 		ui.gpu_preference = value.gpu_preference;
@@ -310,12 +314,16 @@ mod tests {
 
 	#[test]
 	fn video_settings_are_observed_and_restored() {
-		use model::voice_settings::{VideoBackend, VideoCodec, VideoSettings};
+		use model::voice_settings::{
+			VideoBackend, VideoCodec, VideoFrameRate, VideoResolution, VideoSettings,
+		};
 		let mut settings = Settings::default();
 		let mut ui = ui::MessagingUi::default();
 		ui.video_settings = VideoSettings {
 			backend: VideoBackend::Experimental,
 			codec: VideoCodec::H265,
+			camera_resolution: VideoResolution::P4320,
+			camera_frame_rate: VideoFrameRate::Fps60,
 		};
 		settings.observe(&ui);
 		assert_eq!(settings.current.video_settings, ui.video_settings);

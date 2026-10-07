@@ -3556,7 +3556,7 @@ impl TimelineView {
 			}
 			viewport.min.y
 		});
-		self.scroll_offset = output.state.offset.y;
+		self.scroll_offset = output.state.clamped_offset().y;
 		if jumped_to.is_some_and(|target| (self.scroll_offset - target).abs() > 1.0) {
 			self.jump = false;
 			ui.ctx().request_discard("Timeline live edge settled");
@@ -3571,19 +3571,20 @@ impl TimelineView {
 		let lead = spare;
 		let (anchor, _, anchor_top) = visible_range(
 			&self.rows,
-			(output.state.offset.y - lead).max(0.0),
-			(output.state.offset.y + output.inner_rect.height() - lead).max(0.0),
+			(output.state.clamped_offset().y - lead).max(0.0),
+			(output.state.clamped_offset().y + output.inner_rect.height() - lead).max(0.0),
 		);
 		self.anchor = self
 			.rows
 			.get(anchor)
-			.map(|(id, _)| (*id, output.state.offset.y - lead - anchor_top));
+			.map(|(id, _)| (*id, output.state.clamped_offset().y - lead - anchor_top));
 		if selected_reply.is_some() {
 			state.reply = selected_reply.map(client_core::Reply::to);
 			self.reply_started = true;
 		}
 		let distance_from_bottom =
-			(output.content_size.y - output.state.offset.y - output.inner_rect.height()).max(0.0);
+			(output.content_size.y - output.state.clamped_offset().y - output.inner_rect.height())
+				.max(0.0);
 		let whole_conversation_visible =
 			state.older_exhausted && packed <= output.inner_rect.height() + 3.0;
 		let at_bottom = distance_from_bottom <= 3.0 || whole_conversation_visible;
@@ -3606,7 +3607,7 @@ impl TimelineView {
 						.pointer
 						.hover_pos()
 						.is_some_and(|pos| output.inner_rect.contains(pos))))
-				|| (input.pointer.any_down() && output.state.offset.y > output.inner)
+				|| (input.pointer.any_down() && output.state.clamped_offset().y > output.inner)
 		});
 		if at_bottom && (can_load_newer || self.at_current_latest) {
 			if can_load_newer {
@@ -3696,7 +3697,7 @@ impl TimelineView {
 		}
 		// Explicit upward input requests one page even when a short view cannot scroll.
 		// Idle layout still never drains history merely to fill the viewport.
-		self.load_older = output.state.offset.y < 160.0
+		self.load_older = output.state.clamped_offset().y < 160.0
 			&& ui.input(|i| {
 				scroll_delta > 0.0
 					&& (session.holding()
@@ -3874,7 +3875,7 @@ impl TimelineView {
 				if distance_from_bottom > 0.5 && !browsing_history && !self.instant_scrolling {
 					// Glide back so the reader keeps their place in the conversation.
 					self.target_browsing = false;
-					self.present_scroll = Some((output.state.offset.y, 0.0));
+					self.present_scroll = Some((output.state.clamped_offset().y, 0.0));
 				} else {
 					self.follow_latest(state);
 				}
@@ -4205,6 +4206,7 @@ mod tests {
 				egui::Event::MouseWheel {
 					unit: egui::MouseWheelUnit::Point,
 					phase: egui::TouchPhase::Move,
+					source: egui::MouseWheelSource::Unknown,
 					delta: egui::vec2(0.0, delta),
 					modifiers: egui::Modifiers::NONE,
 				},
@@ -4241,6 +4243,7 @@ mod tests {
 			vec![egui::Event::MouseWheel {
 				unit: egui::MouseWheelUnit::Point,
 				phase: egui::TouchPhase::End,
+				source: egui::MouseWheelSource::Unknown,
 				delta: egui::Vec2::ZERO,
 				modifiers: egui::Modifiers::NONE,
 			}],
@@ -4433,7 +4436,17 @@ mod tests {
 				);
 			},
 		);
-		assert!(output.platform_output.commands.is_empty());
+		// egui reports settled text selection for the native PRIMARY clipboard.
+		// Explicit clipboard writes and browser actions must remain absent.
+		assert!(
+			output
+				.platform_output
+				.commands
+				.iter()
+				.all(|command| matches!(command, egui::OutputCommand::TextSelectionSettled(_))),
+			"Unexpected platform actions: {:?}",
+			output.platform_output.commands
+		);
 		let mut labels = vec![];
 		for shape in &output.shapes {
 			collect(&shape.shape, &mut labels, actual_glyphs);
@@ -4853,6 +4866,7 @@ mod tests {
 							delta: egui::vec2(0.0, -600.0),
 							modifiers: egui::Modifiers::NONE,
 							phase: egui::TouchPhase::Move,
+							source: egui::MouseWheelSource::Unknown,
 						},
 					],
 					false,
@@ -4969,6 +4983,7 @@ mod tests {
 					delta: egui::vec2(0.0, -600.0),
 					modifiers: egui::Modifiers::NONE,
 					phase: egui::TouchPhase::Move,
+					source: egui::MouseWheelSource::Unknown,
 				},
 			],
 			false,
@@ -6727,7 +6742,20 @@ mod tests {
 						)
 					},
 				);
-				assert!(output.platform_output.commands.is_empty());
+				// egui reports settled text selection for the native PRIMARY clipboard.
+				// Explicit clipboard writes and browser actions must remain absent.
+				assert!(
+					output
+						.platform_output
+						.commands
+						.iter()
+						.all(|command| matches!(
+							command,
+							egui::OutputCommand::TextSelectionSettled(_)
+						)),
+					"Unexpected platform actions: {:?}",
+					output.platform_output.commands
+				);
 				let mut labels = vec![];
 				for shape in &output.shapes {
 					collect(&shape.shape, &mut labels);
@@ -6998,6 +7026,7 @@ mod tests {
 					delta: egui::vec2(0.0, -80.0),
 					modifiers: egui::Modifiers::NONE,
 					phase: egui::TouchPhase::Move,
+					source: egui::MouseWheelSource::Unknown,
 				},
 			],
 			false,
@@ -7102,6 +7131,7 @@ mod tests {
 						delta: egui::vec2(0.0, -80.0),
 						modifiers: egui::Modifiers::NONE,
 						phase: egui::TouchPhase::Move,
+						source: egui::MouseWheelSource::Unknown,
 					},
 				],
 			);
@@ -7179,6 +7209,7 @@ mod tests {
 					delta: egui::vec2(0.0, -80.0),
 					modifiers: egui::Modifiers::NONE,
 					phase: egui::TouchPhase::Move,
+					source: egui::MouseWheelSource::Unknown,
 				},
 			],
 			false,
@@ -7389,6 +7420,7 @@ mod tests {
 					delta: egui::vec2(0.0, -80.0),
 					modifiers: egui::Modifiers::NONE,
 					phase: egui::TouchPhase::Move,
+					source: egui::MouseWheelSource::Unknown,
 				},
 			],
 			false,
@@ -7682,6 +7714,7 @@ mod tests {
 								delta: egui::vec2(0.0, delta),
 								modifiers: egui::Modifiers::NONE,
 								phase: egui::TouchPhase::Move,
+								source: egui::MouseWheelSource::Unknown,
 							},
 						],
 						..Default::default()
@@ -8009,6 +8042,7 @@ mod tests {
 						delta: egui::vec2(0.0, 4_000.0),
 						modifiers: egui::Modifiers::NONE,
 						phase: egui::TouchPhase::Move,
+						source: egui::MouseWheelSource::Unknown,
 					},
 				];
 				let mut left = bottom;

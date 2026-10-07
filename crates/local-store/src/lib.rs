@@ -44,6 +44,8 @@ pub struct AppPreferences {
 	pub update_nightly: bool,
 	pub notification_options: model::notification_preferences::Device,
 	pub show_hidden_channels: bool,
+	/// Device-local opt-in; older saved preferences deserialize with conversion off.
+	pub convert_emoticons: bool,
 	pub hide_title_bar: bool,
 	pub hide_window_decorations: bool,
 	pub primary_color: Option<[u8; 3]>,
@@ -84,6 +86,7 @@ impl Default for AppPreferences {
 			update_nightly: true,
 			notification_options: Default::default(),
 			show_hidden_channels: false,
+			convert_emoticons: false,
 			hide_title_bar: false,
 			hide_window_decorations: false,
 			primary_color: None,
@@ -2060,20 +2063,51 @@ mod tests {
 	}
 	#[test]
 	fn video_preferences_migrate_round_trip_and_reject_invalid_backend_codec() {
-		use model::voice_settings::{VideoBackend, VideoCodec, VideoSettings};
+		use model::voice_settings::{
+			VideoBackend, VideoCodec, VideoFrameRate, VideoResolution, VideoSettings,
+		};
 		let legacy: AppPreferences = serde_json::from_str("{}").unwrap();
 		assert_eq!(legacy.video_settings, VideoSettings::default());
+		let existing: AppPreferences =
+			serde_json::from_str(r#"{"video_settings":{"backend":"Experimental","codec":"H265"}}"#)
+				.unwrap();
+		assert_eq!(
+			existing.video_settings.camera_resolution,
+			VideoResolution::P480
+		);
+		assert!(
+			serde_json::from_str::<AppPreferences>(
+				r#"{"video_settings":{"camera_resolution":"P8640"}}"#,
+			)
+			.is_err()
+		);
+		assert_eq!(
+			existing.video_settings.camera_frame_rate,
+			VideoFrameRate::Fps15
+		);
+		assert!(
+			serde_json::from_str::<AppPreferences>(
+				r#"{"video_settings":{"camera_frame_rate":"Fps120"}}"#,
+			)
+			.is_err()
+		);
 		let store = LocalStore::initialize(Connection::open_in_memory().unwrap()).unwrap();
 		for codec in [VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1] {
-			let value = AppPreferences {
-				video_settings: VideoSettings {
-					backend: VideoBackend::Experimental,
-					codec,
-				},
-				..Default::default()
-			};
-			store.save_app_preferences(&value).unwrap();
-			assert_eq!(store.app_preferences().unwrap(), value);
+			for camera_resolution in VideoResolution::ALL {
+				for camera_frame_rate in VideoFrameRate::ALL {
+					let value = AppPreferences {
+						video_settings: VideoSettings {
+							backend: VideoBackend::Experimental,
+							codec,
+							camera_resolution,
+							camera_frame_rate,
+						},
+						..Default::default()
+					};
+					store.save_app_preferences(&value).unwrap();
+					assert_eq!(store.app_preferences().unwrap(), value);
+				}
+			}
 		}
 		let mut invalid = store.app_preferences().unwrap();
 		invalid.video_settings.backend = VideoBackend::Stable;
@@ -2082,6 +2116,27 @@ mod tests {
 			store.app_preferences().unwrap().video_settings.codec,
 			VideoCodec::Av1
 		);
+	}
+
+	#[test]
+	fn emoticon_conversion_defaults_off_and_persists_across_reopens() {
+		let legacy: AppPreferences = serde_json::from_str("{}").unwrap();
+		assert!(!legacy.convert_emoticons);
+		let root = std::env::temp_dir().join(format!("serein-emoticons-{}", std::process::id()));
+		std::fs::create_dir(&root).unwrap();
+		let path = root.join("preferences.sqlite3");
+		for enabled in [true, false] {
+			{
+				let store = LocalStore::open(&path).unwrap();
+				let mut preferences = store.app_preferences().unwrap();
+				assert_eq!(preferences.convert_emoticons, !enabled);
+				preferences.convert_emoticons = enabled;
+				store.save_app_preferences(&preferences).unwrap();
+			}
+			let store = LocalStore::open(&path).unwrap();
+			assert_eq!(store.app_preferences().unwrap().convert_emoticons, enabled);
+		}
+		std::fs::remove_dir_all(root).unwrap();
 	}
 
 	#[test]

@@ -41,8 +41,69 @@ impl Drop for Encoder {
 }
 
 impl Encoder {
+	#[allow(dead_code)] // Legacy standalone/native fixture entry point.
 	pub(super) fn new(config: Config) -> Result<Self, &'static str> {
+		Self::new_on_adapter(config, None)
+	}
+
+	pub(super) fn new_on_adapter(
+		config: Config,
+		adapter: Option<model::VideoAdapter>,
+	) -> Result<Self, &'static str> {
 		gst::init().map_err(|_| UNAVAILABLE)?;
+		if let Some(adapter) = adapter {
+			let cuda = (adapter.vendor_id == 0x10de)
+				.then(|| crate::video_gpu::cuda_device(adapter))
+				.flatten();
+			let drm = matches!(adapter.vendor_id, 0x8086 | 0x1002)
+				.then(|| crate::video_gpu::drm_device(adapter))
+				.flatten();
+			if cuda.is_none() && drm.is_none() {
+				return Err(UNAVAILABLE);
+			}
+			// GStreamer registers separate factories for additional adapters.
+			// Their read-only device properties identify the physical target;
+			// setting a property on the generic first-device factory cannot do so.
+			for factory in gst::ElementFactory::factories_with_type(
+				gst::ElementFactoryType::VIDEO_ENCODER,
+				gst::Rank::NONE,
+			)
+			.iter()
+			.take(128)
+			{
+				let name = factory.name();
+				let backend = if cuda.is_some() && name.starts_with("nvh264") {
+					"nvh264enc"
+				} else if drm.is_some() && name.starts_with("va") && name.contains("h264") {
+					"vah264enc"
+				} else {
+					continue;
+				};
+				let Ok(encoder) = factory.create().build() else {
+					continue;
+				};
+				let matching = if let Some(cuda) = cuda {
+					encoder.find_property("cuda-device-id").is_some_and(|spec| {
+						spec.flags().contains(glib::ParamFlags::READABLE)
+							&& spec.value_type() == u32::static_type()
+							&& encoder.property::<u32>("cuda-device-id") == cuda
+					})
+				} else {
+					["device-path", "device"].into_iter().any(|property| {
+						encoder.find_property(property).is_some_and(|spec| {
+							spec.flags().contains(glib::ParamFlags::READABLE)
+								&& spec.value_type() == String::static_type()
+								&& encoder.property::<Option<String>>(property).as_ref()
+									== drm.as_ref()
+						})
+					})
+				};
+				if matching && let Ok(encoder) = Self::assemble(config, encoder, backend) {
+					return Ok(encoder);
+				}
+			}
+			return Err(UNAVAILABLE);
+		}
 		BACKENDS
 			.into_iter()
 			.find_map(|backend| Self::start(config, backend).ok())
@@ -198,6 +259,7 @@ impl Encoder {
 		}
 	}
 
+	#[allow(dead_code)] // Retained native API; stream owners now restart atomically.
 	pub(super) fn set_bitrate(&mut self, bitrate: u32) -> Result<(), &'static str> {
 		if !self
 			.encoder
@@ -356,6 +418,7 @@ mod tests {
 			max_bytes: 2 * 1024 * 1024,
 			profile: Profile::Baseline,
 			codec: VideoCodec::H264,
+			adapter: None,
 		};
 		let mut encoder = Encoder::assemble(config, stand_in, "openh264enc").unwrap();
 		let mut picture = vec![128; 854 * 480 * 3 / 2];

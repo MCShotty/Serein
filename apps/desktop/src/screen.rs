@@ -25,6 +25,7 @@ fn note(event: &str, reason: &str) {
 }
 
 pub(super) struct Call<'a> {
+	pub video_adapter: Option<model::VideoAdapter>,
 	pub generation: u64,
 	pub channel: Id,
 	pub request: u64,
@@ -42,6 +43,7 @@ struct Context {
 	stream_request: u64,
 }
 struct Pending {
+	video_adapter: Option<model::VideoAdapter>,
 	video_settings: model::voice_settings::VideoSettings,
 	context: Context,
 	settings: Settings,
@@ -354,6 +356,7 @@ impl Screen {
 							stream_request: self.sequence,
 						};
 						self.pending = Some(Pending {
+							video_adapter: call.video_adapter,
 							video_settings: ui.video_settings,
 							context,
 							settings,
@@ -496,9 +499,12 @@ impl Screen {
 			request: pending.context.stream_request,
 		};
 		let wake = ctx.clone();
-		let (worker, video) = Worker::start(pending.settings, pending.video_settings, move || {
-			wake.request_repaint()
-		})?;
+		let (worker, video) = Worker::start_on_adapter(
+			pending.settings,
+			pending.video_settings,
+			pending.video_adapter,
+			move || wake.request_repaint(),
+		)?;
 		let (send, events) = watch::channel(None);
 		let wake = ctx.clone();
 		let identity = pending.identity;
@@ -578,6 +584,11 @@ mod tests {
 				audio: false,
 			}));
 			let call = Call {
+				video_adapter: Some(model::VideoAdapter {
+					vendor_id: 0x8086,
+					device_id: 0x56a0,
+					identity: model::VideoAdapterIdentity::WindowsLuid(0x1234),
+				}),
 				generation: state.generation,
 				channel,
 				request,
@@ -592,12 +603,21 @@ mod tests {
 				Some(Command::Voice(voice::Command::StartStream { .. }))
 			));
 			assert!(screen.pending.is_some());
+			assert_eq!(
+				screen.pending.as_ref().unwrap().video_adapter,
+				Some(model::VideoAdapter {
+					vendor_id: 0x8086,
+					device_id: 0x56a0,
+					identity: model::VideoAdapterIdentity::WindowsLuid(0x1234),
+				})
+			);
 			assert!(screen.live.is_none());
 		}
 	}
 
 	fn pending(context: Context, settings: Settings) -> Pending {
 		Pending {
+			video_adapter: None,
 			video_settings: Default::default(),
 			context,
 			settings,
@@ -734,6 +754,7 @@ mod tests {
 		};
 		let mut ui = ui::MessagingUi::default();
 		let call = Call {
+			video_adapter: None,
 			generation: 0,
 			channel: Id(20),
 			request: 7,

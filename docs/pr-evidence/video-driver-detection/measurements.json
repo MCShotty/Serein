@@ -1,0 +1,511 @@
+{
+  "baseline_revision": "16a09a986b73c7bf6abc3a80559ecdefb919c84a",
+  "baseline_source_tree": "e42149b656c474eb2fd9def8be5c0559dcf84d2f",
+  "after_revision": "working-tree driver detection changes atop 16a09a986b73c7bf6abc3a80559ecdefb919c84a",
+  "capture_date_client_timezone": "2026-10-06 Asia/Riyadh",
+  "fixture": "Explicit synthetic driver support and optional encoder test reports in an offline native UI helper; no GPU query, encoding, account or capture",
+  "environment": {
+    "os": "Debian GNU/Linux 13 (trixie)",
+    "architecture": "x86_64",
+    "cpu": "Intel Xeon Platinum 8573C, 5 exposed logical CPUs",
+    "memory_total_kib": 18440136,
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "renderer": "eframe/wgpu OpenGL on owned Xvfb :96, LIBGL_ALWAYS_SOFTWARE=1; mapped Mesa 25.0.7 libgallium and LLVM 19.1 verified",
+    "viewport_pixels": [
+      1120,
+      760
+    ],
+    "display_scale": 1.0,
+    "features": "actual UI demo/default; isolated helper without service adapters",
+    "profile": "auxiliary opt-level 1, debuginfo 0, 16 codegen units; exact unchanged cached Cargo graph",
+    "task_compilation_during_samples": false
+  },
+  "method": {
+    "warmup_seconds": 6,
+    "samples_per_revision": 15,
+    "sample_interval_seconds": 1,
+    "runs_per_revision": 1,
+    "memory_metric": "per-process RSS; maximum and last sample",
+    "cpu_metric": "process user+system CPU / elapsed wall time, one-core percent",
+    "interaction": "100 settings body wheel-down events, pointer moved outside the window; no encoder test",
+    "children": "reported separately; none in either run"
+  },
+  "images": {
+    "after.png": {
+      "dimensions": [
+        1120,
+        760
+      ],
+      "bytes": 204905,
+      "sha256": "6f18b01adf4d99a00c1c38879761233468ab593147d8fdd16662caa08800deef",
+      "visually_inspected": true
+    },
+    "before.png": {
+      "dimensions": [
+        1120,
+        760
+      ],
+      "bytes": 181702,
+      "sha256": "f7033847b3ae2e94fa05310b8737f7ca32cc1f4663c8a588d7748175d52de695",
+      "visually_inspected": true
+    },
+    "encoder-test-after.png": {
+      "dimensions": [
+        1120,
+        760
+      ],
+      "bytes": 206954,
+      "sha256": "f7ba21cc5fdb6db08b9b1aa100df1e64ff0fd8d01756292330fe7c1e14c0d09f",
+      "visually_inspected": true
+    },
+    "narrow-light-after.png": {
+      "dimensions": [
+        760,
+        900
+      ],
+      "bytes": 183024,
+      "sha256": "caf77a4525a82ea95b42af60c7a2eb36dc23f01bf7156bf3843496e79003f995",
+      "visually_inspected": true
+    },
+    "narrow-light-before.png": {
+      "dimensions": [
+        760,
+        900
+      ],
+      "bytes": 169380,
+      "sha256": "4d6ba863b7c150377a9192246d6160bb98181a6691eb19de4bdd4e89374d327d",
+      "visually_inspected": true
+    },
+    "unknown-after.png": {
+      "dimensions": [
+        1120,
+        760
+      ],
+      "bytes": 205687,
+      "sha256": "51488fee7e47f4b4e213cd3adedfac1ae8d59030bb96347e37d78a897259dfce",
+      "visually_inspected": true
+    }
+  },
+  "native_ui": {
+    "before": {
+      "revision": "before",
+      "command": [
+        "/tmp/video-driver-detection-evidence-artifacts/before/native-ui-preview",
+        "--demo",
+        "--page=voice",
+        "--video-backend=experimental",
+        "--video-codec=h265",
+        "--capabilities=hardware",
+        "--interactive",
+        "--width=1120",
+        "--height=760"
+      ],
+      "warmup_s": 6,
+      "interaction": "100 wheel-down events in settings body, pointer moved out",
+      "duration_s": 15.015786179996212,
+      "interval_s": 1,
+      "process_cpu_one_core_percent": 0.0,
+      "peak_rss_bytes": 152633344,
+      "settled_rss_bytes": 152633344,
+      "children": [],
+      "executable_bytes": 88546592,
+      "executable_sha256": "6f22ddb75010c6e9529b9975bb0755299607033055209d5913a478fc32e5cf6e",
+      "renderer_libraries": [
+        "/usr/lib/x86_64-linux-gnu/libEGL.so.1.1.0",
+        "/usr/lib/x86_64-linux-gnu/libEGL_mesa.so.0.0.0",
+        "/usr/lib/x86_64-linux-gnu/libLLVM.so.19.1",
+        "/usr/lib/x86_64-linux-gnu/libgallium-25.0.7-2+deb13u1.so"
+      ],
+      "samples": [
+        {
+          "elapsed_s": 1.0001589190069353,
+          "rss_bytes": 152633344
+        },
+        {
+          "elapsed_s": 2.0005163370078662,
+          "rss_bytes": 152633344
+        },
+        {
+          "elapsed_s": 3.00202809899929,
+          "rss_bytes": 152633344
+        },
+        {
+          "elapsed_s": 4.00630339300551,
+          "rss_bytes": 152633344
+        },
+        {
+          "elapsed_s": 5.011410250997869,
+          "rss_bytes": 152633344
+        },
+        {
+          "elapsed_s": 6.011772350000683,
+          "rss_bytes": 152633344
+        },
+        {
+          "elapsed_s": 7.012085116002709,
+          "rss_bytes": 152633344
+        },
+        {
+          "elapsed_s": 8.012432472998626,
+          "rss_bytes": 152633344
+        },
+        {
+          "elapsed_s": 9.012754734008922,
+          "rss_bytes": 152633344
+        },
+        {
+          "elapsed_s": 10.013223643996753,
+          "rss_bytes": 152633344
+        },
+        {
+          "elapsed_s": 11.013563348009484,
+          "rss_bytes": 152633344
+        },
+        {
+          "elapsed_s": 12.013892664996092,
+          "rss_bytes": 152633344
+        },
+        {
+          "elapsed_s": 13.01431670600141,
+          "rss_bytes": 152633344
+        },
+        {
+          "elapsed_s": 14.014654209997389,
+          "rss_bytes": 152633344
+        },
+        {
+          "elapsed_s": 15.014996516008978,
+          "rss_bytes": 152633344
+        }
+      ]
+    },
+    "after": {
+      "revision": "after",
+      "command": [
+        "/tmp/video-driver-detection-evidence-artifacts/after/native-ui-preview",
+        "--demo",
+        "--page=voice",
+        "--video-backend=experimental",
+        "--video-codec=h265",
+        "--capabilities=hardware",
+        "--interactive",
+        "--width=1120",
+        "--height=760"
+      ],
+      "warmup_s": 6,
+      "interaction": "100 wheel-down events in settings body, pointer moved out",
+      "duration_s": 15.028888721994008,
+      "interval_s": 1,
+      "process_cpu_one_core_percent": 0.06653851914789481,
+      "peak_rss_bytes": 152551424,
+      "settled_rss_bytes": 152551424,
+      "children": [],
+      "executable_bytes": 88564208,
+      "executable_sha256": "772dd1f61fba706c7ef2246f7e0369e5f691d24a3ade4cfc46dfbee4e2c46c1c",
+      "renderer_libraries": [
+        "/usr/lib/x86_64-linux-gnu/libEGL.so.1.1.0",
+        "/usr/lib/x86_64-linux-gnu/libEGL_mesa.so.0.0.0",
+        "/usr/lib/x86_64-linux-gnu/libLLVM.so.19.1",
+        "/usr/lib/x86_64-linux-gnu/libgallium-25.0.7-2+deb13u1.so"
+      ],
+      "samples": [
+        {
+          "elapsed_s": 1.0002087100001518,
+          "rss_bytes": 152551424
+        },
+        {
+          "elapsed_s": 2.0006101750041125,
+          "rss_bytes": 152551424
+        },
+        {
+          "elapsed_s": 3.0026132269995287,
+          "rss_bytes": 152551424
+        },
+        {
+          "elapsed_s": 4.010382811000454,
+          "rss_bytes": 152551424
+        },
+        {
+          "elapsed_s": 5.024675381006091,
+          "rss_bytes": 152551424
+        },
+        {
+          "elapsed_s": 6.0252254200022435,
+          "rss_bytes": 152551424
+        },
+        {
+          "elapsed_s": 7.025610488999519,
+          "rss_bytes": 152551424
+        },
+        {
+          "elapsed_s": 8.025997491000453,
+          "rss_bytes": 152551424
+        },
+        {
+          "elapsed_s": 9.026310209999792,
+          "rss_bytes": 152551424
+        },
+        {
+          "elapsed_s": 10.0267857430008,
+          "rss_bytes": 152551424
+        },
+        {
+          "elapsed_s": 11.027123677995405,
+          "rss_bytes": 152551424
+        },
+        {
+          "elapsed_s": 12.027420105994679,
+          "rss_bytes": 152551424
+        },
+        {
+          "elapsed_s": 13.027785426995251,
+          "rss_bytes": 152551424
+        },
+        {
+          "elapsed_s": 14.028147201999673,
+          "rss_bytes": 152551424
+        },
+        {
+          "elapsed_s": 15.028457576001529,
+          "rss_bytes": 152551424
+        }
+      ]
+    },
+    "comparison": {
+      "peak_rss_bytes": {
+        "before": 152633344,
+        "after": 152551424,
+        "absolute_delta": -81920,
+        "percent_delta": -0.053671103477887505
+      },
+      "settled_rss_bytes": {
+        "before": 152633344,
+        "after": 152551424,
+        "absolute_delta": -81920,
+        "percent_delta": -0.053671103477887505
+      },
+      "executable_bytes": {
+        "before": 88546592,
+        "after": 88564208,
+        "absolute_delta": 17616,
+        "percent_delta": 0.01989461096368339
+      },
+      "process_cpu_one_core_percent": {
+        "before": 0.0,
+        "after": 0.06653851914789481,
+        "percentage_point_delta": 0.06653851914789481
+      }
+    },
+    "interpretation": "One short auxiliary UI helper pair. No statistically established performance improvement/regression, encoder throughput or shipped package size claim."
+  },
+  "standard_release_package_comparison": {
+    "available_in_this_ui_evidence": false,
+    "reason": "cargo xtask package stopped at missing glib-2.0.pc development metadata. A fresh standard release package remains unmeasured; the auxiliary helper executable bytes are not package measurements."
+  },
+  "build_identities_file": "build-identities.json",
+  "driver_scan": {
+    "before": {
+      "executable_sha256": "2189c0d17b8a8afd0d68e038f6d12b06b6c0c5379b9583f80ae1ed7973ebfddd",
+      "runs": [
+        {
+          "run": 0,
+          "warmup": true,
+          "elapsed_s": 0.2630548769957386,
+          "parent_peak_rss_bytes": 8613888,
+          "child_peak_rss_bytes": 5107712,
+          "maximum_simultaneous_children": 1,
+          "children_observed": 9,
+          "observed_children_remaining_after_exit": [],
+          "output": "Elapsed: 251.402026ms\nnvenc h264 HardwareSupport { camera: Unavailable, screen: Unavailable }\namf h264 HardwareSupport { camera: Unavailable, screen: Unavailable }\nqsv h264 HardwareSupport { camera: Unavailable, screen: Unavailable }\nnvenc h265 HardwareSupport { camera: Unavailable, screen: Unavailable }\namf h265 HardwareSupport { camera: Unavailable, screen: Unavailable }\nqsv h265 HardwareSupport { camera: Unavailable, screen: Unavailable }\nnvenc av1 HardwareSupport { camera: Unavailable, screen: Unavailable }\namf av1 HardwareSupport { camera: Unavailable, screen: Unavailable }\nqsv av1 HardwareSupport { camera: Unavailable, screen: Unavailable }\n"
+        },
+        {
+          "run": 1,
+          "warmup": false,
+          "elapsed_s": 0.26216148599633016,
+          "parent_peak_rss_bytes": 8790016,
+          "child_peak_rss_bytes": 5533696,
+          "maximum_simultaneous_children": 1,
+          "children_observed": 9,
+          "observed_children_remaining_after_exit": [],
+          "output": "Elapsed: 251.160108ms\nnvenc h264 HardwareSupport { camera: Unavailable, screen: Unavailable }\namf h264 HardwareSupport { camera: Unavailable, screen: Unavailable }\nqsv h264 HardwareSupport { camera: Unavailable, screen: Unavailable }\nnvenc h265 HardwareSupport { camera: Unavailable, screen: Unavailable }\namf h265 HardwareSupport { camera: Unavailable, screen: Unavailable }\nqsv h265 HardwareSupport { camera: Unavailable, screen: Unavailable }\nnvenc av1 HardwareSupport { camera: Unavailable, screen: Unavailable }\namf av1 HardwareSupport { camera: Unavailable, screen: Unavailable }\nqsv av1 HardwareSupport { camera: Unavailable, screen: Unavailable }\n"
+        },
+        {
+          "run": 2,
+          "warmup": false,
+          "elapsed_s": 0.26216657999611925,
+          "parent_peak_rss_bytes": 8704000,
+          "child_peak_rss_bytes": 5267456,
+          "maximum_simultaneous_children": 1,
+          "children_observed": 9,
+          "observed_children_remaining_after_exit": [],
+          "output": "Elapsed: 253.645979ms\nnvenc h264 HardwareSupport { camera: Unavailable, screen: Unavailable }\namf h264 HardwareSupport { camera: Unavailable, screen: Unavailable }\nqsv h264 HardwareSupport { camera: Unavailable, screen: Unavailable }\nnvenc h265 HardwareSupport { camera: Unavailable, screen: Unavailable }\namf h265 HardwareSupport { camera: Unavailable, screen: Unavailable }\nqsv h265 HardwareSupport { camera: Unavailable, screen: Unavailable }\nnvenc av1 HardwareSupport { camera: Unavailable, screen: Unavailable }\namf av1 HardwareSupport { camera: Unavailable, screen: Unavailable }\nqsv av1 HardwareSupport { camera: Unavailable, screen: Unavailable }\n"
+        },
+        {
+          "run": 3,
+          "warmup": false,
+          "elapsed_s": 0.2625072489900049,
+          "parent_peak_rss_bytes": 8667136,
+          "child_peak_rss_bytes": 4550656,
+          "maximum_simultaneous_children": 1,
+          "children_observed": 9,
+          "observed_children_remaining_after_exit": [],
+          "output": "Elapsed: 251.173511ms\nnvenc h264 HardwareSupport { camera: Unavailable, screen: Unavailable }\namf h264 HardwareSupport { camera: Unavailable, screen: Unavailable }\nqsv h264 HardwareSupport { camera: Unavailable, screen: Unavailable }\nnvenc h265 HardwareSupport { camera: Unavailable, screen: Unavailable }\namf h265 HardwareSupport { camera: Unavailable, screen: Unavailable }\nqsv h265 HardwareSupport { camera: Unavailable, screen: Unavailable }\nnvenc av1 HardwareSupport { camera: Unavailable, screen: Unavailable }\namf av1 HardwareSupport { camera: Unavailable, screen: Unavailable }\nqsv av1 HardwareSupport { camera: Unavailable, screen: Unavailable }\n"
+        },
+        {
+          "run": 4,
+          "warmup": false,
+          "elapsed_s": 0.26210779100074433,
+          "parent_peak_rss_bytes": 8736768,
+          "child_peak_rss_bytes": 5533696,
+          "maximum_simultaneous_children": 1,
+          "children_observed": 9,
+          "observed_children_remaining_after_exit": [],
+          "output": "Elapsed: 251.702853ms\nnvenc h264 HardwareSupport { camera: Unavailable, screen: Unavailable }\namf h264 HardwareSupport { camera: Unavailable, screen: Unavailable }\nqsv h264 HardwareSupport { camera: Unavailable, screen: Unavailable }\nnvenc h265 HardwareSupport { camera: Unavailable, screen: Unavailable }\namf h265 HardwareSupport { camera: Unavailable, screen: Unavailable }\nqsv h265 HardwareSupport { camera: Unavailable, screen: Unavailable }\nnvenc av1 HardwareSupport { camera: Unavailable, screen: Unavailable }\namf av1 HardwareSupport { camera: Unavailable, screen: Unavailable }\nqsv av1 HardwareSupport { camera: Unavailable, screen: Unavailable }\n"
+        },
+        {
+          "run": 5,
+          "warmup": false,
+          "elapsed_s": 0.32103425699460786,
+          "parent_peak_rss_bytes": 8781824,
+          "child_peak_rss_bytes": 5357568,
+          "maximum_simultaneous_children": 1,
+          "children_observed": 9,
+          "observed_children_remaining_after_exit": [],
+          "output": "Elapsed: 301.943095ms\nnvenc h264 HardwareSupport { camera: Unavailable, screen: Unavailable }\namf h264 HardwareSupport { camera: Unavailable, screen: Unavailable }\nqsv h264 HardwareSupport { camera: Unavailable, screen: Unavailable }\nnvenc h265 HardwareSupport { camera: Unavailable, screen: Unavailable }\namf h265 HardwareSupport { camera: Unavailable, screen: Unavailable }\nqsv h265 HardwareSupport { camera: Unavailable, screen: Unavailable }\nnvenc av1 HardwareSupport { camera: Unavailable, screen: Unavailable }\namf av1 HardwareSupport { camera: Unavailable, screen: Unavailable }\nqsv av1 HardwareSupport { camera: Unavailable, screen: Unavailable }\n"
+        }
+      ],
+      "median_elapsed_s": 0.26216657999611925,
+      "median_parent_peak_rss_bytes": 8736768,
+      "median_child_peak_rss_bytes": 5357568,
+      "maximum_simultaneous_children_observed": 1,
+      "children_observed_range": [
+        9,
+        9
+      ],
+      "observed_helpers_remaining_after_all_runs": 0
+    },
+    "after": {
+      "executable_sha256": "aeae39d489813e183727801e3d1f2f1143e0aec3266e20549eada783d6a62e6d",
+      "runs": [
+        {
+          "run": 0,
+          "warmup": true,
+          "elapsed_s": 0.26198049599770457,
+          "parent_peak_rss_bytes": 8839168,
+          "child_peak_rss_bytes": 5361664,
+          "maximum_simultaneous_children": 1,
+          "children_observed": 9,
+          "observed_children_remaining_after_exit": [],
+          "output": "Elapsed: 251.231582ms\nnvenc h264 Unavailable\namf h264 Unavailable\nqsv h264 Unavailable\nnvenc h265 Unavailable\namf h265 Unavailable\nqsv h265 Unavailable\nnvenc av1 Unavailable\namf av1 Unavailable\nqsv av1 Unavailable\n"
+        },
+        {
+          "run": 1,
+          "warmup": false,
+          "elapsed_s": 0.2625150750100147,
+          "parent_peak_rss_bytes": 8847360,
+          "child_peak_rss_bytes": 4890624,
+          "maximum_simultaneous_children": 1,
+          "children_observed": 9,
+          "observed_children_remaining_after_exit": [],
+          "output": "Elapsed: 251.196783ms\nnvenc h264 Unavailable\namf h264 Unavailable\nqsv h264 Unavailable\nnvenc h265 Unavailable\namf h265 Unavailable\nqsv h265 Unavailable\nnvenc av1 Unavailable\namf av1 Unavailable\nqsv av1 Unavailable\n"
+        },
+        {
+          "run": 2,
+          "warmup": false,
+          "elapsed_s": 0.26535393700760324,
+          "parent_peak_rss_bytes": 8974336,
+          "child_peak_rss_bytes": 5165056,
+          "maximum_simultaneous_children": 1,
+          "children_observed": 9,
+          "observed_children_remaining_after_exit": [],
+          "output": "Elapsed: 252.041854ms\nnvenc h264 Unavailable\namf h264 Unavailable\nqsv h264 Unavailable\nnvenc h265 Unavailable\namf h265 Unavailable\nqsv h265 Unavailable\nnvenc av1 Unavailable\namf av1 Unavailable\nqsv av1 Unavailable\n"
+        },
+        {
+          "run": 3,
+          "warmup": false,
+          "elapsed_s": 0.2677689910051413,
+          "parent_peak_rss_bytes": 8892416,
+          "child_peak_rss_bytes": 5537792,
+          "maximum_simultaneous_children": 1,
+          "children_observed": 9,
+          "observed_children_remaining_after_exit": [],
+          "output": "Elapsed: 251.399067ms\nnvenc h264 Unavailable\namf h264 Unavailable\nqsv h264 Unavailable\nnvenc h265 Unavailable\namf h265 Unavailable\nqsv h265 Unavailable\nnvenc av1 Unavailable\namf av1 Unavailable\nqsv av1 Unavailable\n"
+        },
+        {
+          "run": 4,
+          "warmup": false,
+          "elapsed_s": 0.26369082799647003,
+          "parent_peak_rss_bytes": 8867840,
+          "child_peak_rss_bytes": 4444160,
+          "maximum_simultaneous_children": 1,
+          "children_observed": 9,
+          "observed_children_remaining_after_exit": [],
+          "output": "Elapsed: 252.558942ms\nnvenc h264 Unavailable\namf h264 Unavailable\nqsv h264 Unavailable\nnvenc h265 Unavailable\namf h265 Unavailable\nqsv h265 Unavailable\nnvenc av1 Unavailable\namf av1 Unavailable\nqsv av1 Unavailable\n"
+        },
+        {
+          "run": 5,
+          "warmup": false,
+          "elapsed_s": 0.2714727709972067,
+          "parent_peak_rss_bytes": 8970240,
+          "child_peak_rss_bytes": 4784128,
+          "maximum_simultaneous_children": 1,
+          "children_observed": 9,
+          "observed_children_remaining_after_exit": [],
+          "output": "Elapsed: 252.197502ms\nnvenc h264 Unavailable\namf h264 Unavailable\nqsv h264 Unavailable\nnvenc h265 Unavailable\namf h265 Unavailable\nqsv h265 Unavailable\nnvenc av1 Unavailable\namf av1 Unavailable\nqsv av1 Unavailable\n"
+        }
+      ],
+      "median_elapsed_s": 0.26535393700760324,
+      "median_parent_peak_rss_bytes": 8892416,
+      "median_child_peak_rss_bytes": 4890624,
+      "maximum_simultaneous_children_observed": 1,
+      "children_observed_range": [
+        9,
+        9
+      ],
+      "observed_helpers_remaining_after_all_runs": 0
+    },
+    "method": "One warmup and five measured fresh processes per revision, sequential alternating before/after. Actual Detector and fresh actual Rust/native voice libraries; baseline synthetic encoder probes versus driver queries after. RSS/child observations polled every 1 ms; short allocations/helpers may be missed. No GPU device nodes or vendor drivers. Each scan starts nine serial helpers. Wrapper asserts all pairs Unavailable, and after asserts no encoder-test report was started. Elapsed includes process launch and polling. This measures fast failure/negative discovery, not successful hardware throughput, live call behavior, or production scan performance.",
+    "environment": {
+      "os": "Debian GNU/Linux 13 (trixie)",
+      "device_nodes": {
+        "dri_exists": false,
+        "nvidia_device_nodes": [],
+        "nvidia_driver_proc_exists": false
+      },
+      "discoverable_vendor_driver_libraries": {
+        "cuda": null,
+        "amfrt64": null,
+        "mfx-gen": null
+      },
+      "ffmpeg_version_queried_from_prefix": "7.1.5",
+      "openh264_prefix_runtime": "libopenh264.so.2.6.0",
+      "rustc": "1.98.1",
+      "profile": "actual native C shims OPT_LEVEL=3; fresh Rust voice libraries opt-level3 with assertions/overflowchecks; actual detector wrapper opt-level1/debug0, real cached third-party deps",
+      "wrapper_egui_context": "real matching egui Context re-exported under the eframe crate alias; no driver/codec behavior mocked",
+      "task_compilation_during_samples": false,
+      "helper_poll_interval_ms": 25,
+      "memory_observation_interval_ms": 1,
+      "scan_build_identities_file": "scan-build-identities.json"
+    },
+    "comparison": {
+      "median_elapsed_s": {
+        "before": 0.26216657999611925,
+        "after": 0.26535393700760324,
+        "absolute_delta": 0.003187357011483982,
+        "percent_delta": 1.2157754857736496
+      },
+      "median_parent_peak_rss_bytes": {
+        "before": 8736768,
+        "after": 8892416,
+        "absolute_delta": 155648,
+        "percent_delta": 1.7815283638068449
+      },
+      "median_child_peak_rss_bytes": {
+        "before": 5357568,
+        "after": 4890624,
+        "absolute_delta": -466944,
+        "percent_delta": -8.715596330275229
+      }
+    }
+  }
+}

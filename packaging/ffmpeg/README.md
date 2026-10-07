@@ -6,16 +6,25 @@ H264 encoders: Media Foundation on Windows, VideoToolbox on macOS and GStreamer
 VA-API/NVENC on Linux, with source-built Rust OpenH264 fallback.
 
 Experimental compiles this exact encoder set; hardware capabilities and runtime
-availability determine which can open:
+availability determine which can open.
 
-Experimental settings probe each hardware engine/codec with synthetic camera
-and screen-share pictures. These checks call the linked libraries in disposable
-Serein helper processes, not an FFmpeg CLI. Successful validated output is
-required, without software or another hardware fallback. A ten-second helper
-deadline makes driver hangs unknown; the parent kills and reaps canceled helpers.
-The settings expose separate camera/screen results and a manual Recheck. The
-report is process-local and does not guarantee other stream presets or peer
-negotiation; see [voice documentation](../../docs/voice.md).
+Hardware selection follows the running renderer's physical GPU, including the
+app's existing GPU preference. Native LUID, PCI bus address or Metal registry ID
+binds the encoder and capability query to that device. Another GPU of the same
+vendor/model cannot supply its results. An unidentified/unavailable target uses
+H264 software fallback; HEVC/AV1 reports unavailable rather than changing codec.
+
+Experimental settings initially query each vendor's driver capability API for
+the compiled FFmpeg encoder paths, without initializing encoders or submitting
+pictures. Recheck repeats those queries. The separate, optional **Test encoder**
+action validates synthetic camera/screen output for the selected codec, without
+software or another-vendor fallback; its results never replace the driver report.
+Both use disposable Serein helpers, not an FFmpeg CLI, with a ten-second deadline
+per backend/codec. The parent kills/reaps cancelled helpers; reopening restarts
+cancelled discovery but never automatically repeats an encoder test. Reports are
+process-local, with inconclusive APIs/timeouts shown as Unknown. Driver-reported
+support is not a guarantee of a working encode or peer negotiation;
+see [voice documentation](../../docs/voice.md).
 
 | Platform | H264 | H265/HEVC | AV1 |
 |---|---|---|---|
@@ -71,14 +80,19 @@ arguments in `ffmpeg-source` (Linux: `share/doc/serein/ffmpeg-source`). OpenH264
 and NVENC headers retain their BSD/MIT notices. AMF 1.4.36 public headers retain
 AMD's MIT license and standards/patent notice. Intel oneVPL 2.14.0's MIT license,
 third-party notice and complete source archive accompany its statically linked
-PIC dispatcher; no Intel GPU runtime or AMD driver is redistributed. OpenH264 is compiled from source,
+PIC dispatcher, now also linked into the application for hardware capability
+enumeration. Linux AMD device binding additionally builds with pinned
+Vulkan-Headers 1.3.290; its MIT/Apache license texts and complete header source
+archive accompany the recipe. No Intel GPU runtime, AMD driver or Vulkan loader
+is redistributed. OpenH264 is compiled from source,
 without assuming Cisco binary-download patent coverage. Rebuilding a library
 requires the compiler/tool versions recorded by the distributor's build logs.
 Serein's MIT/Apache application sources remain available in the repository.
 The FFmpeg build uses the `-serein` library suffix and `SEREIN_LIBAVCODEC_61` /
 `SEREIN_LIBAVUTIL_59` ELF symbol versions so it can coexist with the host
 FFmpeg used by GStreamer's incoming-video plugins. The version-script changes,
-QSV allocation change and HEVC-QSV dependency fix are retained as
+QSV allocation/dependency fixes, checked QSV quality negotiation, explicit
+VideoToolbox GPU registry selection and AMF external Vulkan-device support are retained as
 `serein-ffmpeg.patch` with the original source archive. QSV requests packet allocation through the app's capped buffer
 callback, so an excessive driver-advised packet size fails before allocation.
 The pinned HEVC-QSV encoder also selects its internal HEVC SEI helpers, which
@@ -99,7 +113,7 @@ A private SONAME also lets newer host plugins load their own ABI-major-8 library
 Windows and macOS retain their existing library names and linking rules.
 
 Packages include FFmpeg, NVENC-header and oneVPL archives for the enabled
-platform, a deterministic 1,198,914-byte OpenH264 source archive, and a
+platform, the pinned Vulkan-Headers archive on Linux, a deterministic 1,198,914-byte OpenH264 source archive, and a
 deterministic 620 KiB AMF public-header archive. The OpenH264 subset omits only
 the upstream root `openh264-2.6.0/res/` directory of test media. Every other
 source/build/test/docs file, license, executable mode and nested Android
@@ -139,7 +153,15 @@ GPU runtime (`libmfx-gen.so.1.2` or
 `libmfxhw64.so.1` on Linux). Linux QSV uses libva/libva-drm/libdrm to create the
 Intel driver device; VA-API encoders remain disabled in Experimental. Stable's
 Linux VA-API/NVENC path uses system GStreamer plugins independently. Windows AMF/QSV use
-D3D11 devices. AMF can create its own Vulkan context on Linux without enabling
-FFmpeg's Vulkan subsystem. Driver or sandbox access failures select OpenH264.
+D3D11 devices bound by the renderer's LUID. Linux AMF derives a Vulkan device
+from that physical GPU's explicit DRM render node and gives its native handles
+to AMF; no AMD VA-API driver interface or Vulkan video encoder is used. The
+bundled patch checks DRM character-device numbers, requires exact Vulkan DRM
+device matching, and rejects unavailable identity rather than selecting another
+GPU by vendor/model. macOS Stable and Experimental require the renderer GPU's
+Metal registry ID in VideoToolbox's encoder specification. QSV's frame-free
+startup Query must retain requested lookahead and CBR; corrected B-frame counts
+are propagated before input surfaces are initialized. Driver or sandbox access
+failures select OpenH264 for H264, or report unavailable for HEVC/AV1.
 No broader Flatpak permissions are added. Hardware availability and
 live Discord delivery still require validation on the actual platform.

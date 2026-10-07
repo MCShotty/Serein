@@ -60,6 +60,14 @@ log = { version = "=0.4.34", features = ["release_max_level_off"] }
 # Nonblocking descriptor admission rejects FIFOs without stalling extension imports.
 libc = "=0.2.189"
 
+[target.'cfg(target_os = "windows")'.dependencies]
+# Already used by wgpu; read the selected Vulkan adapter's native DXGI LUID.
+ash = { version = "=0.38.0", default-features = false, features = ["std"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Already used by wgpu; query the selected Metal device through its protocol trait.
+objc2-metal = { version = "=0.3.2", default-features = false, features = ["std", "MTLDevice"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # Use Adwaita decorations when the Wayland compositor does not provide a frame (GNOME).
 winit = { workspace = true, features = ["wayland-csd-adwaita"] }
@@ -78,5 +86,11 @@ test-support.workspace = true
 name = "profile_preview"
 required-features = ["demo"]
 
-[lints]
-workspace = true
+[[example]]
+name = "gif_favorites"
+required-features = ["demo"]
+
+# Exact renderer adapter IDs require read-only HAL access on Windows/macOS.
+# Keep unsafe denied throughout the app; only gpu::physical_identity permits it.
+[lints.rust]
+unsafe_code = "deny"

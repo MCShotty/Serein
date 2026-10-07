@@ -231,3 +231,19 @@ and applied patch ship together. The same LGPL-only hardware wrappers supply
 HEVC/AV1 when supported; software encoding stays OpenH264/H264. Stable uses
 OS/distribution H264 encoders and Rust OpenH264 separately, with no newly bundled
 framework/plugin sources.
+
+## Exact GPU binding — October 6, 2026
+
+Linux AMF builds additionally use Vulkan-Headers 1.3.290 from
+`https://codeload.github.com/KhronosGroup/Vulkan-Headers/tar.gz/refs/tags/v1.3.290`,
+SHA-256 `f38a653bf93cab7a2a229a53d2d53b1cba9a2819e4c0a7de13c54085bde9bcf5`.
+The complete pristine header archive and upstream `LICENSE.md`/`LICENSES` travel
+with the Linux recipe. The loader and AMD runtime remain system dependencies.
+Its modified LGPL FFmpeg sources retain the original archive and a reproducible
+patch enabling external AMF Vulkan-device handles, exact DRM device selection,
+VideoToolbox registry-ID specification and QSV quality-negotiation checks.
+No Vulkan video encoder/decoder or AMD VA-API encoder is enabled.
+
+The three Vulkan license files in this directory are copied unchanged from
+`Vulkan-Headers-1.3.290/`: `LICENSE.md`, `LICENSES/Apache-2.0.txt` and
+`LICENSES/MIT.txt`; headers use MIT OR Apache-2.0. No Vulkan driver is bundled.

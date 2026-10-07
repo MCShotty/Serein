@@ -78,6 +78,7 @@ pub(super) fn x11_source(cursor: bool) -> Result<gst::Element, &'static str> {
 pub(super) fn run(
 	settings: Settings,
 	video_settings: model::voice_settings::VideoSettings,
+	adapter: Option<model::VideoAdapter>,
 	stop: Arc<AtomicBool>,
 	ready: Arc<AtomicBool>,
 	keyframe: Arc<AtomicBool>,
@@ -117,7 +118,12 @@ pub(super) fn run(
 			}
 			audio = audio_send
 				.map(|send| {
-					audio_linux::Worker::start(send, stop.clone(), ready.clone(), audio_epoch)
+					audio_linux::Worker::start(
+						send,
+						stop.clone(),
+						ready.clone(),
+						audio_epoch.clone(),
+					)
 				})
 				.transpose()?;
 			if stop.load(Ordering::Acquire) || send.is_closed() {
@@ -156,6 +162,7 @@ pub(super) fn run(
 			};
 			let capacity = send.clone();
 			keyframe.store(true, Ordering::Release);
+			let mut reset_generation = audio_epoch.load(Ordering::Acquire);
 			let pipeline = Capture::new(
 				settings,
 				source,
@@ -169,6 +176,7 @@ pub(super) fn run(
 			}
 			wake();
 			let mut encoding: Option<ScreenEncoder> = None;
+			let mut next_epoch = 0;
 			// One bounded raw snapshot lets an idle desktop satisfy a new viewer's IDR
 			// without waiting for another compositor damage event.
 			let mut latest_frame = None;
@@ -203,6 +211,27 @@ pub(super) fn run(
 					return Err(
 						"Screen capture stopped; check PipeWire, portal and GStreamer plugins",
 					);
+				}
+				let reset = audio_epoch.load(Ordering::Acquire);
+				if reset == u64::MAX {
+					return Err("Screen security reset generation exhausted");
+				}
+				if reset != reset_generation {
+					reset_generation = reset;
+					if let Some(encoder) = &mut encoding {
+						encoder.reset_for_security(reset)?;
+					}
+					latest_frame = None;
+					waiting_keyframe = true;
+					first_frame = None;
+					last_encoded = None;
+					next_frame = Instant::now();
+					keyframe.store(true, Ordering::Release);
+					// Discard a raw sample captured across the transition as well as
+					// pending encoded pictures, even if ready returned true meanwhile.
+					let _ = pipeline.frames.try_pull_sample(gst::ClockTime::ZERO);
+					pipeline.changed().await;
+					continue;
 				}
 				let target = bitrate
 					.load(Ordering::Acquire)
@@ -248,6 +277,12 @@ pub(super) fn run(
 					{
 						*label = "Screen preview · waiting for others";
 						wake();
+					}
+					if let Some(encoder) = &encoding {
+						next_epoch = encoder
+							.epoch()
+							.checked_add(1)
+							.ok_or("Screen encoder epoch exhausted")?;
 					}
 					encoding = None;
 					// The raw gate stops updating during a security pause. Discard its old
@@ -296,35 +331,49 @@ pub(super) fn run(
 							&mut latest_frame,
 							raw,
 							ready.load(Ordering::Acquire),
-							requested_keyframe || keepalive,
+							requested_keyframe
+								|| keepalive || encoding.as_ref().is_some_and(ScreenEncoder::pending),
 						)? {
 							if encoding.is_none() {
-								encoding =
-									Some(ScreenEncoder::new(settings, target, video_settings)?);
+								encoding = Some(ScreenEncoder::new_on_adapter(
+									settings,
+									target,
+									video_settings,
+									adapter,
+									next_epoch,
+									reset_generation,
+								)?);
 							}
 							let encoder = encoding.as_mut().expect("screen encoder initialized");
 							let start = metrics.start();
-							let force_keyframe =
-								keyframe.swap(false, Ordering::AcqRel) || waiting_keyframe;
-							let (data, is_keyframe) = encoder.encode(
+							let force_keyframe = keyframe.swap(false, Ordering::AcqRel);
+							if audio_epoch.load(Ordering::Acquire) != reset_generation {
+								continue;
+							}
+							let packet = encoder.encode_at(
 								latest_frame.as_ref().expect("latest screen frame"),
 								force_keyframe,
+								(origin.elapsed().as_micros() * 90 / 1000) as u32,
 							)?;
 							// Advance from the schedule, with jitter tolerance and no catch-up burst.
 							next_frame = (next_frame + interval).max(now + interval / 2);
 							last_encoded = Some(now);
+							// A static source cannot notify again to advance lookahead. Pump
+							// its retained snapshot on the selected cadence while pictures wait.
+							wait_for_frame = encoder.pending();
 							metrics.finish(crate::diagnostics::Stage::Encode, start);
-							if force_keyframe && (data.is_empty() || !is_keyframe) {
-								keyframe.store(true, Ordering::Release);
-							}
-							if !data.is_empty() && (!waiting_keyframe || is_keyframe) {
+							if !packet.data.is_empty() && (!waiting_keyframe || packet.keyframe) {
 								let frame = EncodedFrame {
 									codec: video_settings.codec,
-									data,
-									keyframe: is_keyframe,
-									timestamp: (origin.elapsed().as_micros() * 90 / 1000) as u32,
+									data: packet.data,
+									keyframe: packet.keyframe,
+									timestamp: packet.timestamp,
+									epoch: packet.epoch,
+									reset_generation: encoder.reset_generation(),
 								};
 								if ready.load(Ordering::Acquire)
+									&& audio_epoch.load(Ordering::Acquire)
+										== encoder.reset_generation()
 									&& !stop.load(Ordering::Acquire)
 									&& send.try_send(frame).is_ok()
 								{
@@ -342,6 +391,7 @@ pub(super) fn run(
 										wake();
 									}
 								} else {
+									encoder.restart()?;
 									waiting_keyframe = true;
 									keyframe.store(true, Ordering::Release);
 								}

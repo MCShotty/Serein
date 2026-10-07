@@ -95,6 +95,14 @@ jobs:
           path: ${{ env.FFMPEG_WORK }}/**/ffbuild/config.log
           if-no-files-found: ignore
           retention-days: 7
+      - name: Driver capability query regression fixtures (offline)
+        if: runner.os == 'Linux'
+        run: python3 crates/discord-voice/tests/native/test_video_queries.py --prefix "$FFMPEG_DIR"
+      - name: Encoder buffering and ordering fixtures (offline)
+        if: runner.os == 'Linux'
+        run: |
+          python3 crates/discord-voice/tests/native/test_video_encoding.py --prefix "$FFMPEG_DIR"
+          python3 crates/discord-voice/tests/native/test_ffmpeg_gpu_patch.py --archive "$FFMPEG_DIR/share/serein-ffmpeg/source/ffmpeg-7.1.5.tar.xz"
       - name: Make encoder DLLs available to offline tests
         if: runner.os == 'Windows'
         shell: pwsh

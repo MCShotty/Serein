@@ -1,0 +1,196 @@
+{
+  "baseline": "79e336066beff5ea6c414268308f1f817c50c2f4",
+  "current_base": "79e336066beff5ea6c414268308f1f817c50c2f4",
+  "source_sha256": "eaba593e8bef4ba70ff27ab1ee46db44266104cca520703e7b0fd4cc2c7eb3a3",
+  "baseline_source_sha256": "baf82060f102c6eb73c9d33dc29d6c96d7826724439b5d23ecf554de22724f12",
+  "benchmark_sha256": "cab3b2fc60fbe242111caaa3c4818b3ad915eda7c3589c4b1f1c3ac4e7e4c266",
+  "ffmpeg_prefix": "/workspace/scratch/serein-gpu-binding/prefix",
+  "compiler": "cc (Debian 14.2.0-19) 14.2.0",
+  "environment": {
+    "kernel": "6.18.44",
+    "cpus": 5,
+    "visible_cpu_affinity": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "cpu_model": "INTEL(R) XEON(R) PLATINUM 8573C",
+    "memory.max": "17179869184",
+    "cpu.max": "400000 100000"
+  },
+  "sampling_interval_ms": 10,
+  "warmup_pictures": 30,
+  "measured_pictures": 300,
+  "warmup_runs_discarded": 1,
+  "measured_runs": 5,
+  "commands": [
+    [
+      "cc",
+      "-std=c11",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-DSHIM=\"/workspace/Serein/target/gpu-routing-performance-final/serein-gop-bench-_1mrlhz0/before.c\"",
+      "-I/workspace/Serein/crates/discord-voice/src",
+      "-I/workspace/scratch/serein-gpu-binding/prefix/include",
+      "/workspace/Serein/docs/pr-evidence/video-gpu-routing/encoder-bench.c",
+      "-L/workspace/scratch/serein-gpu-binding/prefix/lib",
+      "-Wl,-rpath,/workspace/scratch/serein-gpu-binding/prefix/lib",
+      "-lavcodec-serein",
+      "-lavutil-serein",
+      "-o",
+      "/workspace/Serein/target/gpu-routing-performance-final/serein-gop-bench-_1mrlhz0/before"
+    ],
+    [
+      "cc",
+      "-std=c11",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-DSHIM=\"/workspace/Serein/crates/discord-voice/src/video_encode_ffmpeg.c\"",
+      "-I/workspace/Serein/crates/discord-voice/src",
+      "-I/workspace/scratch/serein-gpu-binding/prefix/include",
+      "/workspace/Serein/docs/pr-evidence/video-gpu-routing/encoder-bench.c",
+      "-L/workspace/scratch/serein-gpu-binding/prefix/lib",
+      "-Wl,-rpath,/workspace/scratch/serein-gpu-binding/prefix/lib",
+      "-lavcodec-serein",
+      "-lavutil-serein",
+      "-o",
+      "/workspace/Serein/target/gpu-routing-performance-final/serein-gop-bench-_1mrlhz0/after"
+    ]
+  ],
+  "runs": [
+    {
+      "elapsed_ms": 1204.11144,
+      "encoded_bytes": 4537700,
+      "keyframes": 300,
+      "name": "before",
+      "run": 0,
+      "sampled_peak_rss_bytes": 8679424,
+      "rss_samples": 131
+    },
+    {
+      "elapsed_ms": 712.952847,
+      "encoded_bytes": 225825,
+      "keyframes": 10,
+      "name": "after",
+      "run": 0,
+      "sampled_peak_rss_bytes": 8863744,
+      "rss_samples": 67
+    },
+    {
+      "elapsed_ms": 1086.958787,
+      "encoded_bytes": 4537700,
+      "keyframes": 300,
+      "name": "before",
+      "run": 1,
+      "sampled_peak_rss_bytes": 8679424,
+      "rss_samples": 117
+    },
+    {
+      "elapsed_ms": 466.036549,
+      "encoded_bytes": 225825,
+      "keyframes": 10,
+      "name": "after",
+      "run": 1,
+      "sampled_peak_rss_bytes": 8908800,
+      "rss_samples": 53
+    },
+    {
+      "elapsed_ms": 1106.519592,
+      "encoded_bytes": 4537700,
+      "keyframes": 300,
+      "name": "before",
+      "run": 2,
+      "sampled_peak_rss_bytes": 8658944,
+      "rss_samples": 120
+    },
+    {
+      "elapsed_ms": 546.520309,
+      "encoded_bytes": 225825,
+      "keyframes": 10,
+      "name": "after",
+      "run": 2,
+      "sampled_peak_rss_bytes": 8740864,
+      "rss_samples": 61
+    },
+    {
+      "elapsed_ms": 1159.25197,
+      "encoded_bytes": 4537700,
+      "keyframes": 300,
+      "name": "before",
+      "run": 3,
+      "sampled_peak_rss_bytes": 8773632,
+      "rss_samples": 126
+    },
+    {
+      "elapsed_ms": 632.129747,
+      "encoded_bytes": 225825,
+      "keyframes": 10,
+      "name": "after",
+      "run": 3,
+      "sampled_peak_rss_bytes": 8839168,
+      "rss_samples": 66
+    },
+    {
+      "elapsed_ms": 1185.47804,
+      "encoded_bytes": 4537700,
+      "keyframes": 300,
+      "name": "before",
+      "run": 4,
+      "sampled_peak_rss_bytes": 8753152,
+      "rss_samples": 132
+    },
+    {
+      "elapsed_ms": 581.267896,
+      "encoded_bytes": 225825,
+      "keyframes": 10,
+      "name": "after",
+      "run": 4,
+      "sampled_peak_rss_bytes": 8720384,
+      "rss_samples": 65
+    },
+    {
+      "elapsed_ms": 1115.032916,
+      "encoded_bytes": 4537700,
+      "keyframes": 300,
+      "name": "before",
+      "run": 5,
+      "sampled_peak_rss_bytes": 8773632,
+      "rss_samples": 128
+    },
+    {
+      "elapsed_ms": 471.589237,
+      "encoded_bytes": 225825,
+      "keyframes": 10,
+      "name": "after",
+      "run": 5,
+      "sampled_peak_rss_bytes": 8699904,
+      "rss_samples": 53
+    }
+  ],
+  "medians": {
+    "before": {
+      "elapsed_ms": 1115.032916,
+      "encoded_bytes": 4537700,
+      "keyframes": 300,
+      "sampled_peak_rss_bytes": 8753152
+    },
+    "after": {
+      "elapsed_ms": 546.520309,
+      "encoded_bytes": 225825,
+      "keyframes": 10,
+      "sampled_peak_rss_bytes": 8740864
+    }
+  },
+  "bitstream_sha256": {
+    "before": "ca76a9e9dc55a82f3dc437681ae124d0000662c30e8b61cf572f3c48773f5ecd",
+    "after": "c768ade5a29df2de4104f811ebe6298e44ba1faaf0c0c3345343eaf16424fb85"
+  },
+  "validation": "Both final 330-picture H264 streams decoded successfully with system ffmpeg -v error -xerror -i STREAM -f null -.",
+  "measurement_scope": "Software-only C shim baseline GOP1 versus Experimental camera Main GOP30, using the same patched FFmpeg7.1.5/OpenH2642.6.0 dependency libraries; includes input generation and bitstream writes. No Cargo/native builds ran during this final sample. Full desktop/package/GPU cost unmeasured."
+}

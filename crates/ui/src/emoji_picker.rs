@@ -2528,11 +2528,42 @@ mod tests {
 		}
 		frame(&mut picker, &mut state, vec![]).drop_without_applying_deltas();
 		let rail = picker.rail_scroll.unwrap();
-		let mut scrolled = egui::scroll_area::State::load(&ctx, rail).unwrap();
-		scrolled.offset.y = 600.0;
-		scrolled.store(&ctx, rail);
-		frame(&mut picker, &mut state, vec![]).drop_without_applying_deltas();
-		assert!(egui::scroll_area::State::load(&ctx, rail).unwrap().offset.y > 100.0);
+		frame(
+			&mut picker,
+			&mut state,
+			vec![
+				egui::Event::PointerMoved(pos),
+				egui::Event::MouseWheel {
+					unit: egui::MouseWheelUnit::Point,
+					phase: egui::TouchPhase::Move,
+					source: egui::MouseWheelSource::Unknown,
+					delta: egui::vec2(0.0, -600.0),
+					modifiers: egui::Modifiers::NONE,
+				},
+			],
+		)
+		.drop_without_applying_deltas();
+		for _ in 0..6 {
+			frame(&mut picker, &mut state, vec![]).drop_without_applying_deltas();
+		}
+		frame(
+			&mut picker,
+			&mut state,
+			vec![egui::Event::MouseWheel {
+				unit: egui::MouseWheelUnit::Point,
+				phase: egui::TouchPhase::End,
+				source: egui::MouseWheelSource::Unknown,
+				delta: egui::Vec2::ZERO,
+				modifiers: egui::Modifiers::NONE,
+			}],
+		)
+		.drop_without_applying_deltas();
+		assert!(
+			egui::scroll_area::State::load(&ctx, rail)
+				.unwrap()
+				.clamped_offset()
+				.y > 100.0
+		);
 		state
 			.channels
 			.iter_mut()
@@ -2543,7 +2574,10 @@ mod tests {
 			frame(&mut picker, &mut state, vec![]).drop_without_applying_deltas();
 		}
 		assert_eq!(
-			egui::scroll_area::State::load(&ctx, rail).unwrap().offset.y,
+			egui::scroll_area::State::load(&ctx, rail)
+				.unwrap()
+				.clamped_offset()
+				.y,
 			0.0
 		);
 		assert_eq!(picker.rail_guild, Some(Id(2039)));

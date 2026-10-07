@@ -4714,3 +4714,165 @@ tracked credential-removal IDs cap at eight. These are resource ceilings, not
 process RSS or proof that all application leaks are absent. Standard workspace
 and package checks were attempted and remain blocked at missing GLib development
 metadata; the license-policy command also lacks `cargo-deny`.
+
+### October 6, 2026 — driver discovery and optional encoder tests
+
+Baseline is upstream feature-PR head `16a09a986b73c7bf6abc3a80559ecdefb919c84a`.
+The change replaces automatic synthetic encodes with vendor driver codec queries,
+adds a separate Test encoder action, and restarts cancelled automatic discovery
+on reopening. It does not change active-stream encoding or capture presets.
+[Raw measurements and build identities](pr-evidence/video-driver-detection/README.md)
+record freshly rebuilt before/after source with pinned Rust 1.98.1 and real cached
+dependencies. No account, camera, microphone or screen capture was accessed.
+
+| Metric / method | Baseline | After | Delta |
+| --- | ---: | ---: | ---: |
+| No-GPU full scan median, one warmup/five alternating runs each | 262.166580 ms | 265.353937 ms | +3.187357 ms / +1.22% |
+| Auxiliary settings helper sampled peak/settled RSS | 152,633,344 bytes | 152,551,424 bytes | −81,920 bytes / −0.054% |
+| Auxiliary settings helper idle CPU, one core | 0.00% | 0.067% | Timer-resolution scale |
+| Auxiliary settings helper executable | 88,546,592 bytes | 88,564,208 bytes | +17,616 bytes / +0.020% |
+| Full desktop release / installed / compressed package | Unavailable | Unavailable | Local package build blocked by missing `glib-2.0.pc` |
+
+The UI workload uses synthetic advertised support with tests unrun, the default
+Inter font, 1120 × 760 dark at 100%, six seconds of warmup/scrolling and fifteen
+one-second RSS/CPU samples. It runs an opt-level-1/debug-0 native helper, without
+children or driver calls. The single pair does not establish a memory/CPU
+improvement or regression and does not measure the shipped release package.
+
+The separate headless detector workload uses real driver queries/encoder checks
+and the same FFmpeg 7.1.5/OpenH264 2.6 prefix. This host has no usable GPU; all nine
+vendor/codec paths were unavailable. The parent is sampled every millisecond;
+all nine child PIDs were observed on each run, with at most one helper at a time
+and no surviving helpers. Both parent and child RSS observations are sampled,
+not memory ceilings. Similar scan times here mostly reflect process startup;
+positive GPU query cost, encoding throughput, GPU memory and live interoperability
+remain unmeasured.
+
+Driver queries never initialize encoders or submit frames. SDK/API errors remain
+Unknown. Only clicking Test encoder submits at most eight synthetic pictures per
+camera/screen preset; a test failure does not change driver-reported support.
+Every helper has a ten-second deadline, shared by both presets for a test.
+Cancelling discovery drops stale messages and restarts on reopening; cancelling
+a test leaves it waiting for an explicit new click. Full local workspace checks
+also stop at missing GLib development metadata. Native platform CI remains the
+standard build validation for this change.
+
+## 8K presets and camera frame-rate controls — October 6, 2026
+
+Baseline `623ef63514c1b68c516bc4b047503cead6b23511`, compared with the task's 8K
+output presets and 15/30/60 fps camera controls. One matched auxiliary native UI
+helper pair on Debian 13, Linux 6.18.44, Intel Xeon Platinum 8573C (five exposed
+logical CPUs), 18,440,136 KiB configured RAM, pinned Rust 1.98.1, opt-level 1/debug 0,
+Mesa Gallium 25.0.7/LLVM 19 software OpenGL. Actual UI/model/core crates use locked
+cached dependencies; this helper excludes production GTK/native desktop adapters.
+Both runs use default Inter, dark appearance, 1120×760 at 100%, Experimental/H.265,
+synthetic driver rows, default camera settings, and no capture or encoding.
+
+| Auxiliary native helper metric | Before | After | Delta |
+| --- | ---: | ---: | ---: |
+| Idle CPU, one logical core | 0.000% | 0.000% | +0.000 percentage points |
+| Sampled peak and settled RSS | 162,140,160 bytes | 163,909,632 bytes | +1,769,472 / +1.091% |
+| Helper executable | 84,238,472 bytes | 84,296,376 bytes | +57,904 / +0.069% |
+
+Six-second warmup, 100 wheel-down events in the settings body, pointer moved out,
+then fifteen one-second `/proc` RSS samples per revision through psutil. CPU uses
+process user+system time deltas, not total host CPU. No children were observed;
+compiler work was stopped during each measurement. Peak and final RSS matched in
+both runs. This single short pair shows a 1.688 MiB settings-rendering RSS
+difference and no measurable idle CPU difference at the timer's resolution; it
+establishes no general performance improvement or regression. Native warnings
+about unavailable font caches/X11 SHM were the same nonfatal helper limitations.
+Raw samples, executable hashes and reproduction are in
+[`pr-evidence/video-8k-resolution`](pr-evidence/video-8k-resolution/README.md).
+
+The standard `cargo xtask package` attempt stops at missing `glib-2.0.pc`; standard
+executable, complete installed-package and compressed-distribution deltas for this
+addition remain unmeasured locally. Earlier package tables describe earlier stages.
+The helper sizes above are not package measurements. Physical 8K/60 fps capture,
+GPU throughput/memory, full-frame/startup timings and sustained leak behavior remain
+unmeasured.
+
+Higher selected presets deliberately increase worker/native surface memory: an
+8K packed BGRA picture is 132,710,400 bytes, RGB 99,532,800 bytes and I420 49,766,400
+bytes, before separately owned codec/capture surfaces. Camera native byte budgets
+follow negotiated geometry with at most 4096 padding bytes per row, within a global
+150,405,120-byte ceiling. Encoded camera caps still start at 128 KiB for 480p and
+scale only by resolution to at most 2 MiB; selected frame rate does not enlarge
+that cap. Camera UI previews remain at most 640×480 RGB, screen previews 640×360
+RGBA. These are component bounds, not a total RSS cap or measured active-media cost.
+
+
+## Renderer GPU encoding and supported reordering — October 6, 2026
+
+Compared source `79e336066beff5ea6c414268308f1f817c50c2f4` (camera GOP 1)
+with Experimental camera Main profile/GOP 30 at 15 fps. Both software-only C
+processes use the same pinned FFmpeg 7.1.5/OpenH264 2.6.0 libraries; hardware
+presets, look-ahead and physical GPU selection are not exercised by this workload.
+The [reproducer](pr-evidence/video-gpu-routing/measure-encoder.py) compiles each
+revision's actual encoder shim with GCC `-O2`. Each run uses 30 warmup pictures
+then 300 measured moving-gradient 640×480 limited-range BT.601 I420 pictures at
+600 kbps. Elapsed time includes pixel preparation and bitstream writes. One
+warmup run is discarded, then five alternating runs per revision are measured.
+Both final 330-picture streams decode without errors with system FFmpeg.
+
+Environment: Linux 6.18.44 x86-64, Intel Xeon Platinum 8573C, five visible CPUs
+(four-core cgroup quota), 16 GiB memory ceiling. Process RSS is sampled every
+10 ms. No renderer, GPU, camera, microphone, capture, account or network session
+runs in this benchmark. No Cargo/native build ran during the final samples.
+
+| Software-only workload / median | Before | After | Delta |
+| --- | ---: | ---: | ---: |
+| 300 camera pictures, elapsed | 1,115.033 ms | 546.520 ms | -568.513 ms / -50.99% |
+| Encoded payload bytes for 300 pictures | 4,537,700 | 225,825 | -4,311,875 / -95.02% |
+| Keyframes for 300 pictures | 300 | 10 | -290 |
+| Sampled peak C-process RSS | 8,753,152 bytes | 8,740,864 bytes | -12,288 bytes / -0.14% |
+| Actual Linux libavcodec shared library | 1,217,929 bytes | 1,258,993 bytes | +41,064 bytes |
+| Actual Linux libavutil shared library | 1,489,977 bytes | 1,588,281 bytes | +98,304 bytes |
+
+Timings vary (before 1,086.959–1,185.478 ms; after 466.037–632.130 ms).
+The lower payload/time is specific to replacing every-picture keyframes in this
+simple synthetic camera stream; it is not a hardware quality, bandwidth or
+end-to-end latency guarantee. The small RSS difference is noise. Shared-library
+sizes compare the original pinned prefix with the compiled GPU-binding patches;
+they exclude source archives, headers, licenses and the rest of the application.
+[Raw samples](pr-evidence/video-gpu-routing/measurements.json) and
+[library hashes/sizes](pr-evidence/video-gpu-routing/native-library-sizes.json)
+record the actual artifacts.
+
+Native driver fixtures verify same-model GPU targeting, missing-device rejection,
+metadata correction and resource release without physical hardware. The pinned
+FFmpeg patches compile on Linux; their corresponding-source patch reproduces
+byte-for-byte and reverses cleanly. Encoder fixtures exercise sixteen pending
+inputs, reordered packet PTS, P5/look-ahead options and the 48-picture ceiling.
+They do not prove physical hardware encoding or HEVC/AV1 receiver interoperability.
+NVENC/QSV look-ahead and reordered output increase buffering and driver memory;
+those costs, sustained leak behavior and actual Windows/macOS execution remain
+unmeasured here. Standard executable/installed/compressed package sizes and native
+demo CPU/RSS could not be measured: the current workspace check and standard
+package commands stop at missing `glib-2.0.pc` development metadata. No new
+full-desktop or whole-package performance claim is made.
+
+## Emoticon review fixes — October 6, 2026
+
+Compared rebased PR baseline `20c2bb5f` with runtime `50873692` on Apple M1 Pro,
+16 GiB RAM, macOS 27.0, pinned Rust 1.98.1. The std-only component harness
+compiles each exact converter with `rustc -O`; one warmup and five alternating
+measured batches each convert 100,000 synthetic messages using `black_box` and
+`Instant`. These timings include output allocation.
+
+| Message / bytes | Before, median µs | After, median µs | Delta |
+| --- | ---: | ---: | ---: |
+| Plain emoticons / 1,280 | 2.850 | 3.320 | +0.470 |
+| Code and links / 1,710 | 3.950 | 5.042 | +1.093 |
+| Escaped/unmatched ticks / 1,160 | 2.293 | 3.164 | +0.871 |
+
+The scanner now indexes matching delimiters and preserves unmatched inline
+markers as literal text. Samples were taken on a shared host with compiler
+activity, so these are observational timings, not an uncontended comparison or
+a performance improvement claim. Conversion occurs on submission. Native
+frame timing and process CPU/RSS remain unmeasured. The baseline standard release package completed successfully (67,589,904-byte
+executable) as verification was stopped at the user’s request. The changed release
+package was not built; executable, installed package and distribution size
+comparisons remain unmeasured. No dependencies
+were added. Reproduction, raw samples and inspected synthetic native captures
+are in [the evidence directory](pr-evidence/emoticon-review/README.md).
