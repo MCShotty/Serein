@@ -222,9 +222,8 @@ pub struct MessagingUi {
 	poll_creator: polls::Creator,
 	pub language: i18n::Language,
 	forwarding: forwarding::ForwardDialog,
-	pub image_sharing_enabled: bool,
 	pub convert_emoticons: bool,
-	pub image_share_requested: Option<model::ImageShare>,
+	pub image_share_requested: Option<(u64, Id, Vec<model::ImageShare>, String)>,
 	pub interaction_file_request: Option<String>,
 	interaction_components: components::Components,
 	pub verification: VerificationUi,
@@ -1900,6 +1899,9 @@ impl MessagingUi {
 						}
 					}
 				}
+				if let Some(command) = state.request_sidebar_forum_posts(self.guild) {
+					commands.push(command);
+				}
 				let select = self.channel_list(ui, state);
 				if let Some((guild, channel, user)) = self.stream_preview_request.take()
 					&& let Some(command) = state.request_stream_preview(guild, channel, user)
@@ -2529,6 +2531,54 @@ impl MessagingUi {
 			} else {
 				state.status = "Keep or clear the existing draft before restoring pending text";
 			}
+		}
+	}
+	fn submit_composer(
+		&mut self,
+		state: &mut State,
+		ctx: &egui::Context,
+		commands: &mut Vec<Command>,
+	) {
+		let Some(channel) = state.selected else {
+			return;
+		};
+		if self.upload_busy || self.image_share_requested.is_some() || !state.can_send(channel) {
+			return;
+		}
+		let draft = state.drafts.get(&channel).map_or("", String::as_str);
+		if self.selected_files().is_empty()
+			&& let Some(assets) = model::ImageShare::markdown_only(draft)
+		{
+			if !state.can_attach(channel) {
+				state.status =
+					"Attaching images is unavailable here; add text to send a named link.";
+				return;
+			}
+			self.image_share_requested =
+				Some((state.generation, channel, assets, draft.to_owned()));
+			return;
+		}
+		let original_draft = if self.convert_emoticons {
+			state.drafts.get_mut(&channel).map(|draft| {
+				let converted = emoticons::convert(draft);
+				std::mem::replace(draft, converted)
+			})
+		} else {
+			None
+		};
+		if let Some(command) = state.prepare_send_with_attachments(
+			&self
+				.selected_files()
+				.iter()
+				.map(|(name, _)| name.as_str())
+				.collect::<Vec<_>>(),
+		) {
+			// Consume this selection once, before desktop dispatch.
+			self.stage_pending_upload(ctx, &command);
+			self.timeline.follow_latest(state);
+			commands.push(command);
+		} else if let Some(original) = original_draft {
+			state.drafts.insert(channel, original);
 		}
 	}
 	/// Submits message drafts or edits after applying the device conversion preference.
@@ -3241,7 +3291,6 @@ impl MessagingUi {
                         }
                         let pick = ui
                             .add_enabled_ui(!application_command && !self.ime_active && !ime_this_frame, |ui| {
-                                self.emoji_picker.image_sharing_enabled = self.image_sharing_enabled;
                                 self.emoji_picker
                                     .show(ui, state, channel, &mut self.avatars, commands)
                             })
@@ -3256,12 +3305,6 @@ impl MessagingUi {
                                 Some(text)
                             },
                             Some(emoji_picker::Pick::React(_, _) | emoji_picker::Pick::Choose(_)) => None,
-                            Some(emoji_picker::Pick::Image(asset)) => {
-                                if editing_here { state.status = "Finish or cancel the edit before attaching an image."; }
-                                else if self.upload_busy { state.status = "Wait for the upload before attaching an image."; }
-                                else if self.image_sharing_enabled && state.can_send(channel) && state.can_attach(channel) { self.image_share_requested = Some(asset); }
-                                None
-                            },
                             Some(emoji_picker::Pick::Sticker(sticker)) => {
                                 if editing_here { state.status = "Finish or cancel the edit before sending a sticker."; }
                                 else if self.upload_busy { state.status = "Wait for the upload before sending a sticker."; }
@@ -3594,21 +3637,7 @@ impl MessagingUi {
                             } else if oversized {
                                 self.toasts.push(design::Level::Error, oversized_text(upload_limit));
                             } else if !self.upload_busy && !(state.demo && self.attachment.is_some()) {
-                                let original_draft = if self.convert_emoticons {
-                                    state.drafts.get_mut(&channel).map(|draft| {
-                                        let converted = emoticons::convert(draft);
-                                        std::mem::replace(draft, converted)
-                                    })
-                                } else { None };
-                                if let Some(command) = state.prepare_send_with_attachments(&self.selected_files().iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>()) {
-                                // Consume the selection in this UI pass, before desktop dispatch.
-                                // A second render or Send gesture must not enqueue it again.
-                                self.stage_pending_upload(ctx, &command);
-                                self.timeline.follow_latest(state);
-                                commands.push(command);
-                                } else if let Some(original) = original_draft {
-                                    state.drafts.insert(channel, original);
-                                }
+                                self.submit_composer(state, ctx, commands);
                             }
                             if !application_command { edit.request_focus(); }
                             if application_command && self.slash_commands.active.is_none() {
@@ -7882,6 +7911,9 @@ mod composer_tests {
 			.unwrap()
 			.guild
 			.unwrap();
+		// Sidebar forum discovery is outside this presence-only scenario.
+		state.channels.retain(|entry| entry.id == channel);
+		state.invalidate_navigation();
 		let user = test_support::message(499, channel).author;
 		// No read acknowledgement is part of this presence-only scenario: clear the page and
 		// the latest-message metadata that an empty live edge would otherwise acknowledge.
@@ -9196,4 +9228,111 @@ pub fn debug_gif_favorites_check(mut message: model::Message) -> Vec<model::Gif>
 	assert!(state.toggle_gif_favorite(&clicked));
 	assert!(!state.is_gif_favorite(&clicked));
 	gifs
+}
+
+/// Offline exercise of the same picker, composer, Markdown and optimistic row paths.
+#[cfg(all(debug_assertions, feature = "demo"))]
+pub fn debug_image_sharing(state: &mut State) -> (Vec<model::ImageShare>, String) {
+	let ctx = egui::Context::default();
+	let channel = state.selected.unwrap();
+	let mut view = MessagingUi::default();
+	let mut commands = Vec::new();
+	let picked = mentions::debug_image_completion(state);
+	assert_eq!(picked, emoji_picker::debug_fallback_choice(state));
+	let sticker = model::ImageShare::Sticker {
+		id: Id(9201),
+		format_type: 1,
+	}
+	.markdown("Wave [hello]")
+	.unwrap();
+	let mixed = format!("Hello {picked} {sticker}!");
+	assert!(model::ImageShare::markdown_only(&mixed).is_none());
+	assert!(model::ImageShare::markdown_only("[evil](https://example.com/image.png)").is_none());
+	assert!(
+		model::ImageShare::from_url("https://cdn.discordapp.com/emojis/9002.gif?size=64&extra=1")
+			.is_none()
+	);
+	assert!(
+		model::ImageShare::from_url("https://cdn.discordapp.com/emojis/09002.gif?size=64")
+			.is_none()
+	);
+	state.drafts.insert(channel, mixed.clone());
+	for dark in [true, false] {
+		ctx.set_visuals(if dark {
+			egui::Visuals::dark()
+		} else {
+			egui::Visuals::light()
+		});
+		for _ in 0..2 {
+			let output = ctx.run_ui(Default::default(), |ui| {
+				view.composer(ui, state, channel, &ctx, &mut commands);
+				markdown::Formatted::parse(&mixed).show_with_images(
+					ui,
+					&mut None,
+					&[],
+					None,
+					&mut profiles::ProfileSession::default(),
+					(&mut view.avatars, true, &[]),
+					design::MessageCardSurface::Conversation,
+				);
+			});
+			assert!(
+				output.shapes.iter().any(
+					|shape| matches!(&shape.shape, egui::Shape::Rect(rect) if rect.brush.is_some())
+				),
+				"native inline artwork renders"
+			);
+			output.drop_without_applying_deltas();
+		}
+	}
+	assert!(
+		commands.is_empty() && view.image_share_requested.is_none(),
+		"picking and rendering never sends"
+	);
+	view.submit_composer(state, &ctx, &mut commands);
+	assert!(matches!(commands.as_slice(), [Command::Send { content, .. }] if content == &mixed));
+	assert!(state.pending.last().unwrap().attachments.is_empty());
+	state.pending.clear();
+	commands.clear();
+	view.preview_attachment(
+		"emoji-9002.gif",
+		12,
+		Some(egui::ColorImage::filled([4, 4], egui::Color32::WHITE)),
+	);
+	let command = state.prepare_image_send(&["emoji-9002.gif"]).unwrap();
+	view.stage_pending_upload(&ctx, &command);
+	let output = ctx.run_ui(Default::default(), |ui| {
+		pending::show(
+			ui,
+			state.pending.last().unwrap(),
+			(false, 10, false),
+			state,
+			(
+				&mut view.avatars,
+				&mut None,
+				&mut view.profile,
+				&mut None,
+				&mut markdown::FormatCache::default(),
+			),
+			view.pending_upload.as_ref(),
+			(&mut None, &mut false),
+		);
+	});
+	assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Restore to composer")), "sending artwork has no restore button");
+	output.drop_without_applying_deltas();
+	state.pending.clear();
+	view = MessagingUi::default();
+	let alone = format!("{picked} {sticker}");
+	state.drafts.insert(channel, alone.clone());
+	view.submit_composer(state, &ctx, &mut commands);
+	view.submit_composer(state, &ctx, &mut commands);
+	assert!(commands.is_empty() && state.pending.is_empty());
+	let (generation, queued_channel, assets, draft) = view.image_share_requested.take().unwrap();
+	assert_eq!((generation, queued_channel), (state.generation, channel));
+	assert_eq!(assets.len(), 2);
+	assert_eq!(
+		state.drafts[&channel], alone,
+		"preparation retains the draft until success"
+	);
+	(assets, draft)
 }

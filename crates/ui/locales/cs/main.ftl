@@ -1011,7 +1011,7 @@ fonts-show-none-installed = V tomto systému nebyla nalezena žádná nainstalov
 # Context: show
 fonts-show-the-quick-brown-fox-jumps-over-the-lazy-dog-0123456789 = Rychlá hnědá liška přeskakuje líného psa. 0123456789
 # Context: show
-fonts-show-ttf-or-otf-up-to-8-mib-saved-on-this = Písma nainstalovaná v tomto zařízení, až 8 MiB. Kopie se uloží pro Serein. Kód si zachovává jednoprostorové písmo.
+fonts-show-ttf-or-otf-up-to-32-mib-saved-on-this = Písma nainstalovaná v tomto zařízení, až 32 MiB. Kopie se uloží pro Serein. Kód si zachovává jednoprostorové písmo.
 # Context: show
 fonts-show-typography = Typografie
 

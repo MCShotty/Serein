@@ -14,10 +14,6 @@ fn typed_manifests_round_trip_all_bundled_plugins() {
 			include_bytes!("../../plugins/custom-rpc/manifest.json").as_slice(),
 		),
 		(
-			"emoji-sticker-images",
-			include_bytes!("../../plugins/emoji-sticker-images/manifest.json").as_slice(),
-		),
-		(
 			"message-delete-protector",
 			include_bytes!("../../plugins/message-delete-protector/manifest.json").as_slice(),
 		),

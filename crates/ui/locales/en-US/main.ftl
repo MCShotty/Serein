@@ -1012,7 +1012,7 @@ fonts-show-none-installed = No installed fonts were found on this system.
 # Context: show
 fonts-show-the-quick-brown-fox-jumps-over-the-lazy-dog-0123456789 = The quick brown fox jumps over the lazy dog. 0123456789
 # Context: show
-fonts-show-ttf-or-otf-up-to-8-mib-saved-on-this = Fonts installed on this device, up to 8 MiB. A copy is saved for Serein. Code keeps its monospace font.
+fonts-show-ttf-or-otf-up-to-32-mib-saved-on-this = Fonts installed on this device, up to 32 MiB. A copy is saved for Serein. Code keeps its monospace font.
 # Context: show
 fonts-show-typography = Typography
 
