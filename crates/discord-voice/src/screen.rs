@@ -523,7 +523,11 @@ impl ScreenEncoder {
 		config.adapter = adapter;
 		let encoder = crate::video_backend::Encoder::new(config, video_settings.backend)?;
 		Ok(Self {
-			diagnostics: crate::diagnostics::EncoderRegistration::new(true, encoder.hardware()),
+			diagnostics: crate::diagnostics::EncoderRegistration::new(
+				true,
+				encoder.hardware(),
+				encoder.amf_split(),
+			),
 			encoder: Some(encoder),
 			video_settings,
 			i420: Vec::new(),
@@ -568,7 +572,8 @@ impl ScreenEncoder {
 		config.adapter = self.adapter;
 		let encoder = self.encoder.as_mut().ok_or("Screen encoder stopped")?;
 		encoder.reconfigure(config)?;
-		self.diagnostics.set(Some(encoder.hardware()));
+		self.diagnostics
+			.set(Some((encoder.hardware(), encoder.amf_split())));
 		self.bitrate = bitrate;
 		self.awaiting_keyframe = true;
 		Ok(true)
@@ -645,7 +650,8 @@ impl ScreenEncoder {
 			.as_mut()
 			.ok_or("FFmpeg screen encoder stopped")?;
 		let mut result = encoder.encode_at(&self.i420, false, timestamp)?;
-		self.diagnostics.set(Some(encoder.hardware()));
+		self.diagnostics
+			.set(Some((encoder.hardware(), encoder.amf_split())));
 		result.epoch = result
 			.epoch
 			.checked_add(self.epoch_base)
@@ -731,7 +737,11 @@ mod tests {
 		))
 		.unwrap();
 		let mut encoder = ScreenEncoder {
-			diagnostics: crate::diagnostics::EncoderRegistration::new(true, false),
+			diagnostics: crate::diagnostics::EncoderRegistration::new(
+				true,
+				false,
+				crate::diagnostics::AmfSplit::Off,
+			),
 			encoder: Some(software),
 			video_settings,
 			i420: Vec::new(),
@@ -880,7 +890,11 @@ mod tests {
 		))
 		.unwrap();
 		let mut encoder = ScreenEncoder {
-			diagnostics: crate::diagnostics::EncoderRegistration::new(true, false),
+			diagnostics: crate::diagnostics::EncoderRegistration::new(
+				true,
+				false,
+				crate::diagnostics::AmfSplit::Off,
+			),
 			encoder: Some(encoder),
 			video_settings,
 			i420: Vec::new(),

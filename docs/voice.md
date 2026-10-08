@@ -305,6 +305,12 @@ timings on stderr every five seconds and a best-effort final summary on teardown
 and call video decoding; `StreamReceive` reports its own video decoding. Values are
 `hardware`, `software`, `mixed` for simultaneously active backends, or `unknown`
 when no backend is active. A fallback replaces the hardware indication with software.
+For AMF, `amf_split_requested` counts live sessions that requested split encoding;
+`amf_split_accepted` counts those whose split property was accepted and encoder
+initialization succeeded. For a single screen share, `amf_split_requested=1
+amf_split_accepted=1` confirms acceptance. A retry without split reports `1` and
+`0`. These developer-only counters require the diagnostic environment variable;
+normal controls and the automatic split policy are unchanged.
 On macOS, live VideoToolbox sessions require hardware acceleration; failures use
 the H.264 software fallback after keyframe recovery; H.265/AV1 have no bundled
 software fallback.
@@ -339,8 +345,8 @@ restart to apply this change. Compare speaking, muted and noise-suppression-on/o
 the cause; UI frame diagnostics help identify excessive rendering separately.
 
 Logging is off by default. Fixed numeric reports go through an eight-slot queue to a
-separate writer; media workers never wait for stderr. Output stops after 128 reports
-or 64 KiB per process, shared by all calls, so restart for another capture. A full queue
+separate writer; media workers never wait for stderr. Output stops after 8,192 reports
+or 8 MiB per process, shared by all calls, so restart for another capture. A full queue
 drops summaries. No IDs, device names, endpoints, keys, audio or signaling payloads
 are logged; upstream cryptographic tracing remains disabled. No files are created by
 Serein. Shell redirection is owner-managed and may include unrelated framework logs.

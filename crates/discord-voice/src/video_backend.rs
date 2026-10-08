@@ -150,6 +150,13 @@ impl Encoder {
 		}
 	}
 
+	pub(crate) fn amf_split(&self) -> crate::diagnostics::AmfSplit {
+		match &self.implementation {
+			Implementation::Stable(_) => crate::diagnostics::AmfSplit::Off,
+			Implementation::Experimental(encoder) => encoder.amf_split(),
+		}
+	}
+
 	#[cfg(target_os = "linux")]
 	pub(crate) fn label(&self) -> &'static str {
 		match &self.implementation {

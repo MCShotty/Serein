@@ -24,6 +24,10 @@ void *serein_avc_open_on_adapter(int width, int height, int fps, int bitrate,
                                 size_t max_bytes, const SereinVideoAdapter *adapter,
                                 int features);
 void serein_avc_close(void *encoder);
+/* AMF split request on this live session: 0 = off, 1 = declined, 2 = accepted.
+ * Accepted means SetProperty succeeded and the encoder opened successfully.
+ * A successful retry without split remains declined. This is diagnostic metadata. */
+int serein_avc_amf_split(void *encoder);
 
 /* Input is exactly width * height * 3 / 2 contiguous limited-range BT.601
  * I420 bytes, preserving the callers' SDR sRGB primaries/transfer. All pointers

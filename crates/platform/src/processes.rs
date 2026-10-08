@@ -21,8 +21,8 @@ fn effective_uid() -> u32 {
 }
 
 /// Reads stdout incrementally. Failure kills and reaps the helper without a retained reader thread.
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
-fn command_output(
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", test))]
+pub(crate) fn command_output(
 	command: std::process::Command,
 	max_bytes: usize,
 	deadline: std::time::Duration,

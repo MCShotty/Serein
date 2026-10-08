@@ -125,6 +125,11 @@ H.264, software and VideoToolbox do not request split mode.
 | QSV | Two tile columns permit driver-controlled parallel encoding on this GPU. Negotiated counts are checked before and after initialization; a driver may reduce the count to one but cannot increase it beyond the request. AV1 adds tile rows when required by its maximum tile area at 8K. Hyper Encode across GPUs stays disabled. |
 
 AMF may ignore its hint even at 4K because of driver-dependent restrictions.
+With `SEREIN_VOICE_DIAGNOSTICS=1`, the existing stderr summaries include
+`amf_split_requested` and `amf_split_accepted` for live camera/screen sessions.
+Acceptance means AMF accepted the split property and encoder initialization
+succeeded; retrying without split clears acceptance. This remains internal
+diagnostic metadata, with no additional user control or indicator.
 RX 7000 AV1 has one capable VCN, so its ordinary
 configuration is retained. QSV tiling enables parallelism where supported but does
 not certify active engine use. AV1's mandatory tiling can also require two columns

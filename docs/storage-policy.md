@@ -884,13 +884,17 @@ Schema 7 adds one checked integer `message_kind` (0..255) per cached message, wi
 ### Opt-in synchronization and compatibility diagnostics
 
 Voice performance diagnostics (`SEREIN_VOICE_DIAGNOSTICS=1`) are also off by default.
-They retain at most eight fixed-size numeric reports in a worker queue (under 2 KiB),
+They retain at most eight fixed-size numeric reports in a worker queue (under 8 KiB),
 plus one report per producer and one being written. One background writer formats
 reports and caps attempted stderr output at 8,192 reports AND 8 MiB per process,
 across calls (about eleven hours of three concurrent five-second reporters). Queue overflow drops diagnostics without delaying media. A blocked
 stderr can stall only that single diagnostic writer. No files, identifiers, device
 names, payloads, audio, keys or telemetry are produced. Explicit shell redirection
 is owner-managed; unrelated output and appended runs are outside these limits.
+AMF split acceptance adds two numeric counts per report and four process-wide
+atomic counters. Registrations track only live camera/screen sessions, replace
+their state after fallback/reconfiguration and release it when the encoder stops.
+Acceptance is read once at encoder initialization; frames never poll the driver.
 See [voice CPU diagnostics](voice.md#investigating-high-cpu-during-a-call) for usage.
 
 `SEREIN_MEMBER_DIAGNOSTICS=1` enables fixed-label member synchronization diagnostics;

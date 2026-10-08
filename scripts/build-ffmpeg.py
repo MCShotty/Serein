@@ -127,6 +127,15 @@ cleanup:
      * hint on devices advertising >2, or borrow engines from another codec. */
     return eligible;
 }
+static int serein_amf_request_split(AMFComponent *encoder,
+    const wchar_t *count_name, const wchar_t *split_name)
+{
+    AMFVariantStruct request = {0};
+    if (!serein_amf_split_eligible(encoder, count_name, split_name))
+        return 0;
+    AMFVariantAssignBool(&request, true);
+    return encoder->pVtbl->SetProperty(encoder, split_name, request) == AMF_OK;
+}
 #endif
 """
 
@@ -349,7 +358,8 @@ def patch_ffmpeg(tree):
          "    // low-latency mode: eliminate frame reordering, follow a one-in-one-out encoding mode\n"),
     ]
     replacements += [("libavcodec/amfenc.h", "    int                 usage;\n",
-                      "    int                 split_encode;\n    int                 usage;\n")]
+                      "    int                 split_encode;\n"
+                      "    int                 split_accepted;\n    int                 usage;\n")]
     for codec, prefix, boost, filler, preencode in [
         ("hevc", "AMF_VIDEO_ENCODER_HEVC_", "HIGH_MOTION_QUALITY_BOOST_ENABLE", "FILLER_DATA_ENABLE", "PREENCODE_ENABLE"),
         ("av1", "AMF_VIDEO_ENCODER_AV1_", "HIGH_MOTION_QUALITY_BOOST", "FILLER_DATA", "RATE_CONTROL_PREENCODE"),
@@ -360,20 +370,20 @@ def patch_ffmpeg(tree):
              '#include "amfenc.h"\n#include "serein_amf_split_encoding.h"\n'),
             (relative, "static const AVOption options[] = {\n",
              "static const AVOption options[] = {\n"
-             '    { "split_encode", "Request at most two codec engines on this DX11 GPU", OFFSET(split_encode), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, VE},\n'),
+             '    { "split_encode", "Request at most two codec engines on this DX11 GPU", OFFSET(split_encode), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, VE},\n'
+             '    { "split_accepted", "AMF accepted the optional split request", OFFSET(split_accepted), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, VE | AV_OPT_FLAG_READONLY},\n'),
             (relative, "    // init encoder\n",
              "    /* The driver may decline this hint, including below its resolution\n"
              "     * threshold. Ineligible sessions retain their ordinary quality. */\n"
-             "    if (ctx->split_encode && ctx->context->pVtbl->GetDX11Device(ctx->context, AMF_DX11_1) &&\n"
-             f"        serein_amf_split_eligible(ctx->encoder, {prefix}CAP_NUM_OF_HW_INSTANCES,\n"
-             f"                                  {prefix}MULTI_HW_INSTANCE_ENCODE)) {{\n"
-             f"        AMF_ASSIGN_PROPERTY_BOOL(res, ctx->encoder, {prefix}MULTI_HW_INSTANCE_ENCODE, true);\n"
-             "        if (res == AMF_OK) {\n"
-             f"            AMF_ASSIGN_PROPERTY_BOOL(res, ctx->encoder, {prefix}PRE_ANALYSIS_ENABLE, false);\n"
-             f"            AMF_ASSIGN_PROPERTY_BOOL(res, ctx->encoder, {prefix}{preencode}, false);\n"
-             f"            AMF_ASSIGN_PROPERTY_BOOL(res, ctx->encoder, {prefix}{filler}, false);\n"
-             f"            AMF_ASSIGN_PROPERTY_BOOL(res, ctx->encoder, {prefix}{boost}, false);\n"
-             "        }\n"
+             "    ctx->split_accepted = ctx->split_encode &&\n"
+             "        ctx->context->pVtbl->GetDX11Device(ctx->context, AMF_DX11_1) &&\n"
+             f"        serein_amf_request_split(ctx->encoder, {prefix}CAP_NUM_OF_HW_INSTANCES,\n"
+             f"                                 {prefix}MULTI_HW_INSTANCE_ENCODE);\n"
+             "    if (ctx->split_accepted) {\n"
+             f"        AMF_ASSIGN_PROPERTY_BOOL(res, ctx->encoder, {prefix}PRE_ANALYSIS_ENABLE, false);\n"
+             f"        AMF_ASSIGN_PROPERTY_BOOL(res, ctx->encoder, {prefix}{preencode}, false);\n"
+             f"        AMF_ASSIGN_PROPERTY_BOOL(res, ctx->encoder, {prefix}{filler}, false);\n"
+             f"        AMF_ASSIGN_PROPERTY_BOOL(res, ctx->encoder, {prefix}{boost}, false);\n"
              "    } else {\n"
              f"        AMF_ASSIGN_PROPERTY_BOOL(res, ctx->encoder, {prefix}MULTI_HW_INSTANCE_ENCODE, false);\n"
              "    }\n\n    // init encoder\n"),

@@ -198,6 +198,7 @@ unsafe extern "C" {
 		features: i32,
 	) -> *mut c_void;
 	fn serein_avc_close(context: *mut c_void);
+	fn serein_avc_amf_split(context: *mut c_void) -> i32;
 	fn serein_avc_encode_timed(
 		context: *mut c_void,
 		picture: *const u8,
@@ -229,6 +230,7 @@ pub(crate) struct Encoder {
 	next_input: i64,
 	epoch: u64,
 	features: i32,
+	amf_split: crate::diagnostics::AmfSplit,
 	produced_output: bool,
 }
 
@@ -373,6 +375,9 @@ impl Encoder {
 			VideoCodec::H265 => "FFmpeg H.265 hardware encoder is unavailable",
 			VideoCodec::Av1 => "FFmpeg AV1 hardware encoder is unavailable",
 		})?;
+		// SAFETY: The successfully opened context is live and uniquely owned. The
+		// getter reads fixed metadata, not GPU state, and makes no driver calls.
+		let amf_split = unsafe { serein_avc_amf_split(pointer.as_ptr()) };
 		Ok(Self {
 			native: Some(Native(pointer, PhantomData)),
 			config,
@@ -382,12 +387,21 @@ impl Encoder {
 			next_input: 0,
 			epoch: 0,
 			features: selected_features,
+			amf_split: crate::diagnostics::AmfSplit::from_native(amf_split),
 			produced_output: false,
 		})
 	}
 
 	pub(crate) fn hardware(&self) -> bool {
 		self.backend != Backend::Software
+	}
+
+	pub(crate) fn amf_split(&self) -> crate::diagnostics::AmfSplit {
+		if self.native.is_some() {
+			self.amf_split
+		} else {
+			crate::diagnostics::AmfSplit::Off
+		}
 	}
 	#[cfg(target_os = "linux")]
 	pub(crate) fn label(&self) -> &'static str {

@@ -284,7 +284,11 @@ impl CameraEncoder {
 		let (width, height) = (config.width as usize, config.height as usize);
 		let encoder = crate::video_backend::Encoder::new(config, video.backend)?;
 		Ok(Self {
-			diagnostics: crate::diagnostics::EncoderRegistration::new(false, encoder.hardware()),
+			diagnostics: crate::diagnostics::EncoderRegistration::new(
+				false,
+				encoder.hardware(),
+				encoder.amf_split(),
+			),
 			encoder,
 			codec: video.codec,
 			yuv: YUVBuffer::new(width, height),
@@ -326,7 +330,8 @@ impl CameraEncoder {
 		}
 		let timestamp = (self.origin.elapsed().as_micros() * 90 / 1000) as u32;
 		let packet = self.encoder.encode_at(&self.i420, false, timestamp)?;
-		self.diagnostics.set(Some(self.encoder.hardware()));
+		self.diagnostics
+			.set(Some((self.encoder.hardware(), self.encoder.amf_split())));
 		self.finish_packet(rgb, packet).map(Some)
 	}
 

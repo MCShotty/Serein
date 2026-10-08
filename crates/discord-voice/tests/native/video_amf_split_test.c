@@ -1,4 +1,4 @@
-/* Codec-specific engine metadata only; no driver, surface or encoder Init. */
+/* Codec-specific split requests through a fake driver; no surface or encoder Init. */
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,6 +10,7 @@
 
 static int codec, caps_calls, releases, flag_available = 1, bad_count_type;
 static int caps_error, count_error, null_caps;
+static int set_calls, set_error;
 static const amf_int64 engines[] = {2, 1, 3, 0, -1};
 static int engine_index;
 static int owned_flag, owned_count, owned_releases;
@@ -67,6 +68,15 @@ static AMF_RESULT AMF_STD_CALL count_property(AMFCaps *self, const wchar_t *name
 static amf_long AMF_STD_CALL release_caps(AMFCaps *self)
 { (void)self; releases++; return 0; }
 
+static AMF_RESULT AMF_STD_CALL set_flag(AMFComponent *self, const wchar_t *name, AMFVariantStruct value)
+{
+    (void)self;
+    assert(wcscmp(name, flags[codec]) == 0);
+    assert(value.type == AMF_VARIANT_BOOL && value.boolValue);
+    set_calls++;
+    return set_error ? AMF_FAIL : AMF_OK;
+}
+
 static AMFCapsVtbl caps_vtable = {.GetProperty = count_property, .Release = release_caps};
 static AMFCaps caps = {&caps_vtable};
 
@@ -78,37 +88,44 @@ static AMF_RESULT AMF_STD_CALL get_caps(AMFComponent *self, AMFCaps **out)
     return caps_error ? AMF_FAIL : AMF_OK;
 }
 
-static AMFComponentVtbl component_vtable = {.GetProperty = flag_property, .GetCaps = get_caps};
+static AMFComponentVtbl component_vtable = {.GetProperty = flag_property, .GetCaps = get_caps,
+                                          .SetProperty = set_flag};
 static AMFComponent encoder = {&component_vtable};
 
 int main(void)
 {
     for (codec = 0; codec < 2; codec++) {
         for (engine_index = 0; engine_index < 5; engine_index++) {
-            caps_calls = releases = 0;
-            assert(serein_amf_split_eligible(&encoder, counts[codec], flags[codec]) == (engine_index == 0));
+            set_calls = caps_calls = releases = 0;
+            assert(serein_amf_request_split(&encoder, counts[codec], flags[codec]) == (engine_index == 0));
             assert(caps_calls == 1 && releases == 1);
+            assert(set_calls == (engine_index == 0));
         }
         engine_index = 0;
+        set_error = 1;
+        set_calls = 0;
+        assert(!serein_amf_request_split(&encoder, counts[codec], flags[codec]));
+        assert(set_calls == 1);
+        set_error = set_calls = 0;
         bad_count_type = 1;
-        assert(!serein_amf_split_eligible(&encoder, counts[codec], flags[codec]));
+        assert(!serein_amf_request_split(&encoder, counts[codec], flags[codec]));
         bad_count_type = 0;
         count_error = 1;
-        assert(!serein_amf_split_eligible(&encoder, counts[codec], flags[codec]));
+        assert(!serein_amf_request_split(&encoder, counts[codec], flags[codec]));
         count_error = 0;
         caps_error = 1;
         caps_calls = releases = 0;
-        assert(!serein_amf_split_eligible(&encoder, counts[codec], flags[codec]));
+        assert(!serein_amf_request_split(&encoder, counts[codec], flags[codec]));
         assert(caps_calls == 1 && releases == 1);
         caps_error = 0;
         null_caps = 1;
         caps_calls = releases = 0;
-        assert(!serein_amf_split_eligible(&encoder, counts[codec], flags[codec]));
+        assert(!serein_amf_request_split(&encoder, counts[codec], flags[codec]));
         assert(caps_calls == 1 && releases == 0);
         null_caps = 0;
         flag_available = 0;
         caps_calls = releases = 0;
-        assert(!serein_amf_split_eligible(&encoder, counts[codec], flags[codec]));
+        assert(!serein_amf_request_split(&encoder, counts[codec], flags[codec]));
         assert(caps_calls == 0 && releases == 0);
         flag_available = 1;
         /* Unexpected types and property failures may still return owned values.
@@ -116,15 +133,16 @@ int main(void)
         for (int failure = 1; failure <= 2; failure++) {
             owned_flag = failure;
             owned_releases = caps_calls = releases = 0;
-            assert(!serein_amf_split_eligible(&encoder, counts[codec], flags[codec]));
+            assert(!serein_amf_request_split(&encoder, counts[codec], flags[codec]));
             assert(owned_releases == 1 && caps_calls == 0 && releases == 0);
             owned_flag = 0;
             owned_count = failure;
             owned_releases = caps_calls = releases = 0;
-            assert(!serein_amf_split_eligible(&encoder, counts[codec], flags[codec]));
+            assert(!serein_amf_request_split(&encoder, counts[codec], flags[codec]));
             assert(owned_releases == 1 && caps_calls == 1 && releases == 1);
             owned_count = 0;
         }
+        assert(set_calls == 0);
     }
-    puts("AMF split: 28 codec/old-runtime/error cases, owned variants and caps released, no encoding");
+    puts("AMF split: 30 codec/old-runtime/error cases, accepted/rejected property writes, owned variants and caps released, no encoding");
 }

@@ -990,3 +990,50 @@ capture and retained PA/lookahead/quality without loading a driver. The FFmpeg
 libraries and engine cap are unchanged; the historical measurements above do
 not measure this adjustment. Physical GPU encode performance, native idle CPU/RSS
 and standard package sizes remain unavailable in this environment.
+
+## Internal AMF split acceptance diagnostics
+
+Baseline `6451d97`; measurements were collected from the local working tree
+before committing.
+[Evidence and build limits](pr-evidence/amf-split-diagnostics/README.md) and
+[raw measurements](pr-evidence/amf-split-diagnostics/measurements.json) record
+freshly compiled component sizes on Linux x86_64 with Rust 1.98.1 and FFmpeg 7.1.5.
+
+| Component | Before | After | Delta |
+| --- | ---: | ---: | ---: |
+| Numeric diagnostic report | 776 B | 792 B | +16 B |
+| Eight-report queue payload | 6208 B | 6336 B | +128 B |
+| Live encoder registration | 16 B | 24 B | +8 B |
+| Process-wide encoder counters | 32 B | 64 B | +32 B |
+| Native encoder bridge context | 80 B | 88 B | +8 B |
+| Diagnostic libavcodec | 761,696 B | 761,696 B | Unchanged |
+| Diagnostic libavutil | 846,680 B | 846,680 B | Unchanged |
+
+Acceptance is read once during initialization and retained as fixed metadata.
+Unchanged frame registrations return without updating counters; no new GPU
+session, worker or per-frame driver query is added. Report count/byte budgets
+remain unchanged. These are component/layout measurements, not process RSS or
+physical encoder performance. Full workspace/package checks hit local disk and
+build-lock limits; whole-app sizes, CPU/RSS and native Windows acceptance are
+unmeasured. The full voice-source tests, strict Clippy, production native option
+fixtures and changed-path sanitizer checks pass.
+
+## Theme command deadline regression
+
+The local bug hunt based on `6451d97` fixes Linux theme detection retaining a
+worker when a descendant keeps the helper's stdout open after its parent exits.
+The existing incremental process reader now bounds stdout and helper completion
+together. With the same inert one-second descendant and 50-ms command deadline,
+the original regression fails and the fixed regression passes.
+
+| Metric | Before | After | Method |
+| --- | ---: | ---: | --- |
+| Fixture process elapsed median | 1013.038 ms | 60.032 ms | One warmup and five samples per binary |
+| Sample range | 1008.951–1021.818 ms | 57.558–63.705 ms | Counterbalanced order, shared Linux host |
+
+[Evidence and raw samples](pr-evidence/theme-command-timeout/README.md) record
+the pinned toolchain, current-source checks and limits. Elapsed time includes
+test startup and demonstrates bounded helper completion; it does not measure
+whole-app theme latency, CPU or RSS. Full executable and installed/compressed
+package sizes remain unmeasured because workspace check/package attempts stop
+at the existing build-cache permission error.

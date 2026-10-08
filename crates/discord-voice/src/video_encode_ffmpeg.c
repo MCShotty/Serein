@@ -35,6 +35,7 @@ typedef struct SereinAvc {
     int has_output;
     int features;
     int split_requested;
+    int amf_split;
 } SereinAvc;
 
 /* Use picture dimensions, including portrait capture, rather than pixel count:
@@ -78,6 +79,16 @@ static int set_option(AVCodecContext *codec, const char *name,
                       const char *value)
 {
     return av_opt_set(codec->priv_data, name, value, 0) >= 0;
+}
+
+static void record_amf_split(SereinAvc *encoder, int backend)
+{
+    encoder->amf_split = 0;
+    if (backend == 3 && encoder->split_requested) {
+        int64_t accepted = 0;
+        encoder->amf_split = av_opt_get_int(encoder->codec->priv_data, "split_accepted", 0, &accepted) >= 0 &&
+                             accepted == 1 ? 2 : 1;
+    }
 }
 
 static int configure_backend(SereinAvc *encoder, int backend)
@@ -214,6 +225,12 @@ void serein_avc_close(void *opaque)
     av_free(encoder);
 }
 
+int serein_avc_amf_split(void *opaque)
+{
+    const SereinAvc *encoder = opaque;
+    return encoder ? encoder->amf_split : 0;
+}
+
 void *serein_avc_open(int width, int height, int fps, int bitrate, int baseline,
                      int backend, int kind, size_t max_bytes)
 {
@@ -322,6 +339,8 @@ static void *open_with_split(int width, int height, int fps, int bitrate,
         avcodec_open2(codec, implementation, NULL) < 0)
         goto failed;
 
+    record_amf_split(encoder, backend);
+
     encoder->frame->format = codec->pix_fmt;
     encoder->frame->width = width;
     encoder->frame->height = height;
@@ -349,9 +368,12 @@ void *serein_avc_open_on_adapter(int width, int height, int fps, int bitrate,
     /* Some older GPUs/drivers reject split mode or two-column tiling. Release
      * the complete failed context before one conservative retry on the same
      * physical adapter, codec and quality settings. No second session survives. */
-    if (!encoder && wants_split(width, height, backend, kind))
+    if (!encoder && wants_split(width, height, backend, kind)) {
         encoder = open_with_split(width, height, fps, bitrate, baseline,
                                   backend, kind, max_bytes, adapter, features, 0);
+        if (encoder && backend == 3)
+            ((SereinAvc *)encoder)->amf_split = 1;
+    }
     return encoder;
 }
 

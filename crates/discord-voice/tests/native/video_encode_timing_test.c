@@ -108,6 +108,49 @@ static void check_presets(void)
     }
 }
 
+static void check_amf_acceptance(void)
+{
+    assert(serein_avc_amf_split(NULL) == 0);
+    const char *names[] = {"hevc_amf", "av1_amf"};
+    for (unsigned int kind = 0; kind < sizeof(names)/sizeof(names[0]); kind++) {
+        const AVCodec *implementation = avcodec_find_encoder_by_name(names[kind]);
+        if (!implementation)
+            continue;
+        AVCodecContext *codec = avcodec_alloc_context3(implementation);
+        assert(codec);
+        const AVOption *accepted = av_opt_find(codec->priv_data, "split_accepted", NULL, 0, 0);
+        assert(accepted && accepted->type == AV_OPT_TYPE_BOOL);
+        assert(accepted->flags & AV_OPT_FLAG_READONLY);
+        /* The request option must not itself be mistaken for acceptance. */
+        assert(av_opt_set(codec->priv_data, "split_encode", "1", 0) == 0);
+        assert(av_opt_set(codec->priv_data, "split_accepted", "1", 0) < 0);
+        SereinAvc encoder = {.codec = codec, .split_requested = 1};
+        record_amf_split(&encoder, 3);
+        assert(serein_avc_amf_split(&encoder) == 1);
+        /* Stand in for the bundled wrapper's private SetProperty result. No
+         * encoder is opened and no real GPU/driver is consulted. */
+        int result = 1;
+        memcpy((uint8_t *)codec->priv_data + accepted->offset, &result, sizeof(result));
+        record_amf_split(&encoder, 3);
+        assert(serein_avc_amf_split(&encoder) == 2);
+        encoder.split_requested = 0;
+        record_amf_split(&encoder, 3);
+        assert(serein_avc_amf_split(&encoder) == 0);
+        encoder.split_requested = 1;
+        record_amf_split(&encoder, 1);
+        assert(serein_avc_amf_split(&encoder) == 0);
+        avcodec_free_context(&codec);
+    }
+    /* A missing status option, including an older library, cannot report
+     * acceptance simply because opening the encoder succeeded. */
+    AVCodecContext *codec = avcodec_alloc_context3(avcodec_find_encoder_by_name("libopenh264"));
+    assert(codec);
+    SereinAvc encoder = {.codec = codec, .split_requested = 1};
+    record_amf_split(&encoder, 3);
+    assert(serein_avc_amf_split(&encoder) == 1);
+    avcodec_free_context(&codec);
+}
+
 static void check_splitting(void)
 {
     /* width, height, AV1 columns, AV1 rows, AMF request; includes required
@@ -208,6 +251,7 @@ static void check_splitting(void)
 int main(void)
 {
     check_presets();
+    check_amf_acceptance();
     check_splitting();
     uint8_t input[64 * 64 * 3 / 2] = {0}, output[4096];
     SereinVideoAdapter unknown = {0};
@@ -242,6 +286,6 @@ int main(void)
     assert(submitted == 48);
     serein_avc_close(encoder);
     assert(!serein_avc_open_on_adapter(64, 64, 30, 100000, 0, 1, 0, sizeof(output), NULL, 1));
-    puts("Presets, NVENC/QSV 1440p and AMF 4K split policy, preserved AMF PA/quality, same-GPU retry/cleanup, delayed PTS and 48-picture bound passed");
+    puts("Presets, AMF split acceptance ABI, NVENC/QSV 1440p and AMF 4K split policy, preserved AMF PA/quality, same-GPU retry/cleanup, delayed PTS and 48-picture bound passed");
     return 0;
 }
