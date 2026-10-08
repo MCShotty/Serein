@@ -1343,6 +1343,25 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn thumbnails_never_read_selections_larger_than_the_decode_budget() {
+		let dir = std::env::temp_dir().join(format!("serein-preview-cap-{}", std::process::id()));
+		std::fs::create_dir_all(&dir).unwrap();
+		let path = dir.join("large.png");
+		// Sparse: no disk is written, and a capped preview must not read it either.
+		let file = std::fs::File::create(&path).unwrap();
+		file.set_len(PREVIEW_BYTES as u64 + 1).unwrap();
+		drop(file);
+		let source = Source::inspect(path).await.unwrap();
+		assert!(source.preview_bytes(PREVIEW_BYTES as u64).await.is_none());
+		assert!(
+			preview(&source, Arc::new(AtomicBool::new(false)))
+				.await
+				.is_none()
+		);
+		std::fs::remove_dir_all(dir).unwrap();
+	}
+
+	#[tokio::test]
 	async fn public_host_consent_matches_selection_and_completion_is_session_scoped() {
 		let context = egui::Context::default();
 		let runtime = tokio::runtime::Handle::current();

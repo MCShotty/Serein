@@ -3782,9 +3782,7 @@ impl State {
 			self.archived_thread = None;
 		}
 		self.channels.retain(|c| !removed.contains(&c.id));
-		if !removed.is_empty() {
-			self.permissions.clear_cache();
-		}
+		self.permissions.forget_channels(removed);
 		for id in removed {
 			self.permissions.channels.remove(id);
 			self.end_voice_channel(*id);
@@ -3901,7 +3899,8 @@ impl Event {
 					result: Ok(None),
 					..
 				}) | Event::UserAction(user_actions::Event::Written {
-				action: user_actions::Action::CloseDm(_),
+				action: user_actions::Action::CloseDm(_)
+					| user_actions::Action::MessageRequest { accept: false, .. },
 				result: Ok(()),
 				..
 			}) | Event::ServerAction(server_actions::Event::Written {
