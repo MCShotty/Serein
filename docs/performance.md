@@ -4,6 +4,24 @@ Recent synthetic/offline measurements are workload-specific. They do not establi
 performance, universal device results or application-wide memory bounds. The older upstream PR screenshot,
 log and per-run evidence archive has been removed; the summaries below retain the useful results.
 
+## Runtime resource cleanup — October 8, 2026
+
+Against `98158b4`, offline regressions reproduced an unreleased AMF property
+interface and updater results retaining a staged directory or inert helper
+after app closure. AMF variants now clear on every exit; queued updater results
+retain cleanup ownership until accepted. The interface release count changes
+from 0 to 1, the remaining staged-directory count from 1 to 0, and the helper
+exits within the fixture's three-second bound after the fix. These are
+deterministic resource checks, not latency or whole-app memory measurements.
+
+Matched optimized FFmpeg 7.1.5 diagnostic libraries remain 761,696 B
+(libavcodec) and 846,680 B (libavutil). Both changed AMF wrappers were rebuilt;
+libavcodec's hash changes despite its unchanged file size. Full executable,
+installed/compressed package, idle CPU/RSS and physical GPU throughput remain
+unmeasured because the native app build lacks GLib development metadata. The
+[resource hunt evidence](pr-evidence/runtime-resource-hunt/README.md) records
+source/library hashes, configuration, failed baseline regressions and scope.
+
 ## Voice default-device polling — October 7, 2026
 
 An offline probe compared creating a fresh PulseAudio client for every metadata poll with reusing

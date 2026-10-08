@@ -1,6 +1,7 @@
 /* Codec-specific engine metadata only; no driver, surface or encoder Init. */
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <wchar.h>
 #include <AMF/components/Component.h>
 #include <AMF/components/VideoEncoderHEVC.h>
@@ -11,15 +12,38 @@ static int codec, caps_calls, releases, flag_available = 1, bad_count_type;
 static int caps_error, count_error, null_caps;
 static const amf_int64 engines[] = {2, 1, 3, 0, -1};
 static int engine_index;
+static int owned_flag, owned_count, owned_releases;
 static const wchar_t *counts[] = {AMF_VIDEO_ENCODER_HEVC_CAP_NUM_OF_HW_INSTANCES,
                                 AMF_VIDEO_ENCODER_AV1_CAP_NUM_OF_HW_INSTANCES};
 static const wchar_t *flags[] = {AMF_VIDEO_ENCODER_HEVC_MULTI_HW_INSTANCE_ENCODE,
                                AMF_VIDEO_ENCODER_AV1_MULTI_HW_INSTANCE_ENCODE};
 
+static amf_long AMF_STD_CALL release_variant(AMFInterface *self)
+{
+    owned_releases++;
+    free(self);
+    return 0;
+}
+
+static AMFInterfaceVtbl owned_vtable = {.Release = release_variant};
+
+static void owned_variant(AMFVariantStruct *value)
+{
+    AMFInterface *owned = malloc(sizeof(*owned));
+    assert(owned);
+    owned->pVtbl = &owned_vtable;
+    value->type = AMF_VARIANT_INTERFACE;
+    value->pInterface = owned;
+}
+
 static AMF_RESULT AMF_STD_CALL flag_property(AMFComponent *self, const wchar_t *name, AMFVariantStruct *value)
 {
     (void)self;
     assert(wcscmp(name, flags[codec]) == 0);
+    if (owned_flag) {
+        owned_variant(value);
+        return owned_flag == 2 ? AMF_FAIL : AMF_OK;
+    }
     if (!flag_available)
         return AMF_NOT_FOUND;
     value->type = AMF_VARIANT_BOOL;
@@ -31,6 +55,10 @@ static AMF_RESULT AMF_STD_CALL count_property(AMFCaps *self, const wchar_t *name
 {
     (void)self;
     assert(wcscmp(name, counts[codec]) == 0);
+    if (owned_count) {
+        owned_variant(value);
+        return owned_count == 2 ? AMF_FAIL : AMF_OK;
+    }
     value->type = bad_count_type ? AMF_VARIANT_BOOL : AMF_VARIANT_INT64;
     value->int64Value = engines[engine_index];
     return count_error ? AMF_FAIL : AMF_OK;
@@ -83,6 +111,20 @@ int main(void)
         assert(!serein_amf_split_eligible(&encoder, counts[codec], flags[codec]));
         assert(caps_calls == 0 && releases == 0);
         flag_available = 1;
+        /* Unexpected types and property failures may still return owned values.
+         * Both must be cleared before rejecting the optional split request. */
+        for (int failure = 1; failure <= 2; failure++) {
+            owned_flag = failure;
+            owned_releases = caps_calls = releases = 0;
+            assert(!serein_amf_split_eligible(&encoder, counts[codec], flags[codec]));
+            assert(owned_releases == 1 && caps_calls == 0 && releases == 0);
+            owned_flag = 0;
+            owned_count = failure;
+            owned_releases = caps_calls = releases = 0;
+            assert(!serein_amf_split_eligible(&encoder, counts[codec], flags[codec]));
+            assert(owned_releases == 1 && caps_calls == 1 && releases == 1);
+            owned_count = 0;
+        }
     }
-    puts("AMF split: 20 codec-specific engine/old-runtime/error cases, caps released, no encoding");
+    puts("AMF split: 28 codec/old-runtime/error cases, owned variants and caps released, no encoding");
 }

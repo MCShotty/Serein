@@ -23,7 +23,8 @@ try {
   fs.writeFileSync(path.join(fixture, '.cargo/config.toml'), '[build]\ntarget-dir="configured target"\n');
   for (const name of ['README.md', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD_PARTY_NOTICES.md',
     'assets/sounds/README.md', 'assets/fonts/NotoSansCJK-LICENSE.txt', 'assets/fonts/NotoSansArabic-OFL.txt',
-    'assets/fonts/NotoSansMath-OFL.txt', 'assets/fonts/Inter-OFL.txt', 'assets/twemoji/LICENSE-GRAPHICS',
+    'assets/fonts/NotoSansMath-OFL.txt', 'assets/fonts/NotoSansSymbols2-OFL.txt',
+    'assets/fonts/Inter-OFL.txt', 'assets/twemoji/LICENSE-GRAPHICS',
     'assets/twemoji/LICENSE-UNICODE', 'assets/icons/LICENSE', 'assets/icons/LICENSE-SIMPLE-ICONS']) {
     fs.mkdirSync(path.dirname(path.join(fixture, name)), { recursive: true });
     fs.copyFileSync(path.join(repo, name), path.join(fixture, name));

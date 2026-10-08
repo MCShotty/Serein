@@ -1,0 +1,169 @@
+{
+  "date": "2026-10-08",
+  "baseline_commit": "98158b4106588df7a14bcc1d9ecc90d71ac1f931",
+  "parent_base_at_start": "a76e030d749ef558e687bbff6dc592a7dddec244",
+  "branch": "fix/pr567-upstream-conflicts",
+  "environment": {
+    "os": "Debian 13 Linux x86_64",
+    "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "incremental": false,
+    "rust_unit_debug_info": false,
+    "physical_hardware_tested": false,
+    "live_discord_used": false
+  },
+  "source_hashes": {
+    "scripts/build-ffmpeg.py": {
+      "before_sha256": "ea7bd8065ab55f79fd5e78b82e8dd769e74e02a02e383e9f9f2e25a7b2e9a250",
+      "after_sha256": "66296bb089e83f61b6751f9438f7b42bef7a176f6d3ad1c2451fbff137a8ae1f"
+    },
+    "apps/desktop/src/updater.rs": {
+      "before_sha256": "141dd2bcfe0ad3da1330e2162412d2dcaba51a33ddb56c4ddc9ff58e7c49b0bf",
+      "after_sha256": "358994cfe1cf0c88b5288a77a6898ee19ad67c19f4b5de814556acfcadbe7683"
+    },
+    "apps/desktop/src/updater_install.rs": {
+      "before_sha256": "830d12e0f9eeb279ea7a165d12b6ad04a25e1eaf1b20d030039189fe88359871",
+      "after_sha256": "062d8cc6ef9da76963230e3ad84a97b973c088bf22daa4e0400c1924b515cac9"
+    },
+    "crates/model/src/registered_games.rs": {
+      "before_sha256": "a821fab0a28a63c8811a2af85cf4e0363e12e17de5d8067e0e5d0494422d7a76",
+      "after_sha256": "6287f78363fa93241472608a45f0d35dd524a494a6df5e3bb4701a93e58f00b0"
+    },
+    "crates/discord-voice/tests/native/video_amf_split_test.c": {
+      "before_sha256": "e40e204ed091ca89207cf0849efac8e2cd5d382f4f8d02dcfd037ce04db4a579",
+      "after_sha256": "34b519ddcad08ab7876eaf586d4406d2bb27b59f33f6cb240665b37b4d4cd72f"
+    },
+    "packaging/ffmpeg/test_bundle.py": {
+      "before_sha256": "f7f776b1a33c122d538eca3f4d28948118e3e8a47c9e4c53a5fe0660b3e75b69",
+      "after_sha256": "f5f14442af8879794550fa7871ad0eeef2c405646f901ef0fd441deca3a56b8f"
+    },
+    "tests/xtask-package.cjs": {
+      "before_sha256": "95dfbc5ee32bddad34a5e75f4cdb68da58970ad5eb206c2ecc4958685caa978e",
+      "after_sha256": "0f4a8beb124cee6924a23ec10ab4c6a6e52814ce958b6c7c609ef9b3dc880df8"
+    }
+  },
+  "resource_checks": [
+    {
+      "metric": "one owned AMF interface releases",
+      "before": 0,
+      "after": 1,
+      "cases": "both codecs; unexpected owned types returned on success or error"
+    },
+    {
+      "metric": "queued staged directories remaining after updater closure",
+      "before": 1,
+      "after": 0,
+      "samples_each": 1
+    },
+    {
+      "metric": "queued synthetic helper exits within three seconds",
+      "before": false,
+      "after": true,
+      "samples_each": 1,
+      "baseline_fixture_manually_killed_after_timeout": true
+    },
+    {
+      "metric": "maximum accepted normalized executable bytes",
+      "before": "can exceed 256 after Unicode expansion",
+      "after": 256,
+      "valid_boundary_fixture_bytes": 255
+    }
+  ],
+  "diagnostic_ffmpeg": {
+    "version": "7.1.5",
+    "after_prefix": "/tmp/serein-split-source/after-prefix",
+    "baseline_helper_sha256": "d81cbfdd67dcee9c1e1684dc288951e3614adbdf84f5869d5fcd246294e4bb96",
+    "after_helper_sha256": "dd703c5d80ea877a4bb170fb636a1d4cdaa6ac1f5f40e61ed745fd3a7dfcc0e3",
+    "libraries_before": [
+      {
+        "library": "libavcodec-serein.so.61.19.101",
+        "bytes": 761696,
+        "sha256": "dfcf63fad7f0b0bb2489b032f2a74f098d9257bfeee4efd7cad01843d79ddc61"
+      },
+      {
+        "library": "libavutil-serein.so.59.39.100",
+        "bytes": 846680,
+        "sha256": "8904d6522f5fa883cd799a94319c62042fe0f010a59958b44b6e20732d16f5f7"
+      }
+    ],
+    "libraries_after": [
+      {
+        "library": "libavcodec-serein.so.61.19.101",
+        "bytes": 761696,
+        "sha256": "b2d1d77b915eb6d53781529663e03d58f983a475b32e07786c13ddd30b866788"
+      },
+      {
+        "library": "libavutil-serein.so.59.39.100",
+        "bytes": 846680,
+        "sha256": "8904d6522f5fa883cd799a94319c62042fe0f010a59958b44b6e20732d16f5f7"
+      }
+    ],
+    "both_changed_amf_wrappers_recompiled": true,
+    "baseline_helper_matches_starting_commit": true,
+    "gpu_encodes_performed": 0,
+    "common_configuration": [
+      "bash",
+      "configure",
+      "--build-suffix=-serein",
+      "--disable-autodetect",
+      "--disable-everything",
+      "--disable-programs",
+      "--disable-doc",
+      "--disable-network",
+      "--disable-static",
+      "--enable-shared",
+      "--disable-gpl",
+      "--disable-nonfree",
+      "--disable-version3",
+      "--disable-avdevice",
+      "--disable-avformat",
+      "--disable-avfilter",
+      "--disable-swscale",
+      "--disable-swresample",
+      "--disable-postproc",
+      "--disable-x86asm",
+      "--disable-vdpau",
+      "--disable-cuvid",
+      "--disable-nvdec",
+      "--disable-cuda-llvm",
+      "--disable-vulkan",
+      "--disable-vaapi",
+      "--disable-libdrm",
+      "--enable-avcodec",
+      "--enable-avutil",
+      "--enable-libopenh264",
+      "--enable-ffnvcodec",
+      "--enable-nvenc",
+      "--enable-amf",
+      "--enable-libvpl",
+      "--enable-encoder=libopenh264,h264_nvenc,hevc_nvenc,av1_nvenc,h264_amf,hevc_amf,av1_amf,h264_qsv,hevc_qsv,av1_qsv",
+      "--extra-cflags=-I/tmp/serein-split-source/prefix/include",
+      "--extra-ldflags=-L/tmp/serein-split-source/prefix/lib -Wl,-z,defs -Wl,-rpath,/tmp/serein-split-source/prefix/lib"
+    ],
+    "baseline_prefix_at_measurement": "/tmp/serein-split-source/after-prefix"
+  },
+  "verification": {
+    "six_crate_unit_tests_passed": 779,
+    "six_crate_tests_ignored": 11,
+    "scoped_updater_tests_passed": 8,
+    "scoped_strict_clippy": "passed",
+    "native_encoding_queries": "passed",
+    "address_undefined_leak_sanitizers": "passed; C++ C-ABI mock excludes vptr only",
+    "ffmpeg_patch_roundtrip": "passed",
+    "packaging_tests_passed": 19,
+    "packaging_tests_skipped": 3,
+    "xtask_workspace_fixture": "passed",
+    "xtask_package_fixture": "passed",
+    "persistence_policy": "passed",
+    "format_and_syntax": "passed",
+    "xtask_check": "blocked: GLib >=2.70 development metadata missing",
+    "xtask_package": "blocked: GLib >=2.70 development metadata missing",
+    "licenses": "blocked: cargo-deny 0.20.2 unavailable"
+  },
+  "unmeasured": [
+    "full executable/installed/compressed package size",
+    "native idle CPU and process RSS",
+    "frame/startup latency",
+    "hardware split throughput/quality",
+    "Windows/macOS runtime and full desktop/transport integration"
+  ]
+}

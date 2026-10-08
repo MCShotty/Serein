@@ -111,11 +111,16 @@ static int serein_amf_split_eligible(AMFComponent *encoder,
     /* An old runtime may advertise two engines but lack this optional flag. */
     if (encoder->pVtbl->GetProperty(encoder, split_name, &flag) != AMF_OK ||
         flag.type != AMF_VARIANT_BOOL)
-        return 0;
+        goto cleanup;
     if (encoder->pVtbl->GetCaps(encoder, &caps) == AMF_OK && caps &&
         caps->pVtbl->GetProperty(caps, count_name, &count) == AMF_OK &&
         count.type == AMF_VARIANT_INT64)
         eligible = count.int64Value == 2;
+cleanup:
+    /* GetProperty owns its returned variant, including unexpected types and
+     * values populated before an error. Release interfaces/strings as well. */
+    AMFVariantClear(&count);
+    AMFVariantClear(&flag);
     if (caps)
         caps->pVtbl->Release(caps);
     /* AMF has no numeric engine limit. Do not enable its boolean multi-engine

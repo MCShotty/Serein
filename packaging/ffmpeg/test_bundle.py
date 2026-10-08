@@ -365,6 +365,12 @@ class BundleTest(unittest.TestCase):
                 '#include "libavutil/hwcontext.h"\n'
                 "#if CONFIG_D3D11VA\nstatic int amf_init_from_d3d11_device\n"
                 "        switch (device_ctx->type) {\n")
+            (root / "libavcodec/amfenc.h").write_text("    int                 usage;\n")
+            for codec in ["hevc", "av1"]:
+                (root / f"libavcodec/amfenc_{codec}.c").write_text(
+                    '#include "amfenc.h"\n'
+                    "static const AVOption options[] = {\n"
+                    "    // init encoder\n")
             (root / "libavutil/hwcontext_vulkan.c").write_text(
                 "        dev_select.drm_major = major(drm_node_info.st_dev);\n"
                 "        dev_select.drm_minor = minor(drm_node_info.st_dev);\n"
@@ -374,6 +380,8 @@ class BundleTest(unittest.TestCase):
             self.assertIn("+ret = ff_get_encode_buffer(avctx, &pkt.pkt, q->packet_size, 0);", source_patch)
             self.assertEqual((root / "libavcodec/serein_qsv_feature_validation.h").read_text(),
                              builder.QSV_FEATURE_VALIDATION)
+            self.assertEqual((root / "libavcodec/serein_amf_split_encoding.h").read_text(),
+                             builder.AMF_SPLIT_ENCODING)
             with self.assertRaisesRegex(ValueError, "exactly one"):
                 builder.patch_ffmpeg(root)
 
