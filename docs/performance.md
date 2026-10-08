@@ -4,6 +4,38 @@ Recent synthetic/offline measurements are workload-specific. They do not establi
 performance, universal device results or application-wide memory bounds. The older upstream PR screenshot,
 log and per-run evidence archive has been removed; the summaries below retain the useful results.
 
+## Windows FFmpeg integration package - October 8, 2026
+
+Matched standard release builds compare baseline `1b3e4a7b` with runtime integration
+`eefa0fe5`, using Rust 1.98.1 on Windows 11 build 26200, Ryzen 7 7800X3D and 32 GiB RAM.
+Both include voice and omit the demo feature. Installed size is the sum of every
+file in `dist`; ZIPs use .NET `ZipFile.CreateFromDirectory` with `Optimal` compression.
+
+| Metric | Baseline | FFmpeg integration | Delta |
+| --- | ---: | ---: | ---: |
+| Release executable | 86,008,832 B | 86,554,112 B | +545,280 B |
+| Installed package | 90,199,948 B | 124,070,028 B | +33,870,080 B |
+| Complete ZIP | 50,001,798 B | 78,054,030 B | +28,052,232 B |
+| Packaged files | 216 | 242 | +26 |
+
+The Windows `cargo xtask check` rerun passed. The release package command built
+the correct runtime successfully, but reused an older cached xtask executable
+that omitted this branch's FFmpeg staging step. We replayed the exact
+`python packaging/ffmpeg/bundle.py dist` step with the freshly validated pinned
+MSVC prefix. All 241 non-executable files then matched the expected Windows
+staging sources byte for byte, with no missing or extra files. The executable's
+SHA-256 stayed `8a35fc932b3bea6cf84e63af99776b3da907cad0c0dc984d70237a1a9d72f225`.
+The final media-v2 ZIP passed the existing archive checker, including required
+DLLs/source, path limits and integrity. These measurements include all three
+FFmpeg/OpenH264 DLLs, corresponding source archives, build provenance and notices.
+No fresh end-to-end xtask package rerun is claimed. NSIS is unavailable locally,
+so the measured artifact is the portable package, not an installer.
+
+Native CPU/RSS, frame/startup latency, physical encoding and live interoperability
+remain unmeasured; the native automation bridge is unavailable. The measurements
+below retain their recorded revisions and platforms, including historical Linux
+build blockers. They do not replace current-device testing.
+
 ## Runtime resource cleanup — October 8, 2026
 
 Against `98158b4`, offline regressions reproduced an unreleased AMF property
