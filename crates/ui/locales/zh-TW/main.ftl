@@ -777,6 +777,14 @@ embeds-image-preview-image-actions = 圖片操作
 embeds-link-open-link = 開啟連結…
 # Context: show
 embeds-show-additional-embed-content-is-not-supported = 不支援其他嵌入內容
+# Context: poll_result
+embeds-poll-result-winning-answer = 獲勝答案
+# Context: poll_result
+embeds-poll-result-tie = 沒有獲勝答案
+# Context: poll_result
+embeds-poll-result-no-votes = 尚無人投票
+# Context: poll_result
+embeds-poll-result-view-poll = 查看投票
 # Context: show
 embeds-show-embed-display-limited = 嵌入內容顯示受限
 # Context: show
