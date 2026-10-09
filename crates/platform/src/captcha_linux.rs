@@ -1,5 +1,5 @@
 //! A temporary ephemeral GTK4/WebKit6 window for human-operated verification.
-use super::{Challenge, Solution, page, parse_result};
+use super::{Challenge, Solution, page, parse_result, verification_storage_domains};
 use std::{
 	cell::{Cell, RefCell},
 	rc::Rc,
@@ -149,8 +149,23 @@ impl CaptchaView {
 			true
 		});
 		view.connect_create(|_, _| None);
-		view.connect_permission_request(|_, request| {
-			request.deny();
+		view.connect_permission_request(|view, request| {
+			let verification_storage = view.uri().is_some_and(|uri| uri == PAGE)
+				&& request
+					.downcast_ref::<webkit6::WebsiteDataAccessPermissionRequest>()
+					.is_some_and(|request| {
+						verification_storage_domains(
+							// WebKit reports registrable domains, not the full page hostname.
+							"verification.invalid",
+							request.current_domain().as_deref(),
+							request.requesting_domain().as_deref(),
+						)
+					});
+			if verification_storage {
+				request.allow();
+			} else {
+				request.deny();
+			}
 			true
 		});
 		view.connect_query_permission_state(|_, query| {
@@ -246,6 +261,7 @@ impl CaptchaView {
 			}
 			context.iteration(false);
 		}
+		// winit owns the blocking loop, so GTK's nonblocking pump must flush GDK itself.
 		self.display.flush();
 		if !self.state.active()
 			|| self.state.delivered.get()

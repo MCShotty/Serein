@@ -2202,6 +2202,10 @@ impl TimelineView {
 			offset = Some(live_edge_offset);
 			jumped_to = Some(live_edge_offset);
 		}
+		if self.following {
+			// egui sticks after painting; use this frame's height while the call panel resizes.
+			offset = Some(live_edge_offset);
+		}
 		let wheel = ui.input(|input| input.smooth_scroll_delta());
 		let user_scroll = wheel.y + autoscroll_delta;
 		if user_scroll != 0.0 && self.reveal_scroll.take().is_some() {
@@ -3118,16 +3122,6 @@ impl TimelineView {
 														self.component_viewing = None;
 														self.embed_viewing = None;
 													}
-												}
-											}
-											if text != 0 || media {
-												let hide = ui.small_button(crate::i18n::translate(
-													"timeline-show-with-scroll-hide-spoilers",
-												));
-												surface.keep(&hide);
-												if hide.clicked() {
-													text = 0;
-													media = false;
 												}
 											}
 											if before != (text, media) {
@@ -4548,6 +4542,72 @@ mod tests {
 	use super::*;
 
 	#[test]
+	fn resizing_call_stage_keeps_latest_message_at_the_composer() {
+		let ctx = egui::Context::default();
+		crate::design::apply(&ctx);
+		let mut state = loading_unread_channel(false);
+		state.freshness = model::Freshness::Fresh;
+		state.history_pending = false;
+		state.older_exhausted = true;
+		state.channels[0].last_message = Some(Id(49));
+		for id in 20..=49 {
+			let mut message = text_message(id);
+			message.content = format!("Synthetic resize message {id}");
+			state.timeline.insert(message, false, false).unwrap();
+		}
+		let mut view = TimelineView::default();
+		let frame = |view: &mut TimelineView, state: &mut State, stage_height| {
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(900.0, 760.0),
+					)),
+					..Default::default()
+				},
+				|ui| {
+					egui::Panel::top("synthetic-call-stage")
+						.exact_size(stage_height)
+						.show(ui, |_| {});
+					view.show(
+						ui,
+						state,
+						&mut None,
+						&mut None,
+						(
+							&mut crate::avatars::Avatars::default(),
+							&mut crate::profiles::ProfileSession::default(),
+						),
+						None,
+					);
+				},
+			);
+			let y = output.shapes.iter().find_map(|shape| match &shape.shape {
+				egui::Shape::Text(text)
+					if text.galley.job.text == "Synthetic resize message 49" =>
+				{
+					Some(text.pos.y)
+				}
+				_ => None,
+			});
+			output.drop_without_applying_deltas();
+			y
+		};
+		for _ in 0..12 {
+			frame(&mut view, &mut state, 240.0);
+		}
+		let baseline = frame(&mut view, &mut state, 240.0).unwrap();
+		for height in [280.0, 320.0, 360.0, 320.0, 280.0, 240.0] {
+			let y = frame(&mut view, &mut state, height).unwrap();
+			assert!(view.following);
+			assert!(
+				(y - baseline).abs() <= 1.0,
+				"latest message moved during resize: stage={height}, {baseline} -> {y}"
+			);
+		}
+	}
+
+	#[test]
 	fn short_history_loads_older_only_after_explicit_upward_input() {
 		let mut state = loading_unread_channel(false);
 		state.freshness = model::Freshness::Fresh;
@@ -5944,14 +6004,25 @@ mod tests {
 
 	#[test]
 	fn inline_reveals_are_independent_of_media_and_reset_on_edit_and_navigation() {
-		fn collect(shape: &egui::Shape, labels: &mut Vec<(String, egui::Rect)>) {
+		// Painted text, plus each concealed text spoiler block recorded as "Reveal spoiler".
+		fn collect(
+			shape: &egui::Shape,
+			block: egui::Color32,
+			labels: &mut Vec<(String, egui::Rect)>,
+		) {
 			match shape {
 				egui::Shape::Text(text) => {
 					labels.push((text.galley.job.text.clone(), text.visual_bounding_rect()))
 				}
+				egui::Shape::Rect(rect)
+					if rect.fill == block
+						&& rect.corner_radius == crate::channel_pill::RADIUS.into() =>
+				{
+					labels.push(("Reveal spoiler".into(), rect.rect));
+				}
 				egui::Shape::Vec(shapes) => {
 					for shape in shapes {
-						collect(shape, labels);
+						collect(shape, block, labels);
 					}
 				}
 				_ => {}
@@ -5984,6 +6055,7 @@ mod tests {
 			let mut view = TimelineView::default();
 			let mut images = crate::avatars::Avatars::default();
 			let mut render = |view: &mut TimelineView, state: &mut State, events| {
+				let mut block = egui::Color32::TRANSPARENT;
 				let output = ctx.run_ui(
 					egui::RawInput {
 						focused: true,
@@ -5995,6 +6067,7 @@ mod tests {
 						..Default::default()
 					},
 					|ui| {
+						block = crate::design::palette(ui).muted.gamma_multiply(0.55);
 						view.show(
 							ui,
 							state,
@@ -6017,7 +6090,7 @@ mod tests {
 				);
 				let mut labels = vec![];
 				for shape in &output.shapes {
-					collect(&shape.shape, &mut labels);
+					collect(&shape.shape, block, &mut labels);
 				}
 				output.drop_without_applying_deltas();
 				assert!(view.opening.is_none() && view.channel_reference.is_none());
@@ -6065,11 +6138,9 @@ mod tests {
 			assert!(visible.contains("secret one") && !visible.contains("secret two"));
 			assert_eq!(view.revealed[&message.id].text, 1);
 			assert!(!view.revealed[&message.id].media);
-			for events in click("Hide spoilers", &labels) {
-				render(&mut view, &mut state, events);
-			}
+			// Like Discord, there is no re-hide control; start the next case concealed.
+			view.revealed.clear();
 			render(&mut view, &mut state, vec![]);
-			assert!(view.revealed.is_empty());
 
 			// A text reveal cannot grant access to a separately concealed card.
 			message.embeds[0].title = Some("||hidden card||".into());
@@ -9396,6 +9467,28 @@ mod tests {
 			icon: None,
 			last_message: None,
 		});
+		// Channel names are shown only with view and read permission.
+		state.user = Some(model::User {
+			id: Id(9),
+			name: "Synthetic viewer".into(),
+			avatar: None,
+			webhook: false,
+			kind: Default::default(),
+			discriminator: 0,
+			primary_guild: None,
+		});
+		state.guilds.push(model::Guild {
+			id: Id(5),
+			name: "Synthetic".into(),
+			icon: None,
+			emojis: None,
+			stickers: None,
+			default_message_notifications: None,
+		});
+		state
+			.permissions
+			.replace(test_support::permission_snapshot(&state))
+			.unwrap();
 		state.timeline.insert(message, false, false).unwrap();
 		state.timeline.insert(tail, false, false).unwrap();
 		let mut view = TimelineView {

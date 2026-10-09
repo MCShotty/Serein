@@ -310,6 +310,7 @@ pub(crate) struct Dave {
 	pub waiting: bool,
 	channel: u64,
 	pub pending: Option<u16>,
+	pub pending_protocol: Option<u16>,
 	pub ready: bool,
 	pub resets: u8,
 	epochs: u16,
@@ -337,6 +338,7 @@ impl Dave {
 			waiting: false,
 			channel,
 			pending: None,
+			pending_protocol: None,
 			ready: false,
 			resets: 0,
 			epochs: 0,
@@ -357,7 +359,7 @@ impl Dave {
 	pub fn should_wait_for_peer(&self) -> bool {
 		!self.ready
 			&& !self.waiting
-			&& self.pending.is_none()
+			&& !self.transitioning()
 			&& self.alone()
 			&& self.session.group().is_some()
 	}
@@ -425,6 +427,7 @@ impl Dave {
 			return Err("Unexpected sole-member DAVE transition");
 		}
 		self.pending = None;
+		self.pending_protocol = None;
 		self.ready = false;
 		self.waiting = true;
 		Ok(())
@@ -454,6 +457,7 @@ impl Dave {
 		self.ready = false;
 		self.waiting = false;
 		self.pending = None;
+		self.pending_protocol = None;
 		self.pending_commit = None;
 		self.session
 			.reinit(
@@ -624,9 +628,33 @@ impl Dave {
 		}
 		Ok(())
 	}
+	/// A transition Discord has prepared but not yet executed.
+	pub fn transitioning(&self) -> bool {
+		self.pending.is_some() || self.pending_protocol.is_some()
+	}
+	/// Unverified: Discord can prepare protocol version 1 before the MLS group exists.
+	/// Only version 1 is accepted, so a protocol transition never changes the media keys.
+	pub fn prepare_protocol(&mut self, id: u16) {
+		self.pending_protocol = Some(id);
+	}
 	pub fn execute(&mut self, id: u16) -> Result<(), &'static str> {
-		if self.pending != Some(id) || !self.session.is_ready() {
+		let is_protocol = self.pending_protocol == Some(id);
+		let is_mls = self.pending == Some(id);
+		if !is_protocol && !is_mls {
 			return Err("Unexpected DAVE encryption transition");
+		}
+		if is_protocol {
+			self.pending_protocol = None;
+		}
+		if !self.session.is_ready() {
+			return if is_protocol {
+				Ok(())
+			} else {
+				Err("Unexpected DAVE encryption transition")
+			};
+		}
+		if !is_mls && self.pending.is_some() {
+			return Ok(());
 		}
 		self.validate_group()?;
 		self.pending = None;
