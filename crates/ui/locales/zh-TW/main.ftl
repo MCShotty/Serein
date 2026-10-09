@@ -87,6 +87,11 @@ search-conversation = 搜尋這個對話
 show-member-list = 顯示成員清單
 pinned-messages = 釘選的訊息
 threads = 討論串
+
+channel-pill-thread = 討論串
+channel-pill-forum = 論壇
+channel-pill-post = 貼文
+channel-pill-message = 訊息
 reload-history = 重新載入紀錄
 in-a-call = 通話中
 members-description = 所有能進入這個對話的人。
@@ -1702,7 +1707,6 @@ markdown-show-run-open-user-profile = 開啟使用者個人檔案
 # Context: show_run
 markdown-show-run-reveal-spoiler = 顯示遮罩內容
 # Context: show_run
-markdown-show-run-unknown-channel-load-channel = 未知頻道，載入頻道
 
 ## crates/ui/src/mentions.rs
 # Context: show
@@ -3867,7 +3871,6 @@ timeline-show-with-scroll-edited = （已編輯）
 # Context: show_with_scroll
 timeline-show-with-scroll-forwarded = ↪ 已轉發
 # Context: show_with_scroll
-timeline-show-with-scroll-hide-spoilers = 隱藏遮罩
 # Context: show_with_scroll
 timeline-show-with-scroll-history-is-not-available-yet-use-reload-to-try-again = 歷史訊息尚未可用。請用重新載入重試。
 # Context: show_with_scroll
