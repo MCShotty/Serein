@@ -1037,3 +1037,87 @@ test startup and demonstrates bounded helper completion; it does not measure
 whole-app theme latency, CPU or RSS. Full executable and installed/compressed
 package sizes remain unmeasured because workspace check/package attempts stop
 at the existing build-cache permission error.
+
+## Window geometry minimum — October 7, 2026
+
+Baseline `c5e50e77` and fixed `c5ace4dd` were built on Windows 11 Home build
+26200, Ryzen 7 7800X3D, 32 GiB RAM, Rust 1.98.1. Both standard voice-enabled
+packages used `cargo xtask package` with no default or demo features. The installed
+size sums all 216 files in `dist`; .NET `ZipFile.CreateFromDirectory` compressed
+each complete directory with the same default settings. NSIS was unavailable, so
+these measurements cover the package directory and ZIP, not an installer binary.
+
+| Metric | Baseline | Fixed | Delta |
+| --- | ---: | ---: | ---: |
+| Release executable | 85,922,304 B | 85,922,304 B | 0 B |
+| Installed package | 90,113,420 B | 90,113,420 B | 0 B |
+| Distribution ZIP | 49,970,177 B | 49,970,277 B | +100 B (+0.00020%) |
+
+For native idle samples, each source was also built with
+`cargo build --release --locked -p serein --no-default-features --features demo`
+and run with `--demo`.
+Both runs used the same 1120×760 synthetic fixture, Windows DPI 120 (125% scale),
+the default DX12 renderer and no child processes. After a 15-second warmup,
+`Get-Process` sampled cumulative CPU time and private bytes every second for ten
+seconds, with no further interaction. CPU is the mean one-core percentage; settled
+private memory is the median of the final five readings.
+
+| Native demo metric | Baseline | Fixed | Delta |
+| --- | ---: | ---: | ---: |
+| Idle CPU, 10 samples | 0% | 0% | Below sample resolution |
+| Peak private memory | 192,835,584 B | 192,643,072 B | -192,512 B (-0.10%) |
+| Settled private memory | 192,835,584 B | 192,643,072 B | -192,512 B (-0.10%) |
+
+The tiny ZIP and memory differences do not establish a performance improvement.
+Startup latency and frame timing were not measured. Demo ignores persisted geometry;
+the offline window-geometry check covers restoration of undersized saved values.
+
+## Window minimum and restoration (PR #583): Windows integration evidence - October 8, 2026
+
+Fresh standard Windows x64 voice-enabled packages compare main `1b3e4a7b` with `371632f1` (measured 2026-10-08). Baseline/current file counts: 216/216.
+
+| Metric | Main `1b3e4a7b` | Current integration | Delta |
+| --- | ---: | ---: | ---: |
+| Standard executable | 86,008,832 B | 86,009,344 B | +512 B (+0.0006%) |
+| Installed directory | 90,199,948 B | 90,200,460 B | +512 B (+0.0006%) |
+| Distribution ZIP | 50,001,798 B | 50,002,093 B | +295 B (+0.0006%) |
+
+Method: `cargo xtask package`, Rust 1.98.1, standard release flags without demo; Windows 11 build 26200, Ryzen 7 7800X3D, 32 GiB RAM. Runtime workspace artifacts were invalidated before each feature build. Installed bytes sum every file in `dist`; ZIP uses whole-directory .NET Optimal compression. NSIS was unavailable, so no installer executable was built.
+
+Current native CPU, memory, frame/startup latency and affected-device behavior remain unmeasured because the native automation bridge is unavailable. Package size and synthetic reducer timing do not establish live Discord performance.
+
+### Window minimum after monitor changes — review follow-up (2026-10-08)
+
+Fresh standard Windows x64 voice-enabled packages compare `666d7d4a` with this
+review fix. Both use Rust 1.98.1, the pinned lockfile, standard release flags
+without demo, Windows 11 build 26200, Ryzen 7 7800X3D and 32 GiB RAM. Each package
+contains 216 files. Installed bytes sum all files in `dist`; ZIP uses the complete
+directory with .NET `ZipFile.CreateFromDirectory`, Optimal compression.
+
+| Metric | Before | After | Delta |
+| --- | ---: | ---: | ---: |
+| Standard executable | 86,009,344 B | 86,011,904 B | +2,560 B (+0.0030%) |
+| Installed directory | 90,200,460 B | 90,203,020 B | +2,560 B (+0.0028%) |
+| Distribution ZIP | 50,002,090 B | 50,003,472 B | +1,382 B (+0.0028%) |
+
+Both `cargo xtask package` runs passed; NSIS is unavailable, so no installer
+executable was produced. The final `cargo xtask check` passed formatting, strict
+workspace Clippy, workspace tests, demo compilation and policy checks. Four
+focused application-settings tests passed, including small displays, scale and
+decoration bounds for the recalculated minimum.
+
+Native capture/interaction remains unavailable (the native helper reports a
+missing pipe). Moving a real window between monitors, native CPU/memory, startup
+and frame latency were not measured. These package measurements and synthetic
+tests do not establish native multi-monitor or live Discord behavior.
+## Watched-stream recovery — October 8, 2026
+
+Standard Windows x64 voice-enabled packages (`cargo xtask package`, no demo feature,
+Rust 1.98.1) compared baseline `1b3e4a7b` and fixed runtime `5b446a45` on Windows 11
+build 26200, Ryzen 7 7800X3D, 32 GiB RAM. Executable size stayed 86,008,832 B;
+the 216-file installed directory stayed 90,199,948 B. Whole-directory .NET Optimal
+ZIP size changed from 50,001,798 B to 50,001,523 B (-275 B), packaging variation.
+NSIS was unavailable, so no installer binary was built. Native CPU/memory/frame
+measurements and live stream continuity remain unmeasured because the native
+automation bridge is unavailable. The lifecycle regression checks retained worker
+ownership during recovery; it does not measure network quality or throughput.

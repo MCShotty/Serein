@@ -5239,6 +5239,7 @@ dependencies = [
  "gtk4",
  "image",
  "keyring",
+ "keyring-core",
  "ksni",
  "mac-usernotifications",
  "model",
@@ -5266,6 +5267,7 @@ dependencies = [
  "wry",
  "x11-dl",
  "zbus",
+ "zbus-secret-service-keyring-store",
  "zeroize",
 ]
 
