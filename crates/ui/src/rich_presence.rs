@@ -1,9 +1,5 @@
 //! Native profile preview and grouped controls for rich-presence tools.
-use crate::{
-	avatars::Avatars,
-	design,
-	extensions_ui::{TextInputStates, render_elements},
-};
+use crate::{avatars::Avatars, design, extensions_ui::render_elements};
 use extensions::{CustomRichPresence, Element, RichPresenceKind, RichPresenceTimer};
 use std::collections::BTreeMap;
 
@@ -48,13 +44,11 @@ pub(crate) fn actions(
 	});
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn editor(
 	ui: &mut egui::Ui,
 	elements: &[Element],
 	values: &mut BTreeMap<String, String>,
 	action: &mut Option<String>,
-	inputs: &mut TextInputStates,
 	avatars: &mut Avatars,
 	state: &client_core::State,
 	activity_status: (&str, bool),
@@ -73,7 +67,7 @@ pub(crate) fn editor(
 		})
 		.collect();
 	if sections.is_empty() {
-		form(ui, elements, values, action, inputs);
+		form(ui, elements, values, action);
 		preview_card(ui, preview, avatars, state, activity_status);
 		return;
 	}
@@ -82,7 +76,7 @@ pub(crate) fn editor(
 		match element {
 			Element::Text { text } => design::hint(ui, text),
 			Element::Heading { .. } => {}
-			_ => form(ui, std::slice::from_ref(element), values, action, inputs),
+			_ => form(ui, std::slice::from_ref(element), values, action),
 		}
 	}
 	ui.add_space(12.0);
@@ -122,7 +116,7 @@ pub(crate) fn editor(
 				egui::vec2(width - 299.0, 0.0),
 				egui::Layout::top_down(egui::Align::Min),
 				|ui| {
-					design::group(ui, title, |ui| form(ui, fields, values, action, inputs));
+					design::group(ui, title, |ui| form(ui, fields, values, action));
 				},
 			);
 			ui.allocate_ui_with_layout(
@@ -134,7 +128,7 @@ pub(crate) fn editor(
 			);
 		});
 	} else {
-		design::group(ui, title, |ui| form(ui, fields, values, action, inputs));
+		design::group(ui, title, |ui| form(ui, fields, values, action));
 		ui.add_space(20.0);
 		preview_card(ui, preview, avatars, state, activity_status);
 	}
@@ -145,7 +139,6 @@ fn form(
 	elements: &[Element],
 	values: &mut BTreeMap<String, String>,
 	action: &mut Option<String>,
-	inputs: &mut TextInputStates,
 ) {
 	for element in elements {
 		if controls(element) || matches!(element, Element::ActivityPreview { .. }) {
@@ -155,15 +148,14 @@ fn form(
 			Element::TextInput { id, label, value } => {
 				let label = design::label(ui, label);
 				let value = values.entry(id.clone()).or_insert_with(|| value.clone());
-				let response = design::input(
+				design::input(
 					ui,
 					egui::TextEdit::singleline(value)
 						.align(egui::Align2::LEFT_CENTER)
-						.id(inputs.id(id))
+						.id_salt(id)
 						.char_limit(1024),
 				)
 				.labelled_by(label.id);
-				inputs.track(&response);
 				ui.add_space(10.0);
 			}
 			Element::Select {
@@ -201,7 +193,7 @@ fn form(
 					*action = Some(id.clone());
 				}
 			}
-			_ => render_elements(ui, std::slice::from_ref(element), values, action, inputs),
+			_ => render_elements(ui, std::slice::from_ref(element), values, action),
 		}
 	}
 }

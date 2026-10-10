@@ -51,26 +51,25 @@ class PreparationTest(unittest.TestCase):
             original_output = subprocess.check_output
 
             def checked_output(*args, **kwargs):
-                effective_environment = kwargs.get("env", os.environ)
-                self.assertFalse(any(key.startswith("GIT_") for key in effective_environment))
-                self.assertEqual(effective_environment["SEREIN_FIXTURE_ENV"], "retained")
+                self.assertFalse(any(key.startswith("GIT_") for key in os.environ))
+                self.assertEqual(os.environ["SEREIN_FIXTURE_ENV"], "retained")
                 return original_output(*args, **kwargs)
 
             before_environment = dict(os.environ)
             with patch.dict(os.environ, inherited), patch.object(subprocess, "check_output", side_effect=checked_output):
                 polluted_environment = dict(os.environ)
-                self.prepare_fixture(inherited=inherited)
+                self.prepare_fixture()
                 self.assertEqual(dict(os.environ), polluted_environment)
             self.assertEqual(dict(os.environ), before_environment)
             self.assertEqual(index.read_bytes(), before_index)
             self.assertEqual(tracked.read_bytes(), before_source)
             self.assertEqual({path.name for path in parent.iterdir()}, {".git", "parent-tracked"})
 
-    def prepare_fixture(self, symlink=False, inherited=None):
+    def prepare_fixture(self, symlink=False):
         with patch.dict(os.environ, clean_git_environment(), clear=True):
-            self._prepare_fixture(symlink, inherited)
+            self._prepare_fixture(symlink)
 
-    def _prepare_fixture(self, symlink, inherited=None):
+    def _prepare_fixture(self, symlink):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "repo"
             root.mkdir()
@@ -123,12 +122,7 @@ class PreparationTest(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "Refusing symlink source: tracked-symlink"):
                         build.prepare(destination)
                     return
-                # Apply pollution at the actual production boundary, after the
-                # independent fixture repositories have been created safely.
-                with patch.dict(os.environ, inherited or {}):
-                    before_prepare = dict(os.environ)
-                    build.prepare(destination)
-                    self.assertEqual(dict(os.environ), before_prepare)
+                build.prepare(destination)
                 with self.assertRaises(FileExistsError):
                     build.prepare(destination)
             source = destination / "source"

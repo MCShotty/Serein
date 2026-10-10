@@ -11,63 +11,14 @@
     "physical_hardware_tested": false,
     "live_discord_used": false
   },
-  "source_hashes": {
-    "scripts/build-ffmpeg.py": {
-      "before_sha256": "ea7bd8065ab55f79fd5e78b82e8dd769e74e02a02e383e9f9f2e25a7b2e9a250",
-      "after_sha256": "66296bb089e83f61b6751f9438f7b42bef7a176f6d3ad1c2451fbff137a8ae1f"
-    },
-    "apps/desktop/src/updater.rs": {
-      "before_sha256": "141dd2bcfe0ad3da1330e2162412d2dcaba51a33ddb56c4ddc9ff58e7c49b0bf",
-      "after_sha256": "358994cfe1cf0c88b5288a77a6898ee19ad67c19f4b5de814556acfcadbe7683"
-    },
-    "apps/desktop/src/updater_install.rs": {
-      "before_sha256": "830d12e0f9eeb279ea7a165d12b6ad04a25e1eaf1b20d030039189fe88359871",
-      "after_sha256": "062d8cc6ef9da76963230e3ad84a97b973c088bf22daa4e0400c1924b515cac9"
-    },
-    "crates/model/src/registered_games.rs": {
-      "before_sha256": "a821fab0a28a63c8811a2af85cf4e0363e12e17de5d8067e0e5d0494422d7a76",
-      "after_sha256": "6287f78363fa93241472608a45f0d35dd524a494a6df5e3bb4701a93e58f00b0"
-    },
-    "crates/discord-voice/tests/native/video_amf_split_test.c": {
-      "before_sha256": "e40e204ed091ca89207cf0849efac8e2cd5d382f4f8d02dcfd037ce04db4a579",
-      "after_sha256": "34b519ddcad08ab7876eaf586d4406d2bb27b59f33f6cb240665b37b4d4cd72f"
-    },
-    "packaging/ffmpeg/test_bundle.py": {
-      "before_sha256": "f7f776b1a33c122d538eca3f4d28948118e3e8a47c9e4c53a5fe0660b3e75b69",
-      "after_sha256": "f5f14442af8879794550fa7871ad0eeef2c405646f901ef0fd441deca3a56b8f"
-    },
-    "tests/xtask-package.cjs": {
-      "before_sha256": "95dfbc5ee32bddad34a5e75f4cdb68da58970ad5eb206c2ecc4958685caa978e",
-      "after_sha256": "0f4a8beb124cee6924a23ec10ab4c6a6e52814ce958b6c7c609ef9b3dc880df8"
-    }
-  },
-  "resource_checks": [
-    {
-      "metric": "one owned AMF interface releases",
-      "before": 0,
-      "after": 1,
-      "cases": "both codecs; unexpected owned types returned on success or error"
-    },
-    {
-      "metric": "queued staged directories remaining after updater closure",
-      "before": 1,
-      "after": 0,
-      "samples_each": 1
-    },
-    {
-      "metric": "queued synthetic helper exits within three seconds",
-      "before": false,
-      "after": true,
-      "samples_each": 1,
-      "baseline_fixture_manually_killed_after_timeout": true
-    },
-    {
-      "metric": "maximum accepted normalized executable bytes",
-      "before": "can exceed 256 after Unicode expansion",
-      "after": 256,
-      "valid_boundary_fixture_bytes": 255
-    }
+  "unmeasured": [
+    "full executable/installed/compressed package size",
+    "native idle CPU and process RSS",
+    "frame/startup latency",
+    "hardware split throughput/quality",
+    "Windows/macOS runtime and full desktop/transport integration"
   ],
+  "split_provenance": "Historical evidence from the original combined PR, separated by scope. The recorded revision labels, hashes and measurements are unchanged; these results do not validate the new branch heads.",
   "diagnostic_ffmpeg": {
     "version": "7.1.5",
     "after_prefix": "/tmp/serein-split-source/after-prefix",
@@ -141,29 +92,37 @@
     ],
     "baseline_prefix_at_measurement": "/tmp/serein-split-source/after-prefix"
   },
+  "resource_checks": [
+    {
+      "metric": "one owned AMF interface releases",
+      "before": 0,
+      "after": 1,
+      "cases": "both codecs; unexpected owned types returned on success or error"
+    }
+  ],
+  "source_hashes": {
+    "scripts/build-ffmpeg.py": {
+      "before_sha256": "ea7bd8065ab55f79fd5e78b82e8dd769e74e02a02e383e9f9f2e25a7b2e9a250",
+      "after_sha256": "66296bb089e83f61b6751f9438f7b42bef7a176f6d3ad1c2451fbff137a8ae1f"
+    },
+    "crates/discord-voice/tests/native/video_amf_split_test.c": {
+      "before_sha256": "e40e204ed091ca89207cf0849efac8e2cd5d382f4f8d02dcfd037ce04db4a579",
+      "after_sha256": "34b519ddcad08ab7876eaf586d4406d2bb27b59f33f6cb240665b37b4d4cd72f"
+    },
+    "packaging/ffmpeg/test_bundle.py": {
+      "before_sha256": "f7f776b1a33c122d538eca3f4d28948118e3e8a47c9e4c53a5fe0660b3e75b69",
+      "after_sha256": "f5f14442af8879794550fa7871ad0eeef2c405646f901ef0fd441deca3a56b8f"
+    }
+  },
   "verification": {
-    "six_crate_unit_tests_passed": 779,
-    "six_crate_tests_ignored": 11,
-    "scoped_updater_tests_passed": 8,
-    "scoped_strict_clippy": "passed",
     "native_encoding_queries": "passed",
     "address_undefined_leak_sanitizers": "passed; C++ C-ABI mock excludes vptr only",
     "ffmpeg_patch_roundtrip": "passed",
     "packaging_tests_passed": 19,
     "packaging_tests_skipped": 3,
-    "xtask_workspace_fixture": "passed",
-    "xtask_package_fixture": "passed",
-    "persistence_policy": "passed",
     "format_and_syntax": "passed",
     "xtask_check": "blocked: GLib >=2.70 development metadata missing",
     "xtask_package": "blocked: GLib >=2.70 development metadata missing",
     "licenses": "blocked: cargo-deny 0.20.2 unavailable"
-  },
-  "unmeasured": [
-    "full executable/installed/compressed package size",
-    "native idle CPU and process RSS",
-    "frame/startup latency",
-    "hardware split throughput/quality",
-    "Windows/macOS runtime and full desktop/transport integration"
-  ]
+  }
 }

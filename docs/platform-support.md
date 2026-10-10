@@ -184,8 +184,9 @@ Apple Color Emoji was visually checked with a synthetic moon status on September
 Outgoing in-call capture uses AVFoundation on macOS, Media Foundation and DirectShow on Windows,
 and V4L2 on Linux. The existing camera button becomes available after the voice
 server negotiates the selected codec; capture starts only after an explicit click in a connected
-call. All adapters send 640×480 video at most 15 encoded frames/s. Native capture now
-selects the closest supported dimensions/rate within a 1280×720 input ceiling
+call. The default is 640×480 at 15 encoded frames/s; saved camera presets select
+up to 8K and 60 fps where the native device and encoder support them. Native capture
+selects supported dimensions/rate within the selected preset's input ceiling
 (DirectShow preserves its existing 1920×1080 fallback) and
 converts to the existing encoder size; hardware negotiation remains unverified.
 Windows needs desktop camera permission; Linux needs an accessible streaming

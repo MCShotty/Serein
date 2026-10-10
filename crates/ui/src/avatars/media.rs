@@ -527,6 +527,7 @@ impl MediaLibrary {
 		index: usize,
 		ctx: &egui::Context,
 		playing: bool,
+		lane: Lane,
 		pass: u64,
 	) -> Option<TextureHandle> {
 		self.clock += 1;
@@ -534,7 +535,9 @@ impl MediaLibrary {
 		held.used = self.clock;
 		held.painted = Instant::now();
 		held.painted_pass = pass;
-		// Borrowing viewer pixels for a thumbnail must not move them out of the viewer budget.
+		if lane == Lane::Inline {
+			held.lane = Lane::Inline;
+		}
 		Some(match &mut held.pixels {
 			Pixels::Still(still) => still.clone(),
 			Pixels::Playing { still, animation } => playing
@@ -599,9 +602,6 @@ impl MediaLibrary {
 		let pool = match slot.index(motion, size) {
 			Some(index) => {
 				let held = &mut slot.held[index];
-				if lane == Lane::Inline {
-					held.lane = Lane::Inline;
-				}
 				match &mut held.pixels {
 					Pixels::Still(still) | Pixels::Playing { still, .. } => *still = texture,
 				}
@@ -693,9 +693,6 @@ impl MediaLibrary {
 		}
 		let started = slot.carried_start(size, now);
 		let held = &mut slot.held[index];
-		if lane == Lane::Inline {
-			held.lane = Lane::Inline;
-		}
 		let still = match &held.pixels {
 			Pixels::Still(still) | Pixels::Playing { still, .. } => still.clone(),
 		};
@@ -1188,7 +1185,10 @@ impl Avatars {
 				.slot(&source)
 				.record(want.motion, want.size, Attempt::Pending);
 		}
-		let mut texture = |index| self.media.texture(&source, index, ui.ctx(), playing, pass);
+		let mut texture = |index| {
+			self.media
+				.texture(&source, index, ui.ctx(), playing, lane, pass)
+		};
 		let base = choice.base.and_then(&mut texture);
 		let fade = choice
 			.fade

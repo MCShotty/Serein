@@ -354,7 +354,7 @@ impl Voice {
 	pub fn stop(&mut self) {
 		self.video_capabilities.cancel();
 		self.camera_test = None;
-		self.stop_mic_preview();
+		self.mic_preview = None;
 		self.screen.stop();
 		self.watch.stop();
 		self.pending = None;
@@ -362,20 +362,8 @@ impl Voice {
 		if let Some(live) = self.live.take() {
 			live.audio.set_ready(false);
 			live.task.abort();
-			self.retire_audio(live.audio);
+			self.retiring = Some(live.audio.shutdown());
 		}
-	}
-	fn retire_audio(&mut self, audio: Audio) {
-		// Calls and previews share one owner; neither starts during retirement.
-		assert!(self.retiring.is_none(), "previous audio is still retiring");
-		self.retiring = Some(audio.shutdown());
-	}
-	fn stop_mic_preview(&mut self) -> bool {
-		let Some(preview) = self.mic_preview.take() else {
-			return false;
-		};
-		self.retire_audio(preview.audio);
-		true
 	}
 	pub fn stop_camera(&mut self) {
 		if let Some(camera) = &self.camera {
@@ -404,7 +392,11 @@ impl Voice {
 			self.retiring = None;
 		}
 	}
-	pub fn begin(
+	#[cfg(test)]
+	fn begin(&mut self, state: &State, ring: bool) -> Result<(), &'static str> {
+		self.begin_with_video(state, ring, Default::default())
+	}
+	pub fn begin_with_video(
 		&mut self,
 		state: &State,
 		ring: bool,
@@ -414,9 +406,9 @@ impl Voice {
 			return Err("Stable video encoding supports H.264 only");
 		}
 		self.camera_test = None;
-		let preview_retired = self.stop_mic_preview();
+		self.mic_preview = None;
 		self.reap();
-		if self.retiring.is_some() && !preview_retired {
+		if self.retiring.is_some() {
 			return Err("Previous audio devices are still closing; try again shortly");
 		}
 		if self.pending.is_some() || self.live.is_some() {
@@ -665,18 +657,15 @@ impl Voice {
 		ctx: &egui::Context,
 	) -> Option<Command> {
 		self.reap();
-		self.video_capabilities
-			.poll_on_adapter(state.demo, ui, ctx, self.video_adapter);
-		self.poll_mic_preview(state, ui, ctx);
 		ui.voice_switch_ready =
 			self.pending.is_none() && self.live.is_none() && self.retiring.is_none();
-		if self.retiring.is_some() {
-			ctx.request_repaint_after(Duration::from_millis(50));
-		}
+		self.poll_mic_preview(state, ui, ctx);
 		self.poll_camera_test(state, ui, ctx);
 		ui.voice_speaking.clear();
 		ui.voice_microphone_unavailable = false;
 		self.poll_camera_devices(state.demo, ui, ctx);
+		self.video_capabilities
+			.poll_on_adapter(state.demo, ui, ctx, self.video_adapter);
 		if ui.voice_refresh_devices {
 			ui.voice_refresh_devices = false;
 			if !state.demo && self.device_scan.is_none() {
@@ -792,6 +781,9 @@ impl Voice {
 				return self.fail(state, error);
 			}
 		}
+		if self.pending.is_some() && self.retiring.is_some() {
+			ctx.request_repaint_after(Duration::from_millis(50));
+		}
 		let mut failure = None;
 		let mut command = None;
 		if let Some(live) = &mut self.live {
@@ -818,10 +810,8 @@ impl Voice {
 				.effective()
 				.sensitivity_db
 				.unwrap_or(-70);
-			let capture_generation = live.audio.capture_generation();
 			live.controls.send_if_modified(|control| {
 				if control.muted == muted
-					&& control.capture_generation == capture_generation
 					&& control.deafened == deafened
 					&& control.user_volumes == user_volumes
 					&& control.stream_volume == stream_volume
@@ -830,7 +820,6 @@ impl Voice {
 					false
 				} else {
 					control.muted = muted;
-					control.capture_generation = capture_generation;
 					control.deafened = deafened;
 					control.user_volumes = user_volumes;
 					control.stream_volume = stream_volume;
@@ -899,16 +888,6 @@ impl Voice {
 					Notice::DeviceReady | Notice::RemoteAudio => {}
 				}
 			}
-			// Security notices above can advance privacy after the regular controls snapshot.
-			let capture_generation = live.audio.capture_generation();
-			live.controls.send_if_modified(|control| {
-				if control.capture_generation == capture_generation {
-					false
-				} else {
-					control.capture_generation = capture_generation;
-					true
-				}
-			});
 			if live.negotiation.is_none() && live.waiting_for_peer {
 				state.apply_voice(voice::Event::Progress {
 					channel: live.channel,
@@ -1122,14 +1101,8 @@ impl Voice {
 			if self.mic_preview.is_some() {
 				ui.voice_preview_status = "";
 			}
-			self.stop_mic_preview();
+			self.mic_preview = None;
 			ui.voice_preview_level = None;
-			return;
-		}
-		if self.retiring.is_some() {
-			ui.voice_preview_level = None;
-			ui.voice_preview_status = "Previous audio devices are still closing…";
-			ctx.request_repaint_after(Duration::from_millis(50));
 			return;
 		}
 		if self.mic_preview.is_none() {
@@ -1199,7 +1172,7 @@ impl Voice {
 			ui.voice_preview_requested = false;
 			ui.voice_preview_level = None;
 			ui.voice_preview_status = error;
-			self.stop_mic_preview();
+			self.mic_preview = None;
 			return;
 		}
 		ui.voice_preview_level = Some(preview.audio.preview_level_db());
@@ -1502,8 +1475,6 @@ impl Voice {
 				wake.request_repaint();
 			},
 		)?;
-		audio.set_controls(listen_only || ui.voice_push_to_talk, false);
-		audio.set_input_enabled(input_enabled);
 		let (controls, control_receive) = watch::channel(Controls {
 			activity_threshold_db: ui
 				.voice_processing
@@ -1511,7 +1482,6 @@ impl Voice {
 				.sensitivity_db
 				.unwrap_or(-70),
 			muted: listen_only || ui.voice_push_to_talk,
-			capture_generation: audio.capture_generation(),
 			camera: 0,
 			video: pending.video_settings,
 			deafened: false,
@@ -1530,6 +1500,8 @@ impl Voice {
 				picture_wake.request_repaint();
 			}
 		});
+		audio.set_controls(listen_only || ui.voice_push_to_talk, false);
+		audio.set_input_enabled(input_enabled);
 		audio.set_processing(ui.voice_processing.effective());
 		audio.set_gain(ui.voice_gain.input_percent, ui.voice_gain.output_percent);
 		let session = Secret::new(
@@ -1899,65 +1871,6 @@ mod tests {
 	}
 
 	#[test]
-	#[allow(clippy::field_reassign_with_default)] // Voice implements Drop, so struct update cannot move its fields.
-	fn stopping_microphone_preview_tracks_the_actual_audio_completion() {
-		// The initial ready=false gate keeps this worker away from device discovery.
-		let audio = Audio::preview(Devices::default(), |_| {}).unwrap();
-		let gate = audio.gate.clone();
-		let mut manager = Voice::default();
-		manager.mic_preview = Some(MicPreview {
-			audio,
-			devices: Devices::default(),
-			failure: Arc::new(OnceLock::new()),
-			started: Instant::now(),
-		});
-		assert!(manager.stop_mic_preview());
-		assert!(manager.mic_preview.is_none() && manager.retiring.is_some());
-		assert!(!gate.ready.load(std::sync::atomic::Ordering::Acquire));
-		assert!(!manager.stop_mic_preview());
-		manager.stop(); // Repeated stops preserve the same completion receiver.
-		manager
-			.retiring
-			.take()
-			.unwrap()
-			.recv_timeout(Duration::from_secs(2))
-			.unwrap();
-	}
-
-	#[test]
-	#[allow(clippy::field_reassign_with_default)] // Voice implements Drop; MessagingUi has private fields.
-	fn stalled_audio_retirement_blocks_preview_restarts_and_call_opening() {
-		let mut state = test_support::demo_state();
-		state.demo = false;
-		let mut view = ui::MessagingUi::default();
-		view.voice_available = true;
-		view.preview_settings("voice");
-		let ctx = egui::Context::default();
-		let (finish, completion) = mpsc::sync_channel(1);
-		let mut manager = Voice::default();
-		manager.retiring = Some(completion);
-		for _ in 0..16 {
-			view.voice_preview_requested = true;
-			manager.poll_mic_preview(&state, &mut view, &ctx);
-			assert!(manager.mic_preview.is_none() && manager.retiring.is_some());
-			assert!(view.voice_preview_status.contains("closing"));
-			view.voice_preview_requested = false;
-			manager.poll_mic_preview(&state, &mut view, &ctx);
-			manager.stop();
-			manager.reap();
-			assert!(manager.retiring.is_some());
-		}
-		state.start_call(Id(22), false).unwrap();
-		assert!(manager.begin(&state, false, Default::default()).is_err());
-		assert!(manager.pending.is_none() && manager.live.is_none());
-		finish.send(()).unwrap();
-		manager.reap();
-		assert!(manager.retiring.is_none());
-		manager.begin(&state, false, Default::default()).unwrap();
-		assert!(manager.pending.is_some() && manager.live.is_none());
-	}
-
-	#[test]
 	fn call_cues_track_joins_and_departures_without_reconnect_noise() {
 		debug_call_cues_check();
 	}
@@ -2214,7 +2127,7 @@ mod tests {
 			}
 			state.start_call(Id(22), true).unwrap();
 			let mut manager = Voice::default();
-			manager.begin(&state, true, Default::default()).unwrap();
+			manager.begin(&state, true).unwrap();
 			let pending = manager.pending.as_ref().unwrap();
 			assert_eq!(pending.guild, None);
 			assert_eq!(pending.peer, (kind == 1).then_some(peer));
@@ -2247,7 +2160,7 @@ mod tests {
 		let mut manager = Voice::default();
 		assert!(
 			manager
-				.begin(
+				.begin_with_video(
 					&state,
 					true,
 					VideoSettings {
@@ -2258,7 +2171,7 @@ mod tests {
 				.is_err()
 		);
 		assert!(manager.pending.is_none());
-		manager.begin(&state, true, selected).unwrap();
+		manager.begin_with_video(&state, true, selected).unwrap();
 		assert_eq!(manager.pending.as_ref().unwrap().video_settings, selected);
 		assert!(manager.live.is_none() && manager.camera.is_none());
 	}
@@ -2273,7 +2186,7 @@ mod tests {
 			Command::Voice(voice::Command::Join { ring: false, .. })
 		));
 		let mut manager = Voice::default();
-		manager.begin(&state, true, Default::default()).unwrap();
+		manager.begin(&state, true).unwrap();
 		let pending = manager.pending.as_ref().unwrap();
 		assert_eq!(pending.guild, Some(Id(10)));
 		assert_eq!(pending.peer, None);
@@ -2293,7 +2206,7 @@ mod tests {
 		state.demo = false;
 		state.start_call(Id(25), false).unwrap();
 		let mut manager = Voice::default();
-		manager.begin(&state, false, Default::default()).unwrap();
+		manager.begin(&state, false).unwrap();
 		state.disconnect_voice("Discord gateway connection lost; rejoin after reconnecting");
 		let mut ui = ui::MessagingUi::default();
 		let context = egui::Context::default();
@@ -2307,7 +2220,7 @@ mod tests {
 		assert!(manager.pending.is_none());
 		state.leave_call();
 		state.start_call(Id(25), false).unwrap();
-		manager.begin(&state, false, Default::default()).unwrap();
+		manager.begin(&state, false).unwrap();
 		state.generation += 1;
 		assert!(
 			manager
@@ -2343,7 +2256,7 @@ mod tests {
 		state.start_call(Id(22), false).unwrap();
 		let request = state.voice.active.as_ref().unwrap().request;
 		let mut manager = Voice::default();
-		manager.begin(&state, false, Default::default()).unwrap();
+		manager.begin(&state, false).unwrap();
 		let mut stale = Event::Voice(voice::Event::TakenOver {
 			channel: Id(22),
 			request: request + 1,
@@ -2368,7 +2281,7 @@ mod tests {
 				.is_none()
 		);
 		assert!(state.start_call(Id(22), false).is_some());
-		assert!(manager.begin(&state, false, Default::default()).is_ok());
+		assert!(manager.begin(&state, false).is_ok());
 	}
 	#[test]
 	fn confirmation_failure_abandons_only_the_current_unconfirmed_candidate() {
@@ -2378,7 +2291,7 @@ mod tests {
 		state.start_call(Id(22), false).unwrap();
 		let request = state.voice.active.as_ref().unwrap().request;
 		let mut manager = Voice::default();
-		manager.begin(&state, false, Default::default()).unwrap();
+		manager.begin(&state, false).unwrap();
 		let pending = manager.pending.as_mut().unwrap();
 		pending.session = Some(Secret::new("synthetic-session".into()).unwrap());
 		pending.server = Some((
@@ -2493,7 +2406,7 @@ mod tests {
 		let request = state.voice.active.as_ref().unwrap().request;
 		let auth = state.auth;
 		let mut manager = Voice::default();
-		manager.begin(&state, false, Default::default()).unwrap();
+		manager.begin(&state, false).unwrap();
 		let mut pending = manager.pending.take().unwrap();
 		pending.session = Some(Secret::new("synthetic-session".into()).unwrap());
 		pending.server = Some((
@@ -2611,7 +2524,7 @@ mod tests {
 			state.start_call(Id(22), true).unwrap();
 			let request = state.voice.active.as_ref().unwrap().request;
 			let mut manager = Voice::default();
-			manager.begin(&state, true, Default::default()).unwrap();
+			manager.begin(&state, true).unwrap();
 			let started = manager.pending.as_ref().unwrap().started;
 			let session = |id: &str, revision| {
 				Event::Voice(voice::Event::State {
@@ -2751,7 +2664,7 @@ mod tests {
 		state.start_call(Id(22), false).unwrap();
 		let request = state.voice.active.as_ref().unwrap().request;
 		let mut manager = Voice::default();
-		manager.begin(&state, false, Default::default()).unwrap();
+		manager.begin(&state, false).unwrap();
 		assert!(
 			matches!(manager.fail(&mut state, "Synthetic startup failure"), Some(Command::Voice(voice::Command::AbandonSession { channel:Id(22), request:r })) if r == request)
 		);
@@ -2767,7 +2680,7 @@ mod tests {
 		state.start_call(Id(22), true).unwrap();
 		let request = state.voice.active.as_ref().unwrap().request;
 		let mut manager = Voice::default();
-		manager.begin(&state, true, Default::default()).unwrap();
+		manager.begin(&state, true).unwrap();
 		let mut stale = Event::Voice(voice::Event::Server {
 			channel: Id(22),
 			request: request + 1,

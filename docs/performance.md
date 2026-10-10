@@ -4,20 +4,6 @@ Recent synthetic/offline measurements are workload-specific. They do not establi
 performance, universal device results or application-wide memory bounds. The older upstream PR screenshot,
 log and per-run evidence archive has been removed; the summaries below retain the useful results.
 
-## Attachment picker and draft removal — October 10, 2026
-
-Starting from `b6d608bb`, with upstream `0d9c6772` merged, four offline regressions
-fail before the attachment fixes and pass afterwards. The complete upload module's
-15 tests and one headless tray/card interaction fixture pass. Current upload,
-model/core/session/protocol/API and picker/HEIC source is rebuilt against cached
-external dependencies; the tray fixture extracts current methods and uses cached
-UI helpers. Preview cancellation returns its job/byte permits and preserves the
-previous upload; no queue, resource budget or persistence is added. These are
-scoped correctness/resource checks, not full application or performance evidence.
-Current release package sizes, native screenshots, CPU/RSS and frame latency are
-unmeasured: the shared Cargo build-cache lock is not writable, disk space prevents
-a fresh full cache, and native window capture tools are unavailable.
-
 ## Windows FFmpeg integration package - October 8, 2026
 
 Matched standard release builds compare baseline `1b3e4a7b` with runtime integration
@@ -52,21 +38,9 @@ build blockers. They do not replace current-device testing.
 
 ## Runtime resource cleanup — October 8, 2026
 
-Against `98158b4`, offline regressions reproduced an unreleased AMF property
-interface and updater results retaining a staged directory or inert helper
-after app closure. AMF variants now clear on every exit; queued updater results
-retain cleanup ownership until accepted. The interface release count changes
-from 0 to 1, the remaining staged-directory count from 1 to 0, and the helper
-exits within the fixture's three-second bound after the fix. These are
-deterministic resource checks, not latency or whole-app memory measurements.
+Historical evidence from the original combined PR, separated by scope. The recorded revision labels, hashes and measurements are unchanged; these results do not validate the new branch heads.
 
-Matched optimized FFmpeg 7.1.5 diagnostic libraries remain 761,696 B
-(libavcodec) and 846,680 B (libavutil). Both changed AMF wrappers were rebuilt;
-libavcodec's hash changes despite its unchanged file size. Full executable,
-installed/compressed package, idle CPU/RSS and physical GPU throughput remain
-unmeasured because the native app build lacks GLib development metadata. The
-[resource hunt evidence](pr-evidence/runtime-resource-hunt/README.md) records
-source/library hashes, configuration, failed baseline regressions and scope.
+Against `98158b4`, an offline regression reproduced an unreleased AMF property interface. Both variants now clear on every exit: the release count changes from 0 to 1. Matched optimized FFmpeg 7.1.5 diagnostic libraries remain 761,696 B (libavcodec) and 846,680 B (libavutil). Both AMF wrappers were rebuilt and the codec hash changes. See [the resource evidence](pr-evidence/runtime-resource-hunt/README.md). These are resource checks, not physical encoder or whole-app performance measurements.
 
 ## Long-session live memory inspection — October 9, 2026
 
@@ -138,6 +112,90 @@ sum all app files, and distribution ZIPs use `ditto -c -k --sequesterRsrc --keep
 | Distribution ZIP | 48,255,410 B | 48,255,390 B | -20 B (-0.000041%) |
 
 These package deltas are negligible. Both packages were locally ad-hoc signed, not notarized.
+
+## Allocation-stack follow-up and idle artwork — October 10, 2026
+
+The owner's restarted current-main build (`0d9c6772`, optimized release with
+matching Rust symbols and `MallocStackLogging=lite`) was inspected after normal
+server, image, profile, call and streaming activity. No agent-driven messages,
+calls or microphone capture were performed. At roughly four minutes the process
+footprint was 290.4 MiB (503.3 MiB peak), with 67.0 MiB live malloc allocations.
+Graphics regions included 150.6 MiB owned unmapped backing, about 27 MiB IOSurface
+and 1.6 MiB IOAccelerator. The malloc-zone report also included 69.6 MiB dirty
+fragmentation/slack and 16.2 MiB profiling-tool data. These categories use
+different accounting rules; they must not be added to derive footprint.
+
+Allocation stacks identified 18.6 MiB for `ui::fonts::install_cjk` and 16.0 MiB
+for epaint's CPU glyph atlas. The two large worker groups from the earlier
+October 7 binary were absent. The previous 501.3-MiB and current 290.4-MiB live
+captures had different activity and duration: they are diagnostic snapshots,
+not a controlled improvement benchmark. Stack logging adds observer overhead.
+Only addresses/stacks and summaries were captured, never allocation contents;
+the sorted allocation report was capped at 16 MiB.
+
+The leak scanner flagged 40,016 bytes in 440 blocks. Most belonged to macOS
+AppIntents/XPC cycles; about 13 KiB traced to RNNoise's easyfft/generic_singleton
+thread-local FFT planner cache. Its dependency deliberately uses `Box::leak`;
+this small per-worker retention remains and is not fixed by artwork expiry.
+
+Avatar/banner/activity/sticker/picker textures and custom/high-resolution emoji
+textures previously stayed until their item/byte pools filled. They now expire
+after 60 seconds without use, using the existing host maintenance deadline.
+Visible and cached composer artwork refreshes the deadline. Composer layout only
+reads cached still textures; it neither refreshes nor requests clipped assets.
+Timeline custom/shared artwork and jumbo Unicode emoji resolve only for visible
+slots, so leading overscan rows cannot retain or repeatedly reload them. Expired
+artwork uses the normal bounded worker/disk-cache path when painted again.
+Existing 64-MiB artwork and 16-MiB emoji ceilings are unchanged.
+
+The ignored `avatars::tests::idle_artwork_workload` compares optimized release
+unit-test builds with the pinned Rust 1.98.1 toolchain and lockfile on macOS
+27.0.1 / Apple M1 Pro / 16 GiB RAM. The new harness was first run on unmodified baseline source before applying
+the runtime change. The same workload submits 932 synthetic
+64×64 RGBA textures without draining the existing 128-request batch, so only
+128 avatar textures are admitted. It advances the maintenance clock by 61
+seconds, with one warmup and three measured runs per build. All runs agree.
+This measures retained texture payload accounting without a window or network,
+not GPU allocation, process RSS, peak decoding memory or latency. Release samples
+are reused from initial implementation `2b60dd8c`; the review follow-up changes
+layout/paint access, not expiry accounting. One run of the final debug test binary
+confirmed the same 2,097,152 B peak and zero settled payload. A redundant optimized
+UI-test rebuild was stopped during compilation; it produced no new release sample.
+Separate UI
+regressions cover both cache pools, clipped/visible artwork, reloads and cached
+composer image painting. Native before/after process and GPU measurements are
+unmeasured; attempted standard-package `--demo` processes exited before a valid
+native sample could be captured. Their exit cause was not established and no
+zero-RSS result is used as evidence.
+
+| Texture payload metric | Baseline | After | Delta |
+| --- | ---: | ---: | ---: |
+| Peak admitted payload | 2,097,152 B | 2,097,152 B | 0 B |
+| Payload after idle maintenance | 2,097,152 B | 0 B | -2,097,152 B / -100% |
+| Retained cache entries after idle maintenance | 128 | 0 | -128 |
+
+GPU drivers and allocators may reserve freed resources; these payload reductions
+are not an equal whole-process RAM reduction guarantee. Returning after expiry
+can re-decode cached artwork or fetch it again after a disk-cache miss. Font
+storage and the shared Unicode emoji atlas retain their existing lifetimes.
+
+The standard voice-inclusive package was rebuilt without demo/developer features.
+The preserved baseline is the verified PR #618 package at `c16cb2df`, whose source
+tree matches starting main `0d9c6772`; its executable hash was checked against
+the baseline copy before comparison. This is a reused baseline, not a simultaneous
+fresh package build. Both use the pinned release profile and lockfile.
+
+| Package metric | Baseline | After | Delta | Method |
+| --- | ---: | ---: | ---: | --- |
+| Executable | 68,657,536 B | 68,657,536 B | +0 B | Mach-O file length |
+| Installed bundle | 74,695,871 B | 74,695,871 B | +0 B | Sum of bundle file lengths |
+| ZIP | 48,255,390 B | 48,261,871 B | +6,481 B / +0.0134% | ditto -c -k --sequesterRsrc --keepParent |
+
+The ZIP difference is small compression/signing noise, not a meaningful package
+improvement. The local package is ad-hoc signed, not notarized. Full workspace
+checking passes (1,234 tests, zero failures), including formatting, strict Clippy
+and policy checks. Linux/Windows runtime behavior and a controlled live-account
+soak after this new artwork change remain unmeasured.
 
 ## Gateway resume fallback — October 8, 2026
 
@@ -499,54 +557,6 @@ incoming decoding remains H.264. Physical GPUs/capture, official-client live
 compatibility (including AV1 DAVE framing), Windows/macOS, actual Nix/Flatpak
 packages, dedicated license CI and remote checks remain unverified.
 
-## Repository-wide lifecycle and state bug hunt — October 5, 2026
-
-Compare the verified local starting commit `b6c32b6ddfa3bef63f01bc9b101de5aa20203017`
-with the repository-wide bug-hunt fixes. The baseline and after binaries were built
-from isolated worktrees with locked dependencies. Testing used synthetic offline data
-and did not require an account, physical capture device or GPU. Raw samples, artifact
-identities and environment details are in the
-[bug-hunt measurements](pr-evidence/repository-bug-hunt/measurements.json).
-
-| Metric / method | Baseline | After | Delta |
-| --- | ---: | ---: | ---: |
-| Standard executable, bytes | 85,746,216 | 85,796,648 | 50,432 / +0.059% |
-| Installed regular files, bytes | 120,976,132 | 121,026,564 | 50,432 / +0.042% |
-| Compressed DEB, bytes | 70,795,724 | 70,809,936 | 14,212 / +0.020% |
-| Reducer replay median, 100,000 events | 79.729 ms | 80.958 ms | 1.229 ms / +1.54% |
-| Appearance idle mean CPU, one core | 360.955% | 347.380% | -13.575 percentage points / -3.76% |
-| Appearance idle sampled peak RSS | 192.594 MiB | 194.070 MiB | 1.477 MiB / +0.77% |
-
-The environment was Debian 13.7 on Linux 6.18.44 x86_64, Intel Xeon Platinum
-8573C, five visible logical CPUs, 18,882,699,264 bytes RAM and Rust 1.98.1.
-The standard `cargo xtask package` build used the normal release profile and
-passed the 248-file DEB smoke covering its executable, desktop entry, metadata,
-ownership, content and host shared-library closure. Installed size sums regular
-file content and excludes filesystem allocation and symlink overhead.
-
-The reducer benchmark replays 100,000 deterministic gateway events into a fresh
-process. After one warmup per revision, five baseline/after pairs alternated order.
-Baseline samples ranged from 73.512 to 111.762 ms and after samples from 75.801 to
-94.434 ms. Both revisions retained 500 records with an estimated timeline size of
-331,992 to 332,477 bytes. The overlapping ranges and 1.54% median difference are
-consistent with run-to-run noise, so no reducer regression or improvement is
-claimed.
-
-The native idle check used the release `profile_preview` example with demo data on
-the Appearance page at 1120×760 under Xvfb and Mesa lavapipe Vulkan. Each revision
-warmed for eight seconds, settled for three seconds after pointer movement, then
-recorded twenty one-second CPU and RSS samples. Neither process spawned children.
-After mean CPU was 13.575 percentage points lower and sampled RSS was 1,548,288
-bytes higher. This single software-renderer pair does not establish a performance
-change; frame timing, GPU memory and active media workloads remain unmeasured.
-
-`cargo xtask check` passed the full workspace tests, strict all-target Clippy,
-documentation, no-default-feature build and policy checks. Focused GStreamer,
-voice, packaging and repository-script tests also passed, followed by the standard
-package smoke. Native Windows/macOS builds, physical GPU and capture devices, live
-accounts, live Wayland compositor events and extended soak testing remain
-unverified.
-
 ## Encoder build and Windows update regression fixes — October 5, 2026
 
 Compare the verified package from starting commit
@@ -640,52 +650,13 @@ check the earlier all-balanced AMF policy from the initial normal-modes change.
 
 UI baseline `be644d9064e0b53caf6db103037c8a48a5c7baa8` already contains the normal
 encoder modes above. This change keeps AMF AV1 balanced and selects HEVC
-`usage=high_quality, quality=quality`, while fixing responsive native controls
-and moving video encoding below the camera settings. The pinned FFmpeg shim
+`usage=high_quality, quality=quality`, and moves video encoding below the camera settings. The pinned FFmpeg shim
 passes its strict C compilation and 20 actual AVOption configurations. Both
 330-picture software streams decode without errors. Physical GPU encoding,
 driver compatibility, quality and throughput remain unverified; software checks
 do not measure the HEVC preset's hardware cost.
 
-[Raw samples and source hashes](pr-evidence/amd-quality-ui/measurements.json) and
-[reproduction scripts](pr-evidence/amd-quality-ui/README.md) record a fresh native
-before/after comparison. Environment: Debian 13 x86-64, Xeon Platinum 8573C,
-five visible CPUs, 17 GiB RAM, Rust 1.98.1, eframe/wgpu under Xvfb with
-`WGPU_BACKEND=gl` and Mesa software output. Both builds use the same isolated
-native preview, `dev` profile with optimization level 1 and no debug info, actual
-UI code, synthetic long-name reply fixture, dark appearance, 1120x760 pixels
-and 100% zoom. Tray/startup availability is fixed to false; the helper contains
-no service or capture adapters. These are development preview measurements,
-not standard release/package measurements.
-
-Compilation stopped before sampling. One run per revision warms up for three
-seconds, then samples process RSS once per second for 15 seconds and computes
-aggregate CPU time over that interval. Neither process had children.
-
-| Metric / method | Baseline | After | Delta |
-| --- | ---: | ---: | ---: |
-| Idle CPU, percentage of one core | 0.00% | 0.00% | Below process-timer resolution |
-| Post-warmup sampled peak/settled RSS | 192,663,552 bytes | 191,758,336 bytes | -905,216 bytes / -0.47% |
-| Isolated development preview executable | 83,176,272 bytes | 83,183,560 bytes | +7,288 bytes / +0.009% |
-
-The small RSS difference is noise from one short paired sample; no memory or
-speed improvement is claimed. Startup peak, frame/startup latency, sustained
-load, leak soaks and GPU memory remain unmeasured. Native screenshots were
-inspected at 1120x760/100% dark and 760x520/150% light/dark, including scrolling
-to the encoding card and the last Add Friend action. The reply/edit regression
-test also verifies that context controls leave the message input inside the
-viewport. All 417 UI library tests pass (five benchmark tests ignored), and
-strict UI Clippy across all targets passes.
-
-The default workspace-check/package commands hit the inherited read-only debug
-cache. Retrying the workspace check and standard release package in an owned
-target directory reaches the native dependency build and fails because
-`glib-sys` cannot find `glib-2.0.pc`.
-The environment also lacks GTK4/WebKit6 development/runtime dependencies.
-Standard release executable, installed-package and compressed-distribution
-sizes remain unavailable; complete workspace/packaging validation is a CI
-requirement. The development preview sizes above must not be treated as shipped
-package sizes.
+Historical screenshots and FFmpeg checks are in [the evidence](pr-evidence/amd-quality-ui/README.md). The separate reply-layout CPU/RSS measurements follow the bug-fix PR.
 
 ## Linux OpenH264 isolation verification — October 5, 2026
 
@@ -739,51 +710,7 @@ Full-desktop idle CPU/RSS, release/package deltas and frame/startup latency rema
 unmeasured. Each backend/codec check has a 10-second subprocess deadline; a complete
 Linux/Windows scan has at most nine sequential checks and a fixed 13-entry queue.
 
-## Codebase bug hunt — October 5, 2026
-
-Baseline `8a369cc3c71c18d97065dde8197c16d90970ed0a`; see
-[reproduction and raw samples](pr-evidence/codebase-bug-hunt/README.md).
-Debian 13 x86_64, kernel 6.18.44, five visible CPUs, 18,882,699,264 bytes RAM
-and Rust 1.98.1. Standard release `replay-bench` binaries were rebuilt from each
-revision. Each ran once for warmup and five measured times with alternating pair
-order, without concurrent compilation or preview processes. Both replay 100,000
-synthetic events and retain 331,992–332,477 estimated timeline bytes / 500 records.
-
-The isolated native Appearance preview uses actual UI code with `ui/demo`,
-opt-level 1/debug 0, Xvfb, eframe/wgpu and requested GL software rendering
-(`WGPU_BACKEND=gl`, `LIBGL_ALWAYS_SOFTWARE=1`; exact adapter not instrumented).
-Both use 1120 × 760 dark at 100% zoom, a six-second warmup including 100 scroll
-events, then 15 one-second process RSS samples. Aggregate idle CPU is the
-percentage of one core over that interval. Neither preview had children. The
-new synthetic fixture requests Serif after session reset; baseline silently
-retains Inter, while the fixed registry applies Serif.
-
-| Metric / method | Baseline | After | Delta |
-| --- | ---: | ---: | ---: |
-| Release reducer median, five runs | 83.116483 ms | 88.286294 ms | +5.169811 ms / +6.22% |
-| Release replay executable | 1,510,296 bytes | 1,509,592 bytes | −704 bytes / −0.047% |
-| Auxiliary UI sampled peak/settled RSS | 161,026,048 bytes | 161,624,064 bytes | +598,016 bytes / +0.37% |
-| Auxiliary UI idle CPU, one core | 0.00% | 0.00% | Below process-timer resolution |
-| Auxiliary UI executable | 89,526,776 bytes | 89,530,560 bytes | +3,784 bytes / +0.0042% |
-| Full desktop release / installed / compressed package | Unavailable | Unavailable | Missing `glib-2.0.pc` |
-
-Reducer ranges overlap widely: 80.75–123.18 ms before and 82.21–142.91 ms after.
-The single short UI pair and five replay samples do not establish a performance
-improvement or a statistically significant regression. Preview binary sizes
-must not be treated as shipped desktop/package sizes. Frame/startup latency,
-GPU memory, sustained-load/leak soaks and physical media-device cost remain
-unmeasured. Actual voice tests pass with two Linux OpenH264 runtime versions;
-those checks measure correctness, not encoding performance.
-
-The thumbnail fix admits at most two jobs and 32 MiB of source bytes before
-copying/spawning, retaining permits through actual decoder completion. Failed
-placeholder attempts cap at 2,048; per-user video progress tables cap at 16;
-tracked credential-removal IDs cap at eight. These are resource ceilings, not
-process RSS or proof that all application leaks are absent. Standard workspace
-and package checks were attempted and remain blocked at missing GLib development
-metadata; the license-policy command also lacks `cargo-deny`.
-
-### October 6, 2026 — driver discovery and optional encoder tests
+## Driver discovery and optional encoder tests — October 6, 2026
 
 Baseline is upstream feature-PR head `16a09a986b73c7bf6abc3a80559ecdefb919c84a`.
 The change replaces automatic synthetic encodes with vendor driver codec queries,
@@ -994,40 +921,9 @@ The advisory scan still reports inherited unmaintained `ttf-parser 0.25.1`
 (RUSTSEC-2026-0192), reproduced on main. Raw samples, helper exit codes and artifact
 hashes are in [the review record](pr-evidence/pr567-review/results.json).
 
-## Runtime bug hunt — October 7, 2026
+## Native encoder sanitizer checks — October 7, 2026
 
-Compared baseline `8003ae068679fecb67cd02c4bc5e6fbedf37ffee` with this task's
-client-core search corrections. The measured after build uses the working tree
-before adding this documentation; the source blob IDs and binary hashes are in
-[the raw measurements](pr-evidence/runtime-bug-hunt/measurements.json).
-Both actual `replay-bench` binaries use Rust 1.98.1, the pinned lockfile, normal
-release fat LTO and no optional features. The baseline uses a detached worktree;
-both builds share the same writable Cargo cache and target directory, with the
-baseline binary copied aside before building the changed sources.
-
-Host: Linux x86-64, Intel Xeon Platinum 8573C, five exposed logical CPUs and
-17 GiB exposed RAM. After one warmup per binary, five measured runs per binary
-use alternating pair order. No task compiler or native fixture process runs
-during sampling; variation from the shared host remains. The existing workload
-applies 100,000 synthetic message events, checks the 500-record / 4 MiB timeline
-bounds and verifies logout releases retained timeline data.
-
-| Metric / method | Baseline | After | Delta |
-| --- | ---: | ---: | ---: |
-| Reducer elapsed median (five runs) | 99.675228 ms | 95.818134 ms | −3.857094 ms (−3.87%); noisy |
-| Reducer elapsed sample range | 94.165187–106.522434 ms | 87.880852–107.966072 ms | Overlapping ranges |
-| Retained timeline estimate | 331,992–332,477 B / 500 records | 331,992–332,477 B / 500 records | Unchanged |
-| Release replay executable | 1,511,512 B | 1,516,760 B | +5,248 B (+0.3472%) |
-| Standard voice-enabled app, installed and compressed package | Unmeasured | Unmeasured | Missing `glib-2.0.pc` prevents both builds |
-
-This workload does not exercise permission changes with an open search or
-desktop credential/cache failure handling. Its timing is a general reducer
-regression check, with no performance improvement claim. The executable size
-is for the reducer tool, not the installed application. Native UI CPU/RSS,
-startup, search latency and application-wide leak detection are unmeasured.
-The full workspace check and standard package attempt stop at missing GLib
-development metadata. Native before/after screenshots for search retirement
-and account cleanup status are consequently unavailable.
+Historical evidence from the original combined PR, separated by scope. The recorded revision labels, hashes and measurements are unchanged; these results do not validate the new branch heads.
 
 Offline native encoder query/configuration fixtures also pass with AddressSanitizer,
 UndefinedBehaviorSanitizer and leak detection enabled. Both `CC` and `CXX`
@@ -1036,38 +932,6 @@ vptr check is excluded with `-fno-sanitize=vptr`. This covers the compiled
 query/shim fixtures and their synthetic resource counters, not the full app,
 physical vendor drivers or the separately built FFmpeg libraries. No live
 account, microphone, camera or screen capture was used.
-
-## PR #567 upstream conflict resolution — October 7, 2026
-
-Compared the verified release reducer from feature head
-`11abe5a3700cfe0ec734808931d3791922d98b12` with the merged working tree including
-upstream `20230cb91b0117fe4c888d70867fa600704dcad4`. The subsequent upstream
-documentation cleanup `a76e030d749ef558e687bbff6dc592a7dddec244` changes none of
-the measured runtime sources. Both use Rust 1.98.1, normal
-fat LTO and no optional features; the merged build uses the updated upstream
-lockfile. Separate binary paths preserve the baseline. Complete reducer source
-blob IDs, executable hashes, warmups and samples are in
-`docs/pr-evidence/pr567-conflict-resolution/measurements.json`.
-
-Linux / Intel Xeon Platinum 8573C, five exposed logical CPUs, 17 GiB exposed RAM;
-one warmup and five measured runs per binary, with alternating pair order and no
-active task compiler during sampling. The workload replays 100,000 synthetic
-events and verifies the bounded 500-record timeline and logout release.
-
-| Metric | Baseline | Merged | Delta / method |
-| --- | ---: | ---: | --- |
-| Reducer median | 125.050355 ms | 144.784515 ms | +19.734160 ms (+15.78%); wide, overlapping sample ranges |
-| Reducer sample range | 83.038196–158.760550 ms | 122.432188–168.732948 ms | Five samples each; shared-host scheduling noise |
-| Retained timeline estimate | 331,992–332,477 B / 500 records | 331,992–332,477 B / 500 records | Unchanged; not process RSS |
-| Release reducer executable | 1,516,760 B | 1,527,472 B | +10,712 B (+0.71%); not the application package |
-| Standard voice-enabled app / installed / compressed package | Unmeasured | Unmeasured | Both full check and package attempts stop at missing `glib-2.0.pc` |
-
-The measured median increased; the large timing spread prevents attributing that
-change to the merge. No performance improvement is claimed. This reducer does
-not exercise native audio, upload previews, renderer GPU routing or UI latency.
-Full native GUI screenshots, process CPU/RSS, physical hardware encoding and
-live service compatibility remain unverified. Offline audio and upload regressions
-exercise their actual bounded production helpers without opening devices.
 
 ## Two-engine split requests
 
@@ -1138,26 +1002,6 @@ physical encoder performance. Full workspace/package checks hit local disk and
 build-lock limits; whole-app sizes, CPU/RSS and native Windows acceptance are
 unmeasured. The full voice-source tests, strict Clippy, production native option
 fixtures and changed-path sanitizer checks pass.
-
-## Theme command deadline regression
-
-The local bug hunt based on `6451d97` fixes Linux theme detection retaining a
-worker when a descendant keeps the helper's stdout open after its parent exits.
-The existing incremental process reader now bounds stdout and helper completion
-together. With the same inert one-second descendant and 50-ms command deadline,
-the original regression fails and the fixed regression passes.
-
-| Metric | Before | After | Method |
-| --- | ---: | ---: | --- |
-| Fixture process elapsed median | 1013.038 ms | 60.032 ms | One warmup and five samples per binary |
-| Sample range | 1008.951–1021.818 ms | 57.558–63.705 ms | Counterbalanced order, shared Linux host |
-
-[Evidence and raw samples](pr-evidence/theme-command-timeout/README.md) record
-the pinned toolchain, current-source checks and limits. Elapsed time includes
-test startup and demonstrates bounded helper completion; it does not measure
-whole-app theme latency, CPU or RSS. Full executable and installed/compressed
-package sizes remain unmeasured because workspace check/package attempts stop
-at the existing build-cache permission error.
 
 ## Window geometry minimum — October 7, 2026
 

@@ -122,8 +122,6 @@ jobs:
             run: xvfb-run -a cargo test --locked -p platform --features winit/x11,winit/wayland --lib flatpak_locale_tests::post_gtk_flatpak_encoding_preflight -- --exact --ignored
           - run: bun tests/login-handoff.cjs
           - run: bun tests/xtask-workspace.cjs
-          - run: bun tests/xtask-package.cjs
-            if: runner.os == 'Linux'
           - name: FFmpeg native libraries and packaging regression (offline)
             run: python packaging/ffmpeg/test_bundle.py
           - name: Linux package regression

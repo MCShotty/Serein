@@ -1,51 +1,9 @@
-# AMD quality and responsive native controls
+# Historical AMD quality / responsive UI evidence
 
-UI baseline: `be644d9064e0b53caf6db103037c8a48a5c7baa8`. Screenshots use actual
-native eframe/wgpu framebuffers and synthetic fixtures, with the same arguments
-before and after. `voice-bottom-after.png` additionally demonstrates the relocated
-encoding controls at the bottom of the page.
+Historical evidence from the original combined PR, separated by scope. The recorded revision labels, hashes and measurements are unchanged; these results do not validate the new branch heads.
 
-The environment lacks GTK4/WebKit6 libraries needed by the desktop platform crate.
-The isolated preview uses the unchanged desktop `profile_preview.rs` source and
-the real UI crate, fixes tray/startup availability to false, and adds two fixture
-flags: `--zoom` and `--reply` (a long synthetic Unicode author). It has no service,
-microphone or capture adapters. These are development fixtures, not production
-application changes or live Discord sessions.
+Baseline: `be644d9064e0b53caf6db103037c8a48a5c7baa8`. The original synthetic native eframe/wgpu captures use the same fonts, viewport and zoom before/after. They are isolated development previews, not the shipped desktop app.
 
-Prepare and build each revision separately, passing its checkout explicitly:
+`before.png` / `after.png` show AMD encoder settings; `voice-bottom-after.png` shows video controls at the end of Voice & Video. On a configured native host, reproduce using each recorded revision’s `profile_preview --demo --page=voice --video-backend=experimental --video-codec=h265 --width=1120 --height=760`, with `--scroll=100000` for the bottom controls.
 
-```bash
-python3 docs/pr-evidence/amd-quality-ui/prepare-preview.py /tmp/serein-preview /path/to/checkout
-cargo build --offline --manifest-path /tmp/serein-preview/Cargo.toml
-```
-
-Run under an X display with `WGPU_BACKEND=gl`. Replace `PREVIEW` with that revision's
-freshly built binary, and choose a different output path for each revision:
-
-```bash
-PREVIEW=/tmp/serein-preview/target/debug/serein-ui-task-preview
-"$PREVIEW" --demo --page=voice --video-backend=experimental --video-codec=h265 \
-  --width=1120 --height=760 --output=/tmp/voice.png
-"$PREVIEW" --demo --page=voice --video-backend=experimental --video-codec=h265 \
-  --width=1120 --height=760 --scroll=100000 --output=/tmp/voice-bottom.png
-"$PREVIEW" --demo --page=voice --width=760 --height=520 --zoom=1.5 --light \
-  --output=/tmp/settings.png
-"$PREVIEW" --demo --page=friends --tab=add --width=760 --height=520 --zoom=1.5 \
-  --scroll=100000 --output=/tmp/friends.png
-"$PREVIEW" --demo --page=markdown --reply --width=760 --height=520 \
-  --output=/tmp/reply.png
-python3 docs/pr-evidence/amd-quality-ui/sample-native.py "$PREVIEW" REVISION /tmp/native.json
-```
-
-The sampler requires `psutil`. Run it after compilation stops: three seconds of
-warmup, then 15 one-second RSS samples and aggregate process CPU time. There is
-one run per revision. `measurements.json` records runtime source hashes and raw
-samples. Tiny differences are noise; this is a development preview comparison,
-not release performance, startup/frame latency or a memory leak soak test.
-
-The existing `video-normal-modes/encoder-check.c` is compiled with
-`NORMAL=1, HEVC_MAX_QUALITY=1` for the new AMF policy. It resolves actual FFmpeg
-options across 20 Linux configurations, exercises the software ABI, and checks
-forced keyframes and malformed input. Both 330-frame H.264 streams decode without
-errors. It never initializes physical GPUs; AMF quality, throughput and driver
-compatibility remain unmeasured. See `docs/performance.md` for the compiler command.
+The normal-mode C fixture checks 20 FFmpeg option configurations and decodes both 330-frame H.264 streams. Physical AMF quality/throughput is unmeasured. See [measurements.json](measurements.json) for unchanged native configuration results.
