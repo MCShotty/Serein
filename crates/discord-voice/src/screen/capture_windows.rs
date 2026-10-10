@@ -186,9 +186,35 @@ impl GraphicsCaptureApiHandler for Handler {
 pub(crate) struct Capture {
 	control: Option<CaptureControl<Handler, &'static str>>,
 	audio: Option<audio::Audio>,
+	settings: CaptureSettings,
+	frames: SyncSender<RawFrame>,
+	stop: Arc<AtomicBool>,
+	pending: Arc<AtomicBool>,
 }
 
 impl Capture {
+	pub(crate) fn request_frame(
+		&mut self,
+		frames: &std::sync::mpsc::Receiver<RawFrame>,
+	) -> Result<(), &'static str> {
+		if let Some(control) = self.control.take() {
+			control
+				.stop()
+				.map_err(|_| "Screen capture could not be refreshed")?;
+		}
+		while frames.try_recv().is_ok() {}
+		self.pending.store(false, Ordering::Release);
+		let mut capture = Self::start_video(
+			self.settings,
+			self.frames.clone(),
+			self.stop.clone(),
+			self.pending.clone(),
+		)?;
+		capture.audio = self.audio.take();
+		*self = capture;
+		Ok(())
+	}
+
 	pub(crate) fn start(
 		settings: CaptureSettings,
 		frames: SyncSender<RawFrame>,
@@ -201,7 +227,20 @@ impl Capture {
 		if !settings.valid() {
 			return Err("Invalid screen capture settings");
 		}
-		let mut capture = match settings.source {
+		let mut capture = Self::start_video(settings, frames, stop.clone(), pending)?;
+		if let Some(send) = audio {
+			capture.audio = Some(audio::Audio::start(send, stop, ready, audio_epoch)?);
+		}
+		Ok(capture)
+	}
+
+	fn start_video(
+		settings: CaptureSettings,
+		frames: SyncSender<RawFrame>,
+		stop: Arc<AtomicBool>,
+		pending: Arc<AtomicBool>,
+	) -> Result<Self, &'static str> {
+		match settings.source {
 			SourceId::Display(id) => {
 				let monitor = Monitor::enumerate()
 					.map_err(|_| "Displays could not be enumerated")?
@@ -219,12 +258,8 @@ impl Capture {
 				start_item(settings, window, frames, stop.clone(), pending)
 			}
 			#[allow(unreachable_patterns)] // Portal may be absent from platform-scoped models.
-			_ => return Err("The desktop screen picker is available only on Linux"),
-		}?;
-		if let Some(send) = audio {
-			capture.audio = Some(audio::Audio::start(send, stop, ready, audio_epoch)?);
+			_ => Err("The desktop screen picker is available only on Linux"),
 		}
-		Ok(capture)
 	}
 
 	pub(crate) fn failed(&self) -> bool {
@@ -274,9 +309,9 @@ where
 		return Err("Selected source exceeds the 8K capture limit");
 	}
 	let flags = Flags {
-		frames,
-		stop,
-		pending,
+		frames: frames.clone(),
+		stop: stop.clone(),
+		pending: pending.clone(),
 		next_frame: Instant::now(),
 		interval: Duration::from_secs_f64(1.0 / f64::from(settings.fps)),
 	};
@@ -304,6 +339,10 @@ where
 	Ok(Capture {
 		control: Some(control),
 		audio: None,
+		settings,
+		frames,
+		stop,
+		pending,
 	})
 }
 

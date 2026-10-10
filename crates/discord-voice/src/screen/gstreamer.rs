@@ -155,6 +155,16 @@ impl Capture {
 	pub(super) fn set_preview_visible(&self, visible: bool) {
 		self.preview_gate.set_property("drop", !visible);
 	}
+	pub(super) fn request_frame(&self) -> Result<(), &'static str> {
+		// READY flushes queued raw samples and restarts the same approved source.
+		self.pipeline
+			.set_state(gst::State::Ready)
+			.map_err(|_| UNAVAILABLE)?;
+		self.pipeline
+			.set_state(gst::State::Playing)
+			.map_err(|_| UNAVAILABLE)?;
+		Ok(())
+	}
 	pub(super) async fn changed(&self) {
 		let _ = tokio::time::timeout(
 			std::time::Duration::from_millis(100),
@@ -322,6 +332,89 @@ pub(super) fn raw(sample: &gst::Sample) -> Result<RawFrame, &'static str> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn refresh_recaptures_an_idle_source_for_the_pending_keyframe() {
+		gst::init().unwrap();
+		let source = gst::parse::bin_from_description(
+			"videotestsrc name=fixture is-live=true pattern=red ! \
+			capsfilter caps=\"video/x-raw,format=BGRA,width=854,height=480,framerate=30/1\"",
+			true,
+		)
+		.unwrap();
+		let fixture = source.by_name("fixture").unwrap();
+		let source = source.upcast::<gst::Element>();
+		// Emit only the first picture of each capture session, then simulate a
+		// damage-driven desktop with no updates or keepalive buffers.
+		let delivered = Arc::new(AtomicBool::new(false));
+		source.static_pad("src").unwrap().add_probe(
+			gst::PadProbeType::BUFFER | gst::PadProbeType::EVENT_DOWNSTREAM,
+			move |_, info| {
+				match &info.data {
+					Some(gst::PadProbeData::Event(event))
+						if matches!(event.view(), gst::EventView::StreamStart(_)) =>
+					{
+						delivered.store(false, Ordering::Release);
+					}
+					Some(gst::PadProbeData::Buffer(_))
+						if delivered.swap(true, Ordering::AcqRel) =>
+					{
+						return gst::PadProbeReturn::Drop;
+					}
+					_ => {}
+				}
+				gst::PadProbeReturn::Ok
+			},
+		);
+		let settings = Settings {
+			source: super::super::SourceId::Portal,
+			width: 854,
+			height: 480,
+			fps: 30,
+			cursor: false,
+			audio: false,
+		};
+		let capture = Capture::new(
+			settings,
+			source.clone(),
+			Arc::new(AtomicBool::new(false)),
+			Arc::new(AtomicBool::new(true)),
+			Arc::new(AtomicBool::new(true)),
+			|| true,
+		)
+		.unwrap();
+		let old = raw(&capture
+			.frames
+			.try_pull_sample(gst::ClockTime::from_seconds(5))
+			.unwrap())
+		.unwrap();
+		assert!(
+			capture
+				.frames
+				.try_pull_sample(gst::ClockTime::from_mseconds(100))
+				.is_none()
+		);
+		fixture.set_property_from_str("pattern", "blue");
+		capture.request_frame().unwrap();
+		let fresh = raw(&capture
+			.frames
+			.try_pull_sample(gst::ClockTime::from_seconds(5))
+			.unwrap())
+		.unwrap();
+		assert_ne!(fresh.data, old.data);
+		assert!(
+			fresh
+				.data
+				.as_chunks::<4>()
+				.0
+				.iter()
+				.all(|pixel| *pixel == [255, 0, 0, 255])
+		);
+		let mut latest = None;
+		assert!(super::super::retain_screen_frame(&mut latest, Some(fresh), true, true).unwrap());
+		assert!(super::super::retain_screen_frame(&mut latest, None, true, true).unwrap());
+		assert!(!capture.failed());
+	}
 
 	#[test]
 	fn source_crop_rejects_invalid_rectangles_and_resets_for_uncropped_frames() {

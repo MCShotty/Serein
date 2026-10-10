@@ -165,7 +165,9 @@ impl Sender {
 			.as_ref()
 			.is_some_and(|reset| !Arc::ptr_eq(reset, &frame.reset))
 		{
-			frame.keyframe_request.store(true, Ordering::Release);
+			if self.ready {
+				frame.keyframe_request.store(true, Ordering::Release);
+			}
 			return false;
 		}
 		self.reset = Some(frame.reset.clone());
@@ -370,6 +372,21 @@ mod tests {
 		sender.set_ready(true);
 		sender.set_ready(false);
 		assert_eq!(reset.load(Ordering::Acquire), 2);
+	}
+
+	#[test]
+	fn security_pause_requests_recovery_once_even_without_sending() {
+		let request = Arc::new(AtomicBool::new(false));
+		let reset = Arc::new(AtomicU64::new(0));
+		let mut sender = Sender::default();
+		sender.set_generation(1);
+		assert!(sender.accept(&synthetic_frame(0, true, &request, &reset)));
+		sender.set_ready(false);
+		assert!(request.swap(false, Ordering::AcqRel));
+		assert_eq!(reset.load(Ordering::Acquire), 1);
+		sender.set_ready(false);
+		assert!(!request.load(Ordering::Acquire));
+		assert_eq!(reset.load(Ordering::Acquire), 1);
 	}
 
 	#[test]

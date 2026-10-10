@@ -180,6 +180,7 @@ pub(super) fn run(
 			// One bounded raw snapshot lets an idle desktop satisfy a new viewer's IDR
 			// without waiting for another compositor damage event.
 			let mut latest_frame = None;
+			let mut capture_reset = false;
 			let mut last_encoded: Option<Instant> = None;
 			let interval = Duration::from_secs_f64(1.0 / f64::from(settings.fps));
 			let mut next_frame = Instant::now();
@@ -227,11 +228,10 @@ pub(super) fn run(
 					last_encoded = None;
 					next_frame = Instant::now();
 					keyframe.store(true, Ordering::Release);
-					// Discard a raw sample captured across the transition as well as
-					// pending encoded pictures, even if ready returned true meanwhile.
+					// Request a post-reset snapshot once the raw gate is open, even if
+					// the desktop produces no further damage or keepalive buffers.
+					capture_reset = true;
 					let _ = pipeline.frames.try_pull_sample(gst::ClockTime::ZERO);
-					pipeline.changed().await;
-					continue;
 				}
 				let target = bitrate
 					.load(Ordering::Acquire)
@@ -296,6 +296,10 @@ pub(super) fn run(
 					keyframe.store(true, Ordering::Release);
 					let _ = pipeline.frames.try_pull_sample(gst::ClockTime::ZERO);
 				} else {
+					if capture_reset && send.capacity() > 0 {
+						pipeline.request_frame()?;
+						capture_reset = false;
+					}
 					let started = first_frame.get_or_insert_with(Instant::now);
 					// While the transport is behind, leave the picture in the appsink rather
 					// than pulling and discarding it. The sink then blocks upstream, so

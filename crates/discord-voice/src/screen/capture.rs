@@ -51,6 +51,13 @@ pub(crate) struct Capture;
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 impl Capture {
+	pub(crate) fn request_frame(
+		&mut self,
+		_frames: &std::sync::mpsc::Receiver<RawFrame>,
+	) -> Result<(), &'static str> {
+		Err("Screen sharing is supported only on macOS and Windows")
+	}
+
 	pub(crate) fn start(
 		_settings: Settings,
 		_frames: SyncSender<RawFrame>,

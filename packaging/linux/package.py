@@ -344,7 +344,7 @@ def arch_package(temporary, stage, application_version, libraries):
         f"pkgname=serein\npkgver='{version}'\npkgrel=1\n"
         "pkgdesc='Unofficial native Discord client'\n"
         f"arch=('{platform.machine()}')\nurl='https://github.com/ViceVerse-cz/Serein'\n"
-        "license=('MIT' 'Apache-2.0')\noptions=('!strip' '!debug' '!lto')\n"
+        "license=('MIT' 'Apache-2.0' 'LGPL-2.1-or-later' 'BSD-2-Clause')\noptions=('!strip' '!debug' '!lto')\n"
         + "depends=(" + " ".join(f"'{item}'" for item in sorted(depends)) + ")\n"
         "optdepends=('gnome-keyring: Secret Service credential provider' "
         "'gst-plugins-bad-libs: Stable H264 parser and NVENC plugin' "

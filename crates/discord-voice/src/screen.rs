@@ -298,7 +298,7 @@ fn encode_loop(
 	#[cfg(target_os = "windows")]
 	let raw_pending = Arc::new(AtomicBool::new(false));
 	#[cfg(target_os = "windows")]
-	let _native = capture::Capture::start(
+	let mut _native = capture::Capture::start(
 		settings,
 		raw_send,
 		audio,
@@ -309,7 +309,7 @@ fn encode_loop(
 	)?;
 	// The worker's stop also reaches a pending macOS picker, so call teardown closes it now.
 	#[cfg(not(target_os = "windows"))]
-	let _native = capture::Capture::start(
+	let mut _native = capture::Capture::start(
 		settings,
 		raw_send,
 		audio,
@@ -368,7 +368,11 @@ fn encode_loop(
 			}
 			latest_frame = None;
 			keyframe.store(true, Ordering::Release);
-			// This captured input can span the security transition.
+			// This input can span the transition. Restart the selected capture so an
+			// idle desktop supplies a new snapshot instead of waiting for damage.
+			_native.request_frame(&raw)?;
+			first_frame_deadline = Some(Instant::now() + Duration::from_secs(15));
+			next_frame = Instant::now();
 			continue;
 		}
 		let now = Instant::now();

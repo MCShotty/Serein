@@ -664,9 +664,9 @@ Synthetic tests cover these paths, not native capture or live Discord acceptance
 The standard build adds macOS 14+ ScreenCaptureKit and Windows Graphics Capture senders for an existing connected DM/server voice call. Share opens a native egui source/settings dialog first. It exposes 720p/1080p and 15/30/60 fps to all accounts, plus cursor visibility; only the explicit Share screen action creates a stream. No subscription fields are changed. This paragraph describes the original video sender; subsequent audio and receive extensions supersede its original limits.
 
 Linux extension (September 15, 2026): the existing H.264/DAVE sender now accepts
-portal-approved PipeWire screen/window capture. It uses the system picker, an ephemeral
+portal-approved PipeWire screen/window capture. It uses the system picker and an ephemeral
 portal session. Experimental camera/screen encoding uses native FFmpeg with
-NVENC/AMD AMF/Intel Quick Sync/VideoToolbox and H.264 OpenH264 fallback. Stable uses
+NVENC/AMD AMF/Intel Quick Sync and H.264 OpenH264 fallback. Stable uses
 the original platform encoders. Experimental excludes Media Foundation and VA-API
 encoders. Quick Sync on Linux uses the iHD
 VA driver interface for its device. These hardware paths and actual runtime

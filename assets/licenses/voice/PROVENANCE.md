@@ -3,8 +3,9 @@
 ## FFmpeg outgoing video encoders — October 4, 2026
 
 `scripts/build-ffmpeg.py` builds shared FFmpeg 7.1.5 avcodec/avutil with GPL,
-nonfree, Media Foundation and VA-API disabled. It enables libopenh264 2.6.0,
-supported NVENC and macOS VideoToolbox only. OpenH264 2.6.0 matches the existing
+nonfree, Media Foundation and VA-API encoders disabled. It enables libopenh264 2.6.0,
+supported NVENC, AMD AMF, Intel Quick Sync and macOS VideoToolbox backends. The Linux
+VA interface remains enabled for Quick Sync. OpenH264 2.6.0 matches the existing
 openh264-sys2 0.9.8 bundled codec version. The LGPL FFmpeg corresponding source
 archive, exact recipe/source metadata, namespace patch and configure arguments are staged from
 the built prefix into every package's `ffmpeg-source` directory. Nix uses the

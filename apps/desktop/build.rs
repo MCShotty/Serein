@@ -11,7 +11,9 @@ fn main() {
 		} else {
 			println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../Frameworks");
 		}
-		if let Some(prefix) = std::env::var_os("FFMPEG_DIR") {
+		if std::env::var("PROFILE").as_deref() != Ok("release")
+			&& let Some(prefix) = std::env::var_os("FFMPEG_DIR")
+		{
 			println!(
 				"cargo:rustc-link-arg=-Wl,-rpath,{}",
 				std::path::PathBuf::from(prefix).join("lib").display()

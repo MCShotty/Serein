@@ -444,7 +444,7 @@ async fn run_inner(
 					let normalized=crate::video::prepare_source(&frame.data,outgoing_codec)?;
 					let encrypted=dave.session.encrypt(davey::MediaType::VIDEO,crate::video::dave_codec(outgoing_codec),&normalized).map_err(|_|"DAVE camera encryption failed")?;
 					video.packetize(&encrypted,frame.timestamp,frame.keyframe,now)?;
-				} else {frame.keyframe_request.store(true,Ordering::Release);}
+				} else if enabled {frame.keyframe_request.store(true,Ordering::Release);}
 			},
 			_=tokio::time::sleep_until(video.deadline()), if !video.is_empty()=>{
 				let generation=controls.borrow().camera;
@@ -1546,6 +1546,95 @@ mod tests {
 	use super::*;
 	use crate::video_receive::Receivers;
 	use opus2::Decoder;
+
+	#[tokio::test]
+	async fn disabled_camera_frames_do_not_repeat_keyframe_requests() {
+		use client_core::voice::Secret;
+		use model::Id;
+		use std::sync::atomic::AtomicU64;
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let address = listener.local_addr().unwrap();
+		let (identified, identify) = tokio::sync::oneshot::channel();
+		let server = tokio::spawn(async move {
+			let (tcp, _) = listener.accept().await.unwrap();
+			let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+			let message = ws.next().await.unwrap().unwrap();
+			let data: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+			assert_eq!(data["op"], 0);
+			identified.send(()).unwrap();
+			while ws.next().await.is_some() {}
+		});
+		let credentials = VoiceConnection {
+			channel: Id(3),
+			user: Id(1),
+			peer: Some(Id(2)),
+			guild: None,
+			session: Secret::new("synthetic-session".into()).unwrap(),
+			token: Secret::new("synthetic-token".into()).unwrap(),
+			endpoint: "not-used-in-test".into(),
+			request: 1,
+		};
+		let (_capture_tx, capture) = std::sync::mpsc::sync_channel(1);
+		let (playback, _playback_rx) = std::sync::mpsc::sync_channel(1);
+		let (controls, control) = watch::channel(Controls {
+			camera: 1,
+			..Default::default()
+		});
+		let (frames, camera) = tokio::sync::mpsc::channel(1);
+		let task = tokio::spawn(run_inner(
+			credentials,
+			capture,
+			playback,
+			control,
+			Some(camera),
+			None,
+			None,
+			|_| Ok(()),
+			Identity::generate(),
+			format!("ws://{address}"),
+			true,
+		));
+		timeout(Duration::from_secs(5), identify)
+			.await
+			.unwrap()
+			.unwrap();
+		let request = Arc::new(AtomicBool::new(false));
+		let reset = Arc::new(AtomicU64::new(0));
+		for signal in [reset.clone(), reset.clone(), Arc::new(AtomicU64::new(0))] {
+			frames
+				.send(crate::camera_video::Frame {
+					generation: 1,
+					timestamp: 0,
+					codec: model::voice_settings::VideoCodec::H264,
+					data: vec![0, 0, 0, 1, 0x65, 7],
+					keyframe: true,
+					epoch: 0,
+					keyframe_request: request.clone(),
+					reset_generation: signal.load(Ordering::Acquire),
+					reset: signal,
+				})
+				.await
+				.unwrap();
+			timeout(Duration::from_secs(5), async {
+				while Arc::strong_count(&request) != 1 {
+					tokio::task::yield_now().await;
+				}
+			})
+			.await
+			.unwrap();
+			assert!(!request.load(Ordering::Acquire));
+		}
+		assert_eq!(reset.load(Ordering::Acquire), 1);
+		drop(controls);
+		assert_eq!(
+			timeout(Duration::from_secs(5), task)
+				.await
+				.unwrap()
+				.unwrap(),
+			Ok(())
+		);
+		server.abort();
+	}
 
 	#[tokio::test]
 	async fn udp_send_errors_drop_datagrams_without_waiting_and_recover() {
