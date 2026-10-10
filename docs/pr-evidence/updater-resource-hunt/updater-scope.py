@@ -52,7 +52,7 @@ name = "eframe"
 version = "0.0.0"
 edition = "2024"
 [dependencies]
-egui = { git = "https://github.com/emilk/egui", rev = "18ab43aea775704e7122dd4540f28bb6f63fd066", default-features = false, features = ["default_fonts"] }
+egui = { git = "https://github.com/emilk/egui", rev = "8f6d3d6ed99cb24d2e14c43951803d2868db40b1", default-features = false, features = ["default_fonts"] }
 """)
         (root / "eframe/src/lib.rs").write_text("pub use egui;\n")
         environment = dict(os.environ)
