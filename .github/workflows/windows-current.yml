@@ -1,0 +1,193 @@
+name: Windows installers for current PR source
+run-name: Windows installers for ${{ inputs.source_commit || github.sha }}
+
+on:
+  push:
+    branches: [build/windows-latest-20261011]
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Exact commit to build from this fork
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    if: github.repository == 'MCShotty/Serein'
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            arch: X64
+    runs-on: ${{ matrix.os }}
+    env:
+      SOURCE_COMMIT: ${{ inputs.source_commit || github.sha }}
+      PACKAGE_ARCH: ${{ matrix.arch }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+          persist-credentials: false
+      - name: Verify exact source checkout
+        run: |
+          if ($env:SOURCE_COMMIT -notmatch '^[a-f0-9]{40}$') { throw 'A complete commit SHA is required' }
+          $actual = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $actual -ne $env:SOURCE_COMMIT) { throw 'Source checkout mismatch' }
+      - uses: ilammy/msvc-dev-cmd@v1.13.0
+        with:
+          arch: ${{ matrix.arch == 'ARM64' && 'arm64' || 'x64' }}
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          path-type: inherit
+          install: make pkgconf nasm diffutils
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          cache-on-failure: true
+          save-if: false
+      - name: Install NSIS
+        run: choco install nsis --no-progress -y
+      - name: Prepare native build paths
+        run: |
+          $native = Join-Path $env:RUNNER_TEMP 'serein-current-ffmpeg'
+          "FFMPEG_DIR=$native/prefix" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "FFMPEG_WORK=$native/build" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "FFMPEG_CACHE=$native/sources" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Build LGPL-only FFmpeg encoders
+        shell: msys2 {0}
+        run: python scripts/build-ffmpeg.py --prefix "$FFMPEG_DIR" --work-dir "$FFMPEG_WORK" --cache-dir "$FFMPEG_CACHE"
+      - name: Make encoder DLLs available to offline tests
+        run: '"$env:FFMPEG_DIR/bin" | Out-File $env:GITHUB_PATH -Encoding utf8 -Append'
+      - name: Check production build
+        run: cargo check --locked -p serein --bin serein --no-default-features
+      - name: Workspace checks
+        run: cargo xtask check
+      - name: Native FFmpeg packaging tests
+        run: python packaging/ffmpeg/test_bundle.py
+      - name: Synthetic installer lifecycle tests
+        run: python packaging/windows/test_installer.py
+      - name: Synthetic update archive tests
+        run: python packaging/windows/test_update_archive.py
+      - name: Login handoff and packaging command regressions
+        run: |
+          node tests/login-handoff.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Login handoff regression failed' }
+          node tests/xtask-workspace.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Packaging command regression failed' }
+      - name: Clean production package and installer
+        run: |
+          cargo clean -p xtask
+          if ($LASTEXITCODE -ne 0) { throw 'Could not clear the cached packager' }
+          foreach ($path in @('dist', 'dist-installer')) {
+            if (Test-Path $path) { Remove-Item $path -Recurse -Force }
+          }
+          cargo xtask package
+          if ($LASTEXITCODE -ne 0) { throw 'Clean production packaging failed' }
+          @'
+          import hashlib, json
+          from pathlib import Path
+          payload = {str(p.relative_to('dist')).replace('\\', '/'): hashlib.sha256(p.read_bytes()).hexdigest() for p in Path('dist').rglob('*') if p.is_file()}
+          Path('target/clean-package-hashes.json').write_text(json.dumps(payload, sort_keys=True))
+          print(f'Clean package: {len(payload)} files')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Could not record the clean payload' }
+      - name: Cached packaging rerun
+        run: |
+          foreach ($path in @('dist', 'dist-installer')) {
+            if (Test-Path $path) { Remove-Item $path -Recurse -Force }
+          }
+          cargo xtask package
+          if ($LASTEXITCODE -ne 0) { throw 'Cached production packaging failed' }
+          @'
+          import hashlib, json
+          from pathlib import Path
+          expected = json.loads(Path('target/clean-package-hashes.json').read_text())
+          actual = {str(p.relative_to('dist')).replace('\\', '/'): hashlib.sha256(p.read_bytes()).hexdigest() for p in Path('dist').rglob('*') if p.is_file()}
+          assert expected == actual, 'Clean and cached packages differ'
+          print(f'Cached rerun: {len(actual)} identical payload files')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Clean/cached payload comparison failed' }
+      - name: Load bundled encoders without development FFmpeg on PATH
+        run: |
+          @'
+          import ctypes, os
+          from pathlib import Path
+          prefix = Path(os.environ['FFMPEG_DIR']).resolve()
+          os.environ['PATH'] = os.pathsep.join(p for p in os.environ['PATH'].split(os.pathsep) if p and not Path(p).resolve().is_relative_to(prefix))
+          package = Path('dist').resolve()
+          with os.add_dll_directory(str(package)):
+              libraries = [ctypes.WinDLL(str(package / name)) for name in ('avutil-serein-59.dll', 'openh264.dll', 'avcodec-serein-61.dll')]
+              codec = libraries[-1]
+              codec.avcodec_find_encoder_by_name.argtypes = [ctypes.c_char_p]
+              codec.avcodec_find_encoder_by_name.restype = ctypes.c_void_p
+              for name in (b'libopenh264', b'h264_nvenc', b'hevc_nvenc', b'av1_nvenc', b'h264_amf', b'hevc_amf', b'av1_amf', b'h264_qsv', b'hevc_qsv', b'av1_qsv'):
+                  assert codec.avcodec_find_encoder_by_name(name), name
+          print('Bundled DLL loading and encoder registration passed; no capture or hardware encode was performed')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled encoder DLL loading failed' }
+      - name: Validate real update archive
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "serein-v0.0.0-Windows-${env:PACKAGE_ARCH}-media-v2.zip"
+          Compress-Archive -Path 'dist/*' -DestinationPath $archive
+          python packaging/windows/check_update_archive.py $archive
+          if ($LASTEXITCODE -ne 0) { throw 'Windows update archive validation failed' }
+      - name: Identify and hash installer
+        run: |
+          $version = python -c "import tomllib; print(tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])"
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch '^\d+\.\d+\.\d+([+-][A-Za-z0-9.-]+)?$') { throw 'Invalid version' }
+          $name = "serein-$version-$($env:SOURCE_COMMIT.Substring(0,7))-Windows-${env:PACKAGE_ARCH}-Setup.exe"
+          Move-Item "dist-installer/serein-$version-setup.exe" "dist-installer/$name"
+          Get-FileHash "dist-installer/$name" -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $name" } | Set-Content dist-installer/SHA256SUMS.txt
+          @{ source_commit = $env:SOURCE_COMMIT; architecture = $env:PACKAGE_ARCH; version = $version; signed = $false; custom_build = $true; upstream_commit = '134e556fb469f3fa72425adf24acb7df56811a59'; upstream_release = 'v1.0.0-nightly.20261010.57'; video_pr_commit = 'c4bc6507183e8d5395535febf2ada593e032f222'; bug_fix_pr_commit = 'c8ef075a896042db5520ee3f5ad2055e41bb183b' } | ConvertTo-Json | Set-Content dist-installer/build.json
+      - name: Install real payload silently and compare all files
+        run: |
+          $install = Join-Path $env:RUNNER_TEMP "Serein current installer smoke $env:PACKAGE_ARCH"
+          $setup = Get-ChildItem 'dist-installer/*-Setup.exe'
+          $process = Start-Process -FilePath $setup.FullName -ArgumentList "/S /D=$install" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Silent installation failed: $($process.ExitCode)" }
+          $env:INSTALLED_PAYLOAD = $install
+          @'
+          import hashlib, os, struct
+          from pathlib import Path
+          source, installed = Path('dist'), Path(os.environ['INSTALLED_PAYLOAD'])
+          expected = 0x8664 if os.environ['PACKAGE_ARCH'] == 'X64' else 0xaa64
+          for name in ('serein.exe', 'avcodec-serein-61.dll', 'avutil-serein-59.dll', 'openh264.dll'):
+              data = (source / name).read_bytes()
+              offset = struct.unpack_from('<I', data, 0x3c)[0]
+              assert data[:2] == b'MZ' and data[offset:offset+4] == b'PE\0\0'
+              assert struct.unpack_from('<H', data, offset+4)[0] == expected, name
+          count = 0
+          for path in source.rglob('*'):
+              if path.is_file() and path.name not in ('setup.ps1', 'install-notifications.ps1'):
+                  actual = installed / path.relative_to(source)
+                  assert actual.is_file(), str(actual)
+                  assert hashlib.sha256(path.read_bytes()).digest() == hashlib.sha256(actual.read_bytes()).digest(), str(actual)
+                  count += 1
+          assert (installed / 'uninstall.exe').is_file()
+          print(f'Installer smoke passed: {count} matching payload files; application never launched')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Installed payload validation failed' }
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: serein-latest-Windows-${{ matrix.arch }}-installer
+          path: dist-installer/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Preserve native build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: current-ffmpeg-diagnostics-${{ matrix.arch }}
+          path: ${{ env.FFMPEG_WORK }}/**/ffbuild/config.log
+          if-no-files-found: ignore
+          retention-days: 7
