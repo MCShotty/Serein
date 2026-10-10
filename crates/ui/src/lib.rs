@@ -3011,20 +3011,17 @@ impl MessagingUi {
 		}
 		if focus_edit || (focus_composer && !editing_here) {
 			let mut edit_state = egui::text_edit::TextEditState::default();
-			let count = if editing_here {
+			let text = if editing_here {
 				self.editing
 					.as_ref()
-					.map_or(0, |(_, _, content)| content.chars().count())
+					.map_or("", |(_, _, content)| content.as_str())
 			} else {
-				state
-					.drafts
-					.get(&channel)
-					.map_or(0, |draft| draft.chars().count())
+				state.drafts.get(&channel).map_or("", String::as_str)
 			};
 			edit_state
 				.cursor
 				.set_char_range(Some(egui::text::CCursorRange::one(
-					egui::text::CCursor::new(count),
+					egui::text::CCursor::end_of_str(text),
 				)));
 			edit_state.store(ctx, composer_id);
 		}
