@@ -170,12 +170,14 @@ fn choose_with_system_picker(
 	Ok(picked.filter())
 }
 
+#[derive(Clone)]
 struct Handler {
 	frames: SyncSender<RawFrame>,
 	stop: Arc<AtomicBool>,
 }
 
 /// System audio as interleaved 48 kHz stereo `f32`, bounded per buffer and never stored.
+#[derive(Clone)]
 struct AudioHandler {
 	audio: tokio::sync::mpsc::Sender<crate::screen::AudioChunk>,
 	stop: Arc<AtomicBool>,
@@ -390,10 +392,32 @@ impl Drop for PickerSession {
 
 pub(crate) struct Capture {
 	stream: SCStream,
+	filter: SCContentFilter,
+	config: SCStreamConfiguration,
+	handler: Handler,
+	audio_handler: Option<AudioHandler>,
 	_system_picker: PickerSession,
 }
 
 impl Capture {
+	pub(crate) fn request_frame(
+		&mut self,
+		frames: &std::sync::mpsc::Receiver<RawFrame>,
+	) -> Result<(), &'static str> {
+		self.stream
+			.stop_capture()
+			.map_err(|_| "Screen capture could not be refreshed")?;
+		while frames.try_recv().is_ok() {}
+		// Recreate the stream without reopening the picker or changing its approved source.
+		self.stream = Self::start_stream(
+			&self.filter,
+			&self.config,
+			&self.handler,
+			self.audio_handler.as_ref(),
+		)?;
+		Ok(())
+	}
+
 	pub(crate) fn start(
 		settings: Settings,
 		frames: SyncSender<RawFrame>,
@@ -404,12 +428,7 @@ impl Capture {
 		teardown: Arc<AtomicBool>,
 	) -> Result<Self, &'static str> {
 		initialize();
-		if settings.width == 0
-			|| settings.height == 0
-			|| settings.width > MAX_FRAME_WIDTH
-			|| settings.height > MAX_FRAME_HEIGHT
-			|| settings.fps == 0
-		{
+		if !settings.valid() {
 			return Err("Invalid screen capture settings");
 		}
 		// Own the picker before selection so every later error/cancellation deactivates it.
@@ -477,47 +496,58 @@ impl Capture {
 		if !config.preserves_aspect_ratio() {
 			return Err("Screen sharing requires macOS 14 or newer");
 		}
-		if stop.load(Ordering::Acquire) {
+		let handler = Handler {
+			frames,
+			stop: stop.clone(),
+		};
+		let audio_handler = audio.map(|audio| AudioHandler {
+			audio,
+			stop,
+			ready,
+			audio_epoch,
+		});
+		let stream = Self::start_stream(&filter, &config, &handler, audio_handler.as_ref())?;
+		Ok(Self {
+			stream,
+			filter,
+			config,
+			handler,
+			audio_handler,
+			_system_picker: system_picker,
+		})
+	}
+
+	fn start_stream(
+		filter: &SCContentFilter,
+		config: &SCStreamConfiguration,
+		handler: &Handler,
+		audio_handler: Option<&AudioHandler>,
+	) -> Result<SCStream, &'static str> {
+		if handler.stop.load(Ordering::Acquire) {
 			return Err("Screen sharing cancelled");
 		}
-		let mut stream = SCStream::new_with_delegate(&filter, &config, Delegate(stop.clone()));
+		let mut stream =
+			SCStream::new_with_delegate(filter, config, Delegate(handler.stop.clone()));
 		if stream
-			.add_output_handler(
-				Handler {
-					frames,
-					stop: stop.clone(),
-				},
-				SCStreamOutputType::Screen,
-			)
+			.add_output_handler(handler.clone(), SCStreamOutputType::Screen)
 			.is_none()
 		{
 			return Err("Screen capture frame callback could not be registered");
 		}
-		if let Some(audio) = audio
+		if let Some(audio_handler) = audio_handler
 			&& stream
-				.add_output_handler(
-					AudioHandler {
-						audio,
-						stop: stop.clone(),
-						ready,
-						audio_epoch,
-					},
-					SCStreamOutputType::Audio,
-				)
+				.add_output_handler(audio_handler.clone(), SCStreamOutputType::Audio)
 				.is_none()
 		{
 			return Err("System audio callback could not be registered");
 		}
-		if stop.load(Ordering::Acquire) {
+		if handler.stop.load(Ordering::Acquire) {
 			return Err("Screen sharing cancelled");
 		}
 		stream
 			.start_capture()
 			.map_err(|_| "Screen capture could not be started")?;
-		Ok(Self {
-			stream,
-			_system_picker: system_picker,
-		})
+		Ok(stream)
 	}
 }
 
