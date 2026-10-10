@@ -718,12 +718,7 @@ impl Uploads {
 		parent: Arc<winit::window::Window>,
 	) -> Result<(), &'static str> {
 		// One native picker at a time; loading selections may continue behind it.
-		if !self.accepting()
-			|| self
-				.choosing
-				.iter()
-				.any(|choosing| choosing.files.load(Ordering::Acquire) == 0)
-		{
+		if !self.accepting() {
 			return Err("Wait for the current attachment operation to finish");
 		}
 		// Construct on the native UI thread; await and inspect outside rendering.
@@ -973,7 +968,7 @@ impl Uploads {
 			.collect()
 	}
 	pub fn remove_at(&mut self, index: usize) {
-		if !self.busy() && index < self.selected.len() {
+		if self.accepting() && index < self.selected.len() {
 			let removed = self.selected.remove(index);
 			self.previewing.retain(|preview| preview.key != removed.key);
 		}
@@ -991,12 +986,17 @@ impl Uploads {
 	pub fn busy(&self) -> bool {
 		!self.choosing.is_empty() || self.uploading.is_some() || self.external.is_some()
 	}
-	/// Whether another file selection may start. Loading selections and the previous
-	/// message's upload do not block it; sending waits for both through `busy`.
+	/// Whether composer files may be selected or removed. An open native picker reserves
+	/// capacity until its count is known. Known loading selections and the previous
+	/// message's upload do not block edits; sending waits for both through `busy`.
 	pub fn accepting(&self) -> bool {
 		self.external.is_none()
 			&& self.image_draft.is_none()
 			&& self.choosing.len() < discord_api::upload::MAX_FILES
+			&& self
+				.choosing
+				.iter()
+				.all(|choosing| choosing.files.load(Ordering::Acquire) != 0)
 	}
 	/// Files still being inspected or decoded before they join the composer.
 	pub fn loading(&self) -> usize {
@@ -1164,6 +1164,179 @@ pub(crate) fn debug_reservation_check(runtime: &tokio::runtime::Handle) {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	struct SyntheticDrop(std::path::PathBuf);
+	impl std::fmt::Debug for SyntheticDrop {
+		fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+			f.write_str("SyntheticDrop([REDACTED])")
+		}
+	}
+	impl egui::DroppedFile for SyntheticDrop {
+		fn path(&self) -> &std::path::Path {
+			&self.0
+		}
+		fn bytes(&self) -> Result<Vec<u8>, String> {
+			panic!("Drop admission must never read whole-file bytes")
+		}
+	}
+
+	#[tokio::test]
+	async fn open_picker_blocks_competing_selections_until_its_count_is_known() {
+		let context = egui::Context::default();
+		let runtime = tokio::runtime::Handle::current();
+		let mut uploads = Uploads::default();
+		uploads.scope = Some((1, Id(2)));
+		let (finish_picker, result) = mpsc::sync_channel(1);
+		let count = Arc::new(AtomicUsize::new(0));
+		uploads.choosing.push(Choosing {
+			result,
+			cancelled: Arc::new(AtomicBool::new(false)),
+			files: count.clone(),
+		});
+		assert_eq!(uploads.loading(), 0);
+		let pasted = (0..discord_api::upload::MAX_FILES)
+			.map(|_| Source::pasted_text("competing paste".into()).unwrap())
+			.collect();
+		assert_eq!(
+			uploads.select_pasted(1, Id(2), pasted, &runtime, &context),
+			Err("Wait for the current attachment operation to finish")
+		);
+		assert_eq!(
+			uploads.start_drop(
+				1,
+				Id(2),
+				&runtime,
+				&context,
+				vec![Arc::new(SyntheticDrop(
+					std::env::temp_dir().join("synthetic-picker-race.txt")
+				))],
+			),
+			Err("Wait for the current attachment operation to finish")
+		);
+		assert!(uploads.selected.is_empty());
+		assert!(!uploads.accepting());
+		// The worker publishes the picker count before inspection/thumbnail work.
+		count.store(3, Ordering::Release);
+		assert!(uploads.accepting());
+		uploads
+			.select_pasted(
+				1,
+				Id(2),
+				(0..7)
+					.map(|_| Source::pasted_text("next selection".into()).unwrap())
+					.collect(),
+				&runtime,
+				&context,
+			)
+			.unwrap();
+		assert!(
+			uploads
+				.select_pasted(
+					1,
+					Id(2),
+					vec![Source::pasted_text("over capacity".into()).unwrap()],
+					&runtime,
+					&context,
+				)
+				.is_err()
+		);
+		finish_picker
+			.send(Ok(Some(
+				(0..3)
+					.map(|_| {
+						(
+							Source::pasted_text("picker selection".into()).unwrap(),
+							None,
+						)
+					})
+					.collect(),
+			)))
+			.unwrap();
+		uploads.poll(1, Some(Id(2)), true, &context);
+		assert_eq!(uploads.files().len(), discord_api::upload::MAX_FILES);
+		assert_eq!(uploads.loading(), 0);
+		assert!(!uploads.busy());
+		assert_eq!(uploads.take_notice(), None);
+	}
+
+	#[tokio::test]
+	async fn cancelled_open_picker_blocks_new_selections_until_it_returns() {
+		let context = egui::Context::default();
+		let runtime = tokio::runtime::Handle::current();
+		let mut uploads = Uploads::default();
+		let (finish_picker, picker) = tokio::sync::oneshot::channel();
+		uploads.start_selection(1, Id(2), &runtime, &context, 0, async {
+			picker.await.unwrap()
+		});
+		uploads.poll(1, Some(Id(3)), true, &context);
+		assert!(!uploads.accepting());
+		finish_picker.send(None).unwrap();
+		tokio::task::yield_now().await;
+		uploads.poll(1, Some(Id(3)), true, &context);
+		assert!(uploads.accepting());
+		assert!(!uploads.busy());
+		assert!(uploads.files().is_empty());
+		assert_eq!(uploads.take_notice(), None);
+	}
+
+	#[tokio::test]
+	async fn next_message_removal_cancels_only_its_preview_during_an_upload() {
+		let context = egui::Context::default();
+		let runtime = tokio::runtime::Handle::current();
+		let budget = PreviewBudget::new(2, 16);
+		let mut uploads = Uploads::default();
+		uploads.scope = Some((1, Id(2)));
+		let (_updates, progress) = watch::channel(Status::Uploading {
+			sent: 42,
+			total: 100,
+		});
+		let (cancel, cancellation) = watch::channel(false);
+		uploads.begin_upload(progress, cancel).unwrap();
+		uploads
+			.select_pasted_with_previews(
+				1,
+				Id(2),
+				vec![
+					Source::pasted_png(vec![1; 8]).unwrap(),
+					Source::pasted_png(vec![2; 8]).unwrap(),
+				],
+				&runtime,
+				&context,
+				&budget,
+			)
+			.unwrap();
+		let removed_preview = uploads.previewing[0].cancelled.clone();
+		let kept_preview = uploads.previewing[1].cancelled.clone();
+		let kept_key = uploads.selected[1].key;
+		uploads.remove_at(0);
+		assert_eq!(uploads.files().len(), 1);
+		assert_eq!(uploads.selected[0].key, kept_key);
+		assert_eq!(uploads.previewing.len(), 1);
+		assert!(removed_preview.load(Ordering::Acquire));
+		assert!(!kept_preview.load(Ordering::Acquire));
+		assert!(!*cancellation.borrow());
+		assert_eq!(uploads.transfer_progress(), (Some((42, 100)), false));
+		assert!(uploads.uploading.is_some());
+		assert!(uploads.take_source(1, Id(2)).is_none());
+		uploads
+			.select_pasted(
+				1,
+				Id(2),
+				vec![Source::pasted_text("replacement".into()).unwrap()],
+				&runtime,
+				&context,
+			)
+			.unwrap();
+		assert_eq!(uploads.files().len(), 2);
+		uploads.remove_at(usize::MAX);
+		assert_eq!(uploads.files().len(), 2);
+		uploads.remove_at(0);
+		assert!(kept_preview.load(Ordering::Acquire));
+		tokio::task::yield_now().await;
+		assert_eq!(budget.jobs.available_permits(), 2);
+		assert_eq!(budget.bytes.available_permits(), 16);
+		assert!(!*cancellation.borrow());
+	}
+
 	#[tokio::test]
 	async fn next_message_previews_respect_loading_reservations_and_upload_cancellation() {
 		let context = egui::Context::default();
@@ -1482,6 +1655,8 @@ mod tests {
 			generation: 1,
 			key: Some(key),
 		});
+		uploads.remove_at(0);
+		assert_eq!(uploads.selected[0].key, key);
 		uploads.cancel_public();
 		assert!(*requested.borrow());
 		uploads.poll(1, Some(Id(1)), true, &egui::Context::default());
@@ -1749,20 +1924,6 @@ mod tests {
 	}
 	#[tokio::test]
 	async fn file_drop_is_bounded_scoped_selection_and_never_reads_handle_bytes() {
-		struct SyntheticDrop(std::path::PathBuf);
-		impl std::fmt::Debug for SyntheticDrop {
-			fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-				f.write_str("SyntheticDrop([REDACTED])")
-			}
-		}
-		impl egui::DroppedFile for SyntheticDrop {
-			fn path(&self) -> &std::path::Path {
-				&self.0
-			}
-			fn bytes(&self) -> Result<Vec<u8>, String> {
-				panic!("Drop admission must never read whole-file bytes")
-			}
-		}
 		async fn settle(uploads: &mut Uploads, context: &egui::Context, channel: Id) {
 			tokio::time::timeout(std::time::Duration::from_secs(5), async {
 				while uploads.busy() {

@@ -36,6 +36,19 @@ outgoing GPU-only GStreamer encoding. Transport queues, encryption gates, camera
 capture ceilings and persistent storage are unchanged. FFmpeg libraries, source
 and build recipes are installed package material; media is never recorded.
 
+## Off-screen inline image retention (October 9, 2026)
+
+Inline media renditions now release their still and playback textures after 60 seconds
+without painting. Painting or accepting a still refreshes its deadline; viewer resources
+keep their existing immediate-close cleanup. The existing host maintenance wakeup also
+covers this expiry, so an idle window can release previously viewed images. The five-second
+unplayed-animation frame expiry remains separate. Existing item/byte ceilings, account
+isolation, request admission and encoded disk caching are unchanged. Returning to expired
+artwork uses the normal image worker; a disk miss may require another fetch. No history,
+credentials, preferences or disk files are removed. GPU/allocator reclamation is controlled
+by the renderer and OS, so released texture accounting is not an equal whole-process RAM
+reduction guarantee.
+
 ## Profile board games (October 7, 2026)
 
 Board metadata uses the existing on-demand profile worker and RAM profile cache,
@@ -777,6 +790,12 @@ Archived-thread pages share the same exclusive read/result slot with search and 
 Pinned-message summaries share search's single session-only 25-item / 64 KiB result slot and 512 KiB response limit. Manual older-page navigation replaces that slot instead of accumulating results; two optional fixed-size timestamp cursors track the request and next page. Failed older requests can be retried deliberately, with no background retry. Opening a result uses ordinary bounded history caching; pin snapshots/cursors are not written to SQLite. PR screenshots are synthetic development evidence and are excluded from packaged documentation.
 
 Uploads do not persist local source paths, signed staging targets or file bytes. Optional pasted-image thumbnails admit at most two process-wide jobs and 32 MiB of source bytes before retaining a source or reading it; larger files still attach but skip the thumbnail. Removed previews cancel pending reads, while running decoders keep their admission permits until completion. Pending filename/size labels remain bounded session metadata; existing recovery drafts retain only composed text, so retrying an attachment requires selecting the source again. Files are opened for reading and checked for observable size/modification changes; this is not an immutable snapshot guarantee. Cancellation stops the local job, but bytes already uploaded to Discord staging may remain there without a created message; no remote cleanup or retention guarantee is claimed. Completed messages and their returned attachment metadata can enter the existing bounded history cache. The OS file picker may retain OS-managed recent-location history. No new application log or hidden upload recovery store is introduced.
+
+Composer selections wait until an open native picker reports its file count; cancelled
+pickers retain this gate until their worker finishes. Known loading counts reserve their
+attachment slots. Removing a next-message file cancels only its thumbnail, preserving an
+earlier message's running upload. Selection locks for public hosting and staged artwork,
+item/byte limits and persistence remain unchanged; no queue or budget is added.
 
 Twemoji artwork is public bundled data, not an account cache: one 5,225,108-byte PNG
 and a fixed 4,009-entry Unicode index are embedded in the executable. A startup worker

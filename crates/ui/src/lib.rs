@@ -370,8 +370,8 @@ pub struct MessagingUi {
 	pub remove_attachment_requested: bool,
 	pub cancel_upload_requested: bool,
 	pub upload_busy: bool,
-	/// New attachments cannot be selected right now. Loading files and an upload in flight
-	/// do not set this: further files join the composer and sending waits instead.
+	/// Composer attachments cannot be selected or removed right now. A native picker with
+	/// an unknown count blocks edits; known loading files and a previous upload do not.
 	pub attach_busy: bool,
 	/// Selected files still being inspected; shown as loading tiles in the upload tray.
 	pub attachment_loading: usize,
@@ -1044,7 +1044,7 @@ impl MessagingUi {
 	pub fn take_avatar_requests(&mut self) -> Vec<String> {
 		self.avatars.take_requests()
 	}
-	/// When unplayed animation frames can next be released; see `take_avatar_requests`.
+	/// Next idle animation/inline texture release; see `take_avatar_requests`.
 	pub fn avatar_release_at(&self) -> Option<std::time::Instant> {
 		self.avatars.next_release()
 	}
@@ -3820,7 +3820,7 @@ impl MessagingUi {
 											filename,
 											*bytes,
 											textures.get(index).and_then(Option::as_ref),
-											!self.upload_busy,
+											!self.attach_busy,
 										)
 									})
 									.inner
@@ -5379,6 +5379,67 @@ mod gif_favorite_tests;
 mod composer_tests {
 	use super::*;
 	use client_core::MAX_CONTENT;
+
+	#[test]
+	fn next_message_tray_can_remove_files_while_the_previous_message_uploads() {
+		for attach_busy in [false, true] {
+			let ctx = egui::Context::default();
+			design::apply(&ctx);
+			let mut view = MessagingUi {
+				attachment_files: vec![("next.txt".into(), 32), ("keep.txt".into(), 64)],
+				upload_busy: true,
+				attach_busy,
+				..Default::default()
+			};
+			let frame = |view: &mut MessagingUi, events| {
+				let output = ctx.run_ui(
+					egui::RawInput {
+						screen_rect: Some(egui::Rect::from_min_size(
+							egui::Pos2::ZERO,
+							egui::vec2(600.0, 300.0),
+						)),
+						events,
+						focused: true,
+						..Default::default()
+					},
+					|ui| view.attachment_tray(ui, false, 500_000_000),
+				);
+				let remove = output
+					.shapes
+					.iter()
+					.find_map(|shape| match &shape.shape {
+						egui::Shape::Rect(rect) if rect.rect.size() == egui::vec2(36.0, 36.0) => {
+							Some(rect.rect.center())
+						}
+						_ => None,
+					})
+					.expect("first attachment's Remove button");
+				output.drop_without_applying_deltas();
+				remove
+			};
+			for _ in 0..3 {
+				frame(&mut view, vec![]);
+			}
+			let remove = frame(&mut view, vec![]);
+			for pressed in [true, false] {
+				frame(
+					&mut view,
+					vec![
+						egui::Event::PointerMoved(remove),
+						egui::Event::PointerButton {
+							pos: remove,
+							button: egui::PointerButton::Primary,
+							pressed,
+							modifiers: egui::Modifiers::NONE,
+						},
+					],
+				);
+			}
+			assert_eq!(view.remove_attachment_index, (!attach_busy).then_some(0));
+			assert!(!view.cancel_upload_requested);
+			assert!(!view.remove_attachment_requested);
+		}
+	}
 
 	#[test]
 	fn header_search_collapses_and_keeps_keyboard_and_disabled_behavior() {
