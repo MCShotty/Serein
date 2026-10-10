@@ -2536,10 +2536,15 @@ impl Desktop {
 			self.retry_account_forgets();
 			return;
 		}
-		let queued = self
-			.store
-			.as_mut()
-			.is_some_and(|store| store.forget_account(self.state.generation, account));
+		let known_accounts = self
+			.state
+			.user
+			.iter()
+			.map(|user| user.id)
+			.chain(self.messaging.accounts.iter().map(|saved| saved.id));
+		let queued = self.store.as_mut().is_some_and(|store| {
+			store.forget_account(self.state.generation, account, known_accounts)
+		});
 		self.credential_status = if queued {
 			"Removing saved account…"
 		} else {
@@ -5430,8 +5435,15 @@ impl Desktop {
 					self.roster_pending = false;
 					// Pruning is already committed, so clean up regardless of the re-read.
 					for account in pruned {
+						let known_accounts = self.state.user.iter().map(|user| user.id).chain(
+							roster
+								.as_ref()
+								.unwrap_or(&self.messaging.accounts)
+								.iter()
+								.map(|saved| saved.id),
+						);
 						if !self.store.as_mut().is_some_and(|store| {
-							store.forget_account(self.state.generation, *account)
+							store.forget_account(self.state.generation, *account, known_accounts)
 						}) {
 							self.credential_status = "Could not queue pruned account login removal; its OS credential may remain";
 						}
@@ -5617,7 +5629,8 @@ impl Desktop {
 							self.credential_status = "Login saved in the OS credential store"
 						}
 						Some(Err(_)) => {
-							self.credential_status = "Account login saved, but automatic restore failed; a previous launch login may remain"
+							self.credential_status =
+								"Account login saved, but automatic sign-in could not be updated"
 						}
 						None if result == Err(platform::CredentialError::NoStore) => {
 							self.messaging.toasts.push(

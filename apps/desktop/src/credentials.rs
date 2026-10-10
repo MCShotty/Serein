@@ -19,7 +19,8 @@ pub enum Operation {
 	LoadAccount(model::Id),
 	/// Save the keyed entry first; launch restore is replaced only after that succeeds.
 	SaveAccount(model::Id, Arc<SessionSecret>, bool),
-	ForgetAccount(model::Id),
+	/// Known account IDs allow ownership checks even after a failed switch signs out.
+	ForgetAccount(model::Id, Vec<model::Id>),
 }
 pub enum Outcome {
 	Loaded(Result<Option<SessionSecret>, CredentialError>),
@@ -83,10 +84,11 @@ impl Store {
 						);
 						Outcome::AccountSaved(account, keyed, launch)
 					}
-					Operation::ForgetAccount(account) => Outcome::AccountForgotten(
+					Operation::ForgetAccount(account, known_accounts) => Outcome::AccountForgotten(
 						account,
 						forget_account(
 							account,
+							&known_accounts,
 							platform::load_account_session,
 							platform::load_session,
 							platform::forget_session,
@@ -109,7 +111,12 @@ impl Store {
 		}
 	}
 	/// Coalesce repeated removals and keep accepted work visible until its acknowledgment.
-	pub fn forget_account(&mut self, generation: u64, account: model::Id) -> bool {
+	pub fn forget_account(
+		&mut self,
+		generation: u64,
+		account: model::Id,
+		known_accounts: impl IntoIterator<Item = model::Id>,
+	) -> bool {
 		if self
 			.removing
 			.get(&account)
@@ -117,10 +124,23 @@ impl Store {
 		{
 			return true;
 		}
+		let mut owners = Vec::with_capacity(model::MAX_SAVED_ACCOUNTS);
+		for id in known_accounts {
+			if id != account && !owners.contains(&id) {
+				owners.push(id);
+				if owners.len() == model::MAX_SAVED_ACCOUNTS {
+					break;
+				}
+			}
+		}
 		if (!self.removing.contains_key(&account) && self.removing.len() >= 8)
 			|| self
 				.send
-				.try_send((generation, Request::NONE, Operation::ForgetAccount(account)))
+				.try_send((
+					generation,
+					Request::NONE,
+					Operation::ForgetAccount(account, owners),
+				))
 				.is_err()
 		{
 			return false;
@@ -303,7 +323,8 @@ pub fn account_removal_applies(
 
 fn forget_account(
 	account: model::Id,
-	load_account: impl FnOnce(model::Id) -> Result<Option<SessionSecret>, CredentialError>,
+	known_accounts: &[model::Id],
+	mut load_account: impl FnMut(model::Id) -> Result<Option<SessionSecret>, CredentialError>,
 	load_launch: impl FnOnce() -> Result<Option<SessionSecret>, CredentialError>,
 	forget_launch: impl FnOnce() -> Result<(), CredentialError>,
 	forget_account: impl FnOnce(model::Id) -> Result<(), CredentialError>,
@@ -331,7 +352,32 @@ fn forget_account(
 	{
 		forget_launch()?;
 	}
-	let unknown_owner = saved.is_none() && launch.is_some();
+	let mut unknown_owner = saved.is_none() && launch.is_some();
+	if unknown_owner && let Some(launch) = &launch {
+		// A failed switch clears the active UI session. Check the bounded saved-account
+		// roster as well, so its previous account can still identify launch restore.
+		for known_account in known_accounts
+			.iter()
+			.copied()
+			.take(model::MAX_SAVED_ACCOUNTS)
+		{
+			if known_account == account {
+				continue;
+			}
+			let known = match load_account(known_account) {
+				Ok(known) => known,
+				Err(CredentialError::Invalid) => None,
+				Err(error) => return Err(error),
+			};
+			if known
+				.as_ref()
+				.is_some_and(|known| known.expose() == launch.expose())
+			{
+				unknown_owner = false;
+				break;
+			}
+		}
+	}
 	forget_account(account)?;
 	// Older independently saved entries may be inconsistent. Keep the roster visible
 	// for recovery instead of claiming the unidentified launch login has been removed.
@@ -380,12 +426,12 @@ mod tests {
 			removing: BTreeMap::new(),
 		};
 		let account = model::Id(7);
-		assert!(store.forget_account(1, account));
+		assert!(store.forget_account(1, account, None));
 		assert!(store.save_account(2, account, Arc::new(synthetic("ACCOUNT_A")), true));
-		assert!(store.forget_account(3, account));
+		assert!(store.forget_account(3, account, None));
 		assert!(matches!(
 			commands.try_recv().unwrap().2,
-			Operation::ForgetAccount(_)
+			Operation::ForgetAccount(_, _)
 		));
 		assert!(matches!(
 			commands.try_recv().unwrap().2,
@@ -393,7 +439,7 @@ mod tests {
 		));
 		assert!(matches!(
 			commands.try_recv().unwrap().2,
-			Operation::ForgetAccount(_)
+			Operation::ForgetAccount(_, _)
 		));
 		assert!(
 			events
@@ -412,7 +458,7 @@ mod tests {
 			Some((3, Outcome::AccountForgotten(_, Ok(()))))
 		));
 		assert!(!store.has_pending_removals());
-		assert!(store.forget_account(4, account));
+		assert!(store.forget_account(4, account, None));
 		assert!(store.save_account(5, account, Arc::new(synthetic("ACCOUNT_A")), true));
 		assert!(
 			events
@@ -437,12 +483,12 @@ mod tests {
 			next_request: 0,
 			removing: BTreeMap::new(),
 		};
-		assert!(store.forget_account(1, model::Id(7)));
+		assert!(store.forget_account(1, model::Id(7), None));
 		assert!(store.has_pending_removals());
-		assert!(store.forget_account(1, model::Id(7)));
+		assert!(store.forget_account(1, model::Id(7), None));
 		assert!(matches!(
 			commands.try_recv().unwrap().2,
-			Operation::ForgetAccount(model::Id(7))
+			Operation::ForgetAccount(model::Id(7), _)
 		));
 		assert!(
 			commands.try_recv().is_err(),
@@ -463,10 +509,10 @@ mod tests {
 		));
 		assert!(!store.has_pending_removals());
 		for id in 1..=8 {
-			assert!(store.forget_account(2, model::Id(id)));
+			assert!(store.forget_account(2, model::Id(id), None));
 			let _ = commands.try_recv().unwrap();
 		}
-		assert!(!store.forget_account(2, model::Id(9)));
+		assert!(!store.forget_account(2, model::Id(9), None));
 		drop(events);
 		for _ in 0..8 {
 			assert!(matches!(
@@ -486,7 +532,7 @@ mod tests {
 					.is_ok()
 			);
 		}
-		assert!(!store.forget_account(3, model::Id(10)));
+		assert!(!store.forget_account(3, model::Id(10), None));
 		assert!(
 			!store.has_pending_removals(),
 			"rejected work is never reported as pending"
@@ -596,6 +642,7 @@ mod tests {
 		assert_eq!(
 			forget_account(
 				model::Id(7),
+				&[],
 				|_| Ok(keyed.borrow().map(synthetic)),
 				|| Ok(launch.borrow().map(synthetic)),
 				|| panic!("failed replacement already cleared stale restore"),
@@ -615,6 +662,7 @@ mod tests {
 		assert_eq!(
 			forget_account(
 				model::Id(7),
+				&[],
 				|_| Err(CredentialError::Invalid),
 				|| Ok(None),
 				|| panic!("no launch value"),
@@ -630,6 +678,7 @@ mod tests {
 		assert_eq!(
 			forget_account(
 				model::Id(7),
+				&[],
 				|_| Ok(Some(synthetic("ACCOUNT_A"))),
 				|| Err(CredentialError::Invalid),
 				|| {
@@ -674,6 +723,7 @@ mod tests {
 			assert_eq!(
 				forget_account(
 					account,
+					&[],
 					|id| {
 						assert_eq!(id, account);
 						Ok(Some(synthetic("ACCOUNT_A")))
@@ -706,6 +756,7 @@ mod tests {
 		assert_eq!(
 			forget_account(
 				model::Id(7),
+				&[],
 				|_| Ok(None),
 				|| Ok(Some(synthetic("OTHER_ACCOUNT"))),
 				|| panic!("cannot establish launch ownership"),
@@ -720,11 +771,125 @@ mod tests {
 	}
 
 	#[test]
+	fn missing_or_invalid_account_can_be_forgotten_when_another_known_account_owns_launch() {
+		for invalid in [false, true] {
+			let account = model::Id(7);
+			let other = model::Id(8);
+			let reads = RefCell::new(Vec::new());
+			let removed = Cell::new(false);
+			assert_eq!(
+				forget_account(
+					account,
+					&[account, other],
+					|id| {
+						reads.borrow_mut().push(id);
+						if id == account {
+							if invalid {
+								Err(CredentialError::Invalid)
+							} else {
+								Ok(None)
+							}
+						} else {
+							assert_eq!(id, other);
+							Ok(Some(synthetic("OTHER_ACCOUNT")))
+						}
+					},
+					|| Ok(Some(synthetic("OTHER_ACCOUNT"))),
+					|| panic!("another account owns launch restore; preserve it"),
+					|id| {
+						assert_eq!(id, account);
+						removed.set(true);
+						Ok(())
+					},
+				),
+				Ok(())
+			);
+			assert_eq!(*reads.borrow(), [account, other]);
+			assert!(
+				removed.get(),
+				"success lets the caller remove the roster and cache"
+			);
+		}
+	}
+
+	#[test]
+	fn unrelated_missing_or_invalid_logins_do_not_identify_launch_ownership() {
+		for known in [
+			Ok(None),
+			Err(CredentialError::Invalid),
+			Ok(Some(synthetic("UNRELATED"))),
+		] {
+			let account = model::Id(7);
+			let other = model::Id(8);
+			let mut known = Some(known);
+			assert_eq!(
+				forget_account(
+					account,
+					&[other],
+					|id| if id == account {
+						Ok(None)
+					} else {
+						known.take().unwrap()
+					},
+					|| Ok(Some(synthetic("UNIDENTIFIED"))),
+					|| panic!("unidentified launch login must be preserved"),
+					|id| {
+						assert_eq!(id, account);
+						Ok(())
+					},
+				),
+				Err(CredentialError::Invalid)
+			);
+		}
+	}
+
+	#[test]
+	fn failed_known_account_lookup_keeps_the_missing_account_for_retry() {
+		for error in [CredentialError::Unavailable, CredentialError::TimedOut] {
+			let account = model::Id(7);
+			assert_eq!(
+				forget_account(
+					account,
+					&[model::Id(8)],
+					|id| if id == account { Ok(None) } else { Err(error) },
+					|| Ok(Some(synthetic("OTHER_ACCOUNT"))),
+					|| panic!("failed lookup cannot justify launch deletion"),
+					|_| panic!("failed lookup must remain retryable"),
+				),
+				Err(error)
+			);
+		}
+	}
+
+	#[test]
+	fn queued_ownership_candidates_exclude_the_forgotten_account_and_are_unique_and_bounded() {
+		let (send, commands) = mpsc::sync_channel(4);
+		let (_, receive) = mpsc::sync_channel(4);
+		let mut store = Store {
+			send,
+			receive,
+			loading: None,
+			next_request: 0,
+			removing: BTreeMap::new(),
+		};
+		let known = [model::Id(1), model::Id(2), model::Id(2)]
+			.into_iter()
+			.chain((3..=20).map(model::Id));
+		assert!(store.forget_account(1, model::Id(1), known));
+		let (_, _, Operation::ForgetAccount(account, known)) = commands.try_recv().unwrap() else {
+			panic!("expected account removal");
+		};
+		assert_eq!(account, model::Id(1));
+		assert_eq!(known, (2..=9).map(model::Id).collect::<Vec<_>>());
+	}
+
+	#[test]
 	fn failed_credential_reads_or_launch_deletion_keep_the_keyed_entry_for_retry() {
 		for failure in 0..3 {
 			assert_eq!(
 				forget_account(
 					model::Id(7),
+					&[],
 					|_| if failure == 0 {
 						Err(CredentialError::Unavailable)
 					} else {
