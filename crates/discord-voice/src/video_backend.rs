@@ -54,7 +54,7 @@ impl Encoder {
 	#[cfg(test)]
 	pub(crate) fn software(config: Config) -> Result<Self, &'static str> {
 		picture_bytes(config)?;
-		if config.codec != VideoCodec::H264 {
+		if config.codec != VideoCodec::H264 || config.hdr.is_some() {
 			return Err("Stable video encoding supports H.264 only");
 		}
 		Ok(Self {
@@ -75,7 +75,7 @@ impl Encoder {
 		picture_bytes(config)?;
 		let implementation = match backend {
 			VideoBackend::Stable => {
-				if config.codec != VideoCodec::H264 {
+				if config.codec != VideoCodec::H264 || config.hdr.is_some() {
 					return Err("Stable video encoding supports H.264 only");
 				}
 				Implementation::Stable(Box::new(Stable::new(config)?))
@@ -134,7 +134,7 @@ impl Encoder {
 		picture_bytes(config)?;
 		match &mut self.implementation {
 			Implementation::Stable(encoder) => {
-				if config.codec != VideoCodec::H264 {
+				if config.codec != VideoCodec::H264 || config.hdr.is_some() {
 					return Err("Stable video encoding supports H.264 only");
 				}
 				encoder.reconfigure(config)
@@ -527,6 +527,7 @@ mod tests {
 		profile: Profile::Baseline,
 		codec: VideoCodec::H264,
 		adapter: None,
+		hdr: None,
 	};
 
 	fn software_only(config: Config) -> Encoder {

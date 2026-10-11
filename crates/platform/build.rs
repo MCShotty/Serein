@@ -1,10 +1,11 @@
 fn main() {
 	println!("cargo:rerun-if-env-changed=FFMPEG_DIR");
-	println!("cargo:rerun-if-changed=src/video_encode_ffmpeg.c");
-	println!("cargo:rerun-if-changed=src/video_encode_ffmpeg.h");
-	println!("cargo:rerun-if-changed=src/video_gpu.c");
+	println!("cargo:rerun-if-changed=src/video/video_encode_ffmpeg.c");
+	println!("cargo:rerun-if-changed=src/video/video_decode_ffmpeg.c");
+	println!("cargo:rerun-if-changed=src/video/video_encode_ffmpeg.h");
+	println!("cargo:rerun-if-changed=src/video/video_gpu.c");
 	for file in ["video_query.c", "video_query_amf.cpp"] {
-		println!("cargo:rerun-if-changed=src/{file}");
+		println!("cargo:rerun-if-changed=src/video/{file}");
 	}
 	let target = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
 	if target == "linux" {
@@ -16,12 +17,16 @@ fn main() {
 	} else if target == "macos" {
 		println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../Frameworks");
 	}
+	if target == "windows" {
+		println!("cargo:rustc-link-lib=user32");
+	}
 	let prefix = std::env::var_os("FFMPEG_DIR").map(std::path::PathBuf::from);
 	let mut native = cc::Build::new();
 	native
-		.file("src/video_encode_ffmpeg.c")
-		.file("src/video_gpu.c")
-		.file("src/video_query.c")
+		.file("src/video/video_encode_ffmpeg.c")
+		.file("src/video/video_decode_ffmpeg.c")
+		.file("src/video/video_gpu.c")
+		.file("src/video/video_query.c")
 		.static_crt(target == "windows")
 		.std("c11");
 	if let Some(prefix) = &prefix {
@@ -43,7 +48,12 @@ fn main() {
 		);
 		println!("cargo:rustc-link-lib=dylib=avcodec-serein");
 		println!("cargo:rustc-link-lib=dylib=avutil-serein");
-		if matches!(target.as_str(), "linux" | "macos") {
+		for library in ["avformat-serein", "swscale-serein", "swresample-serein"] {
+			println!("cargo:rustc-link-lib=dylib={library}");
+		}
+		if matches!(target.as_str(), "linux" | "macos")
+			&& std::env::var("PROFILE").as_deref() != Ok("release")
+		{
 			println!(
 				"cargo:rustc-link-arg=-Wl,-rpath,{}",
 				prefix.join("lib").display()
@@ -68,12 +78,25 @@ fn main() {
 			.atleast_version("59")
 			.probe("libavutil-serein")
 			.unwrap();
+		for (library, version) in [
+			("libavformat-serein", "61"),
+			("libswscale-serein", "8"),
+			("libswresample-serein", "5"),
+		] {
+			pkg_config::Config::new()
+				.atleast_version(version)
+				.probe(library)
+				.unwrap();
+		}
 	}
 	if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
 		// Dependency link-args do not propagate to this crate's test executables.
 		println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
 		println!("cargo:rustc-link-lib=framework=VideoToolbox");
 		println!("cargo:rustc-link-lib=framework=CoreFoundation");
+		println!("cargo:rustc-link-lib=framework=CoreGraphics");
+		println!("cargo:rustc-link-lib=framework=AppKit");
+		println!("cargo:rustc-link-lib=objc");
 	}
 }
 
@@ -98,7 +121,7 @@ fn query_dependencies(
 		native.define("SEREIN_HAVE_AMF_QUERY", "1");
 		let mut amf = cc::Build::new();
 		amf.cpp(true)
-			.file("src/video_query_amf.cpp")
+			.file("src/video/video_query_amf.cpp")
 			.std("c++11")
 			.static_crt(target == "windows");
 		for include in includes {

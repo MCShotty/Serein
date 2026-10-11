@@ -1,11 +1,16 @@
 # Voice dependency license provenance
 
-## FFmpeg outgoing video encoders — October 4, 2026
+## Shared FFmpeg media libraries — October 11, 2026
 
-`scripts/build-ffmpeg.py` builds shared FFmpeg 7.1.5 avcodec/avutil with GPL,
+`scripts/build-ffmpeg.py` builds shared FFmpeg 7.1.5 avcodec, avutil, avformat,
+swscale and swresample with GPL,
 nonfree, Media Foundation and VA-API encoders disabled. It enables libopenh264 2.6.0,
 supported NVENC, AMD AMF, Intel Quick Sync and macOS VideoToolbox backends. The Linux
-VA interface remains enabled for Quick Sync. OpenH264 2.6.0 matches the existing
+VA interface remains enabled for Quick Sync and selected-device hardware decoding.
+H.264/HEVC and AV1 decoding are explicitly allowlisted; software AV1 uses
+statically linked dav1d 1.5.1 (BSD-2-Clause). Network protocols and avfilter stay
+disabled. The small demux/audio allowlists serve the anonymous bounded
+attachment reader. OpenH264 2.6.0 matches the existing
 openh264-sys2 0.9.8 bundled codec version. The LGPL FFmpeg corresponding source
 archive, exact recipe/source metadata, namespace patch and configure arguments are staged from
 the built prefix into every package's `ffmpeg-source` directory. Nix uses the
@@ -14,6 +19,7 @@ same source pins and recipe. No compiler or downloaded Cisco binary is bundled.
 | Source archive | URL | SHA-256 |
 |---|---|---|
 | FFmpeg 7.1.5 | https://ffmpeg.org/releases/ffmpeg-7.1.5.tar.xz | `de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f` |
+| dav1d 1.5.1 | https://downloads.videolan.org/pub/videolan/dav1d/1.5.1/dav1d-1.5.1.tar.xz | `401813f1f89fa8fd4295805aa5284d9aed9bc7fc1fdbe554af4292f64cbabe21` |
 | OpenH264 2.6.0 | https://codeload.github.com/cisco/openh264/tar.gz/refs/tags/v2.6.0 | `558544ad358283a7ab2930d69a9ceddf913f4a51ee9bf1bfb9e377322af81a69` |
 | nv-codec-headers 12.2.72.0 | https://codeload.github.com/FFmpeg/nv-codec-headers/tar.gz/refs/tags/n12.2.72.0 | `dbeaec433d93b850714760282f1d0992b1254fc3b5a6cb7d76fc1340a1e47563` |
 
@@ -25,11 +31,16 @@ same source pins and recipe. No compiler or downloaded Cisco binary is bundled.
 `72b60be67644d841bfd54a042875b5846294d357040dd7ac8e38bde20d9e8f97`.
 That notice applies to that header; the complete NVENC headers archive is also
 bundled on NVENC builds to retain every header's own notice and copyright.
-The two FFmpeg version scripts use Serein's private ELF symbol namespaces;
+`dav1d-LICENSE.txt` is copied unmodified from the archive's `COPYING`; SHA-256
+`b327887de263238deaa80c34cdd2ff3e0ba1d35db585ce14a37ce3e74ee389e9`.
+Packages also retain that notice and the complete dav1d source archive.
+All five FFmpeg version scripts use Serein's private ELF symbol namespaces;
 the library names have a `-serein` suffix. The source changes are preserved in
 `ffmpeg-source/serein-ffmpeg.patch` beside the pristine source archive and are
 applied by the retained build recipe. They prevent collision with host FFmpeg
 libraries used by GStreamer's incoming decoding plugins.
+The recorded source patch also bounds dav1d's separate picture pool before
+allocation and binds VideoToolbox decoding to the selected Metal registry ID.
 The existing `openh264-sys2-upstream-LICENSE` preserves the Cisco codec notice;
 the separately compiled shared library also carries its upstream LICENSE in
 `ffmpeg-source/OpenH264-LICENSE`.

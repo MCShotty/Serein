@@ -396,6 +396,19 @@ pub(crate) fn validate_source_for_codec(
 ) -> Result<(), &'static str> {
 	bitstream::validate(frame, codec)
 }
+/// Authenticate before calling: restore AV1 lengths removed for DAVE, then
+/// inspect the incoming access unit under its independent receive byte budget.
+pub(crate) fn prepare_received(data: Vec<u8>, codec: VideoCodec) -> Result<Vec<u8>, &'static str> {
+	let normalized = match bitstream::decoder_frame(&data, codec)? {
+		std::borrow::Cow::Borrowed(_) => data,
+		std::borrow::Cow::Owned(bytes) => bytes,
+	};
+	bitstream::validate_received(&normalized, codec)?;
+	Ok(normalized)
+}
+pub(crate) fn validate_received(frame: &[u8], codec: VideoCodec) -> Result<(), &'static str> {
+	bitstream::validate_received(frame, codec)
+}
 pub(crate) fn has_parameter_sets_for_codec(frame: &[u8], codec: VideoCodec) -> bool {
 	bitstream::has_parameters(frame, codec)
 }
@@ -600,6 +613,13 @@ fn nalus(frame: &[u8]) -> Result<Vec<&[u8]>, &'static str> {
 		out.push(&frame[start + size..end]);
 	}
 	Ok(out)
+}
+
+pub(crate) fn decoder_frame(
+	frame: &[u8],
+	codec: VideoCodec,
+) -> Result<std::borrow::Cow<'_, [u8]>, &'static str> {
+	bitstream::decoder_frame(frame, codec)
 }
 
 #[cfg(test)]

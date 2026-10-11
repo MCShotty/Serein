@@ -1,5 +1,5 @@
 //! Incoming H.264 video: RFC 6184 depacketizing per remote SSRC and software decoding on a
-//! dedicated thread. Frames stay bounded (1080p RGBA) and no video is ever written to disk.
+//! dedicated thread. Access units, reference surfaces and display pictures are byte bounded.
 //! Discord's video signaling is unofficial; live interoperability is unverified.
 use std::{
 	collections::HashMap,
@@ -15,21 +15,22 @@ use std::{
 pub(crate) type Lost = Arc<Mutex<Vec<u64>>>;
 
 /// Largest reassembled (still DAVE-encrypted) access unit accepted from one remote sender.
-pub const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024 + 64 * 1024;
+pub const MAX_FRAME_BYTES: usize = platform::video::ffmpeg::MAX_UNIT;
 /// Remote video senders tracked per transport; Discord forwards at most a few at once.
 pub const MAX_SOURCES: usize = 16;
 /// Decoders kept alive at once; each holds reference pictures for one remote user.
 const MAX_DECODERS: usize = 8;
-const QUEUE_BYTES: usize = 16 * 1024 * 1024;
-const MAX_WIDTH: u32 = 1920;
-const MAX_PIXELS: u64 = 1920 * 1080;
+const QUEUE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_WIDTH: u32 = 7680;
+const MAX_PIXELS: u64 = 7680 * 4320;
 // A normal 1080p SPS stores 1088 coded rows and crops the final eight.
-const MAX_CODED_PIXELS: u64 = 1920 * 1088;
+const MAX_CODED_PIXELS: u64 = 7680 * 4352;
 const START_CODE: [u8; 4] = [0, 0, 0, 1];
 const MAX_DECODE_AGE: Duration = Duration::from_millis(150);
 
 /// One decoded remote picture, packed RGBA.
 pub struct RemoteFrame<'a> {
+	pub picture: platform::video::ffmpeg::Picture,
 	pub user: u64,
 	pub width: u32,
 	pub height: u32,
@@ -100,6 +101,7 @@ impl Drop for DecoderQueue {
 
 #[derive(Default)]
 pub(crate) struct DecoderCounters {
+	pub failures: Mutex<Vec<(u64, &'static str)>>,
 	pub pictures: AtomicU64,
 	pub errors: AtomicU64,
 	pub hardware: AtomicU64,
@@ -110,6 +112,8 @@ pub(crate) struct DecoderCounters {
 
 /// A cleartext Annex-B access unit handed to the decoder thread.
 pub(crate) struct Encoded {
+	pub timestamp: u32,
+	pub codec: model::voice_settings::VideoCodec,
 	pub user: u64,
 	pub data: Vec<u8>,
 	pub keyframe: bool,
@@ -174,6 +178,9 @@ pub(crate) fn is_keyframe(frame: &[u8]) -> bool {
 /// Reassembles RTP payloads of one SSRC into Annex-B access units (single NAL, STAP-A, FU-A).
 #[derive(Default)]
 pub(crate) struct Assembler {
+	codec: model::voice_settings::VideoCodec,
+	obu_fragment: Vec<u8>,
+	obu_count: usize,
 	timestamp: u32,
 	next_sequence: Option<u16>,
 	frame: Vec<u8>,
@@ -260,7 +267,7 @@ impl Assembler {
 			self.broken = true;
 		}
 		self.next_sequence = Some(sequence.wrapping_add(1));
-		if !self.broken && self.append(payload).is_err() {
+		if !self.broken && self.append(payload, marker).is_err() {
 			self.broken = true;
 		}
 		self.lost |= self.broken;
@@ -280,6 +287,8 @@ impl Assembler {
 			self.frame = Vec::new();
 		}
 		self.fragmenting = false;
+		self.obu_fragment = Vec::new();
+		self.obu_count = 0;
 		self.broken = false;
 	}
 	fn extend(&mut self, parts: &[&[u8]]) -> Result<(), ()> {
@@ -297,7 +306,12 @@ impl Assembler {
 		}
 		Ok(())
 	}
-	fn append(&mut self, payload: &[u8]) -> Result<(), ()> {
+	fn append(&mut self, payload: &[u8], marker: bool) -> Result<(), ()> {
+		match self.codec {
+			model::voice_settings::VideoCodec::H265 => return self.append_hevc(payload),
+			model::voice_settings::VideoCodec::Av1 => return self.append_av1(payload, marker),
+			_ => {}
+		}
 		let Some(&indicator) = payload.first() else {
 			return Err(());
 		};
@@ -349,6 +363,151 @@ impl Assembler {
 			_ => Err(()),
 		}
 	}
+	fn append_hevc(&mut self, payload: &[u8]) -> Result<(), ()> {
+		if payload.len() < 2 || payload[0] & 0x80 != 0 || payload[1] & 7 == 0 {
+			return Err(());
+		}
+		let kind = (payload[0] >> 1) & 63;
+		match kind {
+			0..=47 => {
+				if self.fragmenting {
+					return Err(());
+				}
+				self.extend(&[&START_CODE, payload])
+			}
+			48 => {
+				if self.fragmenting {
+					return Err(());
+				}
+				let mut at = 2;
+				while at < payload.len() {
+					let size = payload.get(at..at + 2).ok_or(())?;
+					let size = u16::from_be_bytes([size[0], size[1]]) as usize;
+					at += 2;
+					if size < 2 {
+						return Err(());
+					}
+					let unit = payload.get(at..at + size).ok_or(())?;
+					if unit[0] >> 1 & 63 >= 48 || unit[0] & 128 != 0 || unit[1] & 7 == 0 {
+						return Err(());
+					}
+					self.extend(&[&START_CODE, unit])?;
+					at += size;
+				}
+				Ok(())
+			}
+			49 => {
+				if payload.len() < 4 {
+					return Err(());
+				}
+				let start = payload[2] & 128 != 0;
+				let end = payload[2] & 64 != 0;
+				if start == self.fragmenting || start && end || payload[2] & 63 >= 48 {
+					return Err(());
+				}
+				if start {
+					self.extend(&[
+						&START_CODE,
+						&[(payload[0] & 0x81) | ((payload[2] & 63) << 1), payload[1]],
+						&payload[3..],
+					])?;
+				} else {
+					self.extend(&[&payload[3..]])?;
+				}
+				self.fragmenting = !end;
+				Ok(())
+			}
+			_ => Err(()),
+		}
+	}
+	fn append_av1(&mut self, payload: &[u8], marker: bool) -> Result<(), ()> {
+		let flags = *payload.first().ok_or(())?;
+		let continuation = flags & 128 != 0;
+		let continues = flags & 64 != 0;
+		let count = ((flags >> 4) & 3) as usize;
+		if flags & 7 != 0
+			|| continuation != self.fragmenting
+			|| continuation && flags & 8 != 0
+			|| marker && continues
+		{
+			return Err(());
+		}
+		let mut at = 1;
+		let mut index = 0;
+		while at < payload.len() {
+			let size = if count != 0 && index + 1 == count {
+				payload.len() - at
+			} else {
+				let mut size = 0usize;
+				let mut closed = false;
+				for shift in (0..=49).step_by(7) {
+					let b = *payload.get(at).ok_or(())?;
+					at += 1;
+					size |= ((b & 127) as usize).checked_shl(shift).ok_or(())?;
+					if b & 128 == 0 {
+						closed = true;
+						break;
+					}
+				}
+				if !closed {
+					return Err(());
+				}
+				size
+			};
+			if size == 0 || size > MAX_FRAME_BYTES {
+				return Err(());
+			}
+			let element = payload.get(at..at + size).ok_or(())?;
+			at += size;
+			let final_element = at == payload.len();
+			if index == 0 && continuation {
+				self.obu_fragment.extend_from_slice(element);
+			} else {
+				if !self.obu_fragment.is_empty() {
+					return Err(());
+				}
+				self.obu_fragment.extend_from_slice(element);
+			}
+			if self.obu_fragment.len() + self.frame.len() > MAX_FRAME_BYTES {
+				return Err(());
+			}
+			if final_element && continues {
+				self.fragmenting = true;
+			} else {
+				let unit = std::mem::take(&mut self.obu_fragment);
+				let header = *unit.first().ok_or(())?;
+				let prefix = 1 + usize::from(header & 4 != 0);
+				if header & 0x83 != 0 || unit.len() < prefix || self.obu_count >= 2048 {
+					return Err(());
+				}
+				self.obu_count += 1;
+				if marker && final_element {
+					self.extend(&[&unit])?;
+				} else {
+					let mut head = vec![header | 2];
+					if prefix == 2 {
+						head.push(unit[1]);
+					}
+					let mut size = unit.len() - prefix;
+					while size >= 128 {
+						head.push((size as u8 & 127) | 128);
+						size >>= 7;
+					}
+					head.push(size as u8);
+					self.extend(&[&head, &unit[prefix..]])?;
+				}
+				self.fragmenting = false;
+			}
+			index += 1;
+			if count != 0 && index > count {
+				return Err(());
+			}
+		}
+		if index == 0 || count != 0 && index != count {
+			return Err(());
+		}
+		Ok(())
+	}
 }
 
 /// Remote video SSRC ownership and per-source reassembly for one media transport.
@@ -358,6 +517,8 @@ pub(crate) struct Receivers {
 	rtx: Vec<(u32, u32)>,
 	/// Users whose decoder lost a reference picture; only a keyframe restarts their video.
 	awaiting_keyframe: Vec<u64>,
+	/// Consecutive complete, decrypted access units that failed syntax validation.
+	malformed: Vec<(u64, u8)>,
 	/// Depacketizer outcomes since the last `take_stats`, for diagnostics.
 	stats: ReceiveStats,
 }
@@ -383,7 +544,9 @@ impl Receivers {
 				self.rtx.retain(|(_, media)| *media != ssrc);
 				if !self.sources.iter().any(|(_, owner, _)| *owner == previous) {
 					self.awaiting_keyframe.retain(|owner| *owner != previous);
+					self.admitted(previous);
 				}
+				self.admitted(user);
 				self.require_keyframe(user);
 			}
 			return Ok(());
@@ -392,6 +555,7 @@ impl Receivers {
 			return Err("Voice channel announces more video sources than supported");
 		}
 		self.sources.push((ssrc, user, Assembler::default()));
+		self.admitted(user);
 		self.require_keyframe(user);
 		Ok(())
 	}
@@ -406,7 +570,32 @@ impl Receivers {
 			.retain(|(_, media)| self.sources.iter().any(|(ssrc, _, _)| ssrc == media));
 		if !self.sources.iter().any(|(_, owner, _)| *owner == user) {
 			self.awaiting_keyframe.retain(|u| *u != user);
+			self.admitted(user);
 		}
+	}
+	/// Packet loss, reordering and DAVE failures never count toward a permanent data error.
+	pub fn reject_malformed(&mut self, user: u64) -> Option<&'static str> {
+		if !self.sources.iter().any(|(_, owner, _)| *owner == user) {
+			return None;
+		}
+		let count = if let Some((_, count)) = self.malformed.iter_mut().find(|(u, _)| *u == user) {
+			*count = count.saturating_add(1);
+			*count
+		} else {
+			// One entry per announced owner, bounded by MAX_SOURCES.
+			self.malformed.push((user, 1));
+			1
+		};
+		if count >= 5 {
+			self.remove(user);
+			Some("This video repeatedly contains malformed frames; reopen it to try again")
+		} else {
+			self.require_keyframe(user);
+			None
+		}
+	}
+	pub fn admitted(&mut self, user: u64) {
+		self.malformed.retain(|(u, _)| *u != user);
 	}
 	pub fn announce_rtx(&mut self, media: u32, rtx: u32) -> Result<(), &'static str> {
 		if media == 0 || rtx == 0 {
@@ -489,7 +678,7 @@ impl Receivers {
 		}
 		!self.awaiting_keyframe.contains(&user)
 	}
-	/// Returns the owning user and a complete encrypted access unit when one closes.
+	#[cfg(test)]
 	pub fn push(
 		&mut self,
 		ssrc: u32,
@@ -498,12 +687,38 @@ impl Receivers {
 		marker: bool,
 		payload: &[u8],
 	) -> Option<(u64, Vec<u8>)> {
+		self.push_codec(
+			ssrc,
+			sequence,
+			timestamp,
+			marker,
+			payload,
+			model::voice_settings::VideoCodec::H264,
+		)
+	}
+	/// Returns the owning user and a complete encrypted access unit when one closes.
+	pub fn push_codec(
+		&mut self,
+		ssrc: u32,
+		sequence: u16,
+		timestamp: u32,
+		marker: bool,
+		payload: &[u8],
+		codec: model::voice_settings::VideoCodec,
+	) -> Option<(u64, Vec<u8>)> {
 		let Some((_, user, assembler)) = self.sources.iter_mut().find(|(s, _, _)| *s == ssrc)
 		else {
 			self.stats.unknown_ssrc += 1;
 			return None;
 		};
 		let user = *user;
+		if assembler.codec != codec {
+			*assembler = Assembler {
+				codec,
+				..Default::default()
+			};
+			self.malformed.retain(|(owner, _)| *owner != user);
+		}
 		let frame = assembler.push(sequence, timestamp, marker, payload);
 		let lost = std::mem::take(&mut assembler.lost);
 		self.stats.incomplete += u64::from(lost);
@@ -517,7 +732,14 @@ impl Receivers {
 
 /// Decoder thread: cleartext access units in, bounded RGBA frames out through the sink.
 /// Dropping the returned sender ends the thread and releases every decoder.
+#[cfg(test)]
 pub(crate) fn spawn_decoder(sink: VideoSink) -> Result<(DecoderQueue, Lost), &'static str> {
+	spawn_decoder_on_adapter(sink, None)
+}
+pub(crate) fn spawn_decoder_on_adapter(
+	sink: VideoSink,
+	adapter: Option<model::VideoAdapter>,
+) -> Result<(DecoderQueue, Lost), &'static str> {
 	// Keep short bursts, but recover from a fresh keyframe instead of replaying stale video.
 	let (send, receive) = sync_channel(16);
 	let lost: Lost = Arc::new(Mutex::new(Vec::new()));
@@ -529,7 +751,7 @@ pub(crate) fn spawn_decoder(sink: VideoSink) -> Result<(DecoderQueue, Lost), &'s
 	let worker = std::thread::Builder::new()
 		.name("remote-video".into())
 		.spawn(move || {
-			decode_loop(receive, sink, report, thread_counters, true);
+			decode_loop_on_adapter(receive, sink, report, thread_counters, true, adapter);
 			// Signal only after every decoder and native runtime has been released.
 			#[cfg(test)]
 			let _ = completed.send(());
@@ -557,28 +779,59 @@ pub(crate) fn pli(sender: u32, media: u32) -> ([u8; 8], [u8; 4]) {
 	(header, media.to_be_bytes())
 }
 
-/// Queue a frame without blocking the transport. `Ok(false)` means the queue was full and
-/// the frame dropped, so the caller must wait for the next keyframe.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Admission {
+	Queued,
+	Congested,
+	Malformed,
+	Unsupported(&'static str),
+}
+
+#[cfg(test)]
 pub(crate) fn offer(sender: &DecoderQueue, frame: Encoded) -> Result<bool, &'static str> {
-	if frame.data.len() > MAX_FRAME_BYTES
+	admit(sender, frame).map(|outcome| outcome == Admission::Queued)
+}
+
+/// Validate before allocating native surfaces; congestion is recoverable while a
+/// rejected resolution/profile must be surfaced instead of repeated keyframe requests.
+pub(crate) fn admit(sender: &DecoderQueue, frame: Encoded) -> Result<Admission, &'static str> {
+	if frame.data.is_empty()
+		|| frame.data.len() > MAX_FRAME_BYTES
 		|| frame.data.capacity() > QUEUE_BYTES
-		|| crate::video_sps::validate_dimensions(&frame.data, |dimensions| {
+	{
+		return Ok(Admission::Malformed);
+	}
+	let mut supported = true;
+	let validation = if frame.codec == model::voice_settings::VideoCodec::H264 {
+		crate::video_sps::validate_dimensions(&frame.data, |dimensions| {
 			let (width, height) = dimensions.coded;
-			width <= MAX_WIDTH as usize
+			supported &= width <= MAX_WIDTH as usize
 				&& height <= MAX_WIDTH as usize
 				&& width as u64 * height as u64 <= MAX_CODED_PIXELS
 				&& bounded(dimensions.visible.0, dimensions.visible.1).is_ok()
+				&& dimensions.depth <= 10
+				&& dimensions.chroma <= 1
+				&& dimensions.references <= 16;
+			supported
 		})
-		.is_err()
-	{
-		return Ok(false);
+	} else {
+		crate::video::decoder_frame(&frame.data, frame.codec)
+			.and_then(|data| crate::video::validate_received(&data, frame.codec))
+	};
+	if !supported {
+		return Ok(Admission::Unsupported(
+			"This video resolution or profile is not supported",
+		));
+	}
+	if validation.is_err() {
+		return Ok(Admission::Malformed);
 	}
 	let Ok(permit) = sender
 		.bytes
 		.clone()
 		.try_acquire_many_owned(frame.data.capacity() as u32)
 	else {
-		return Ok(false);
+		return Ok(Admission::Congested);
 	};
 	let active = {
 		let mut users = sender
@@ -586,7 +839,7 @@ pub(crate) fn offer(sender: &DecoderQueue, frame: Encoded) -> Result<bool, &'sta
 			.lock()
 			.map_err(|_| "Video decoder state unavailable")?;
 		if !users.contains_key(&frame.user) && users.len() >= MAX_SOURCES {
-			return Ok(false);
+			return Ok(Admission::Congested);
 		}
 		users
 			.entry(frame.user)
@@ -601,8 +854,8 @@ pub(crate) fn offer(sender: &DecoderQueue, frame: Encoded) -> Result<bool, &'sta
 		.send
 		.try_send(Decode::Frame(frame, permit, Instant::now(), active))
 	{
-		Ok(()) => Ok(true),
-		Err(TrySendError::Full(_)) => Ok(false),
+		Ok(()) => Ok(Admission::Queued),
+		Err(TrySendError::Full(_)) => Ok(Admission::Congested),
 		Err(TrySendError::Disconnected(_)) => Err("Video decoder stopped"),
 	}
 }
@@ -665,6 +918,7 @@ pub(crate) fn retain_sources(sender: &DecoderQueue, receivers: &Receivers) {
 
 #[derive(Debug, PartialEq, Eq)]
 enum DecodeError {
+	Permanent(&'static str),
 	/// The stream or decoder is unusable; the decoder is rebuilt at the next keyframe.
 	Failed,
 	/// The native queue is full; this access unit was dropped but the decoder is healthy.
@@ -687,10 +941,46 @@ fn mark_broken(user: u64, broken: &mut Vec<u64>, lost: &Lost) {
 /// Hardware decoding where the OS offers it; the software decoder is the fallback and the
 /// only option on the other platforms. Hardware pictures reach the sink asynchronously.
 enum Backend {
+	Ffmpeg(
+		platform::video::ffmpeg::LiveDecoder,
+		platform::video::ffmpeg::Picture,
+	),
+	#[cfg(all(test, target_os = "macos"))]
 	Hardware(platform::video::live::H264Decoder),
+	#[cfg(test)]
 	Software(openh264::decoder::Decoder),
 }
 impl Backend {
+	fn ffmpeg(
+		codec: model::voice_settings::VideoCodec,
+		hardware: bool,
+		adapter: Option<model::VideoAdapter>,
+	) -> Option<Self> {
+		platform::video::ffmpeg::LiveDecoder::new(codec.index() as u32, adapter, hardware)
+			.or_else(|_| {
+				platform::video::ffmpeg::LiveDecoder::new(codec.index() as u32, None, false)
+			})
+			.ok()
+			.map(|decoder| Self::Ffmpeg(decoder, Default::default()))
+	}
+	fn hardware(&self) -> bool {
+		match self {
+			#[cfg(all(test, target_os = "macos"))]
+			Self::Hardware(_) => true,
+			#[cfg(test)]
+			Self::Software(_) => false,
+			Self::Ffmpeg(decoder, _) => decoder.hardware(),
+		}
+	}
+	fn picture(&self, _width: u32, _height: u32) -> platform::video::ffmpeg::Picture {
+		match self {
+			Self::Ffmpeg(_, picture) => *picture,
+			#[cfg(test)]
+			_ => platform::video::ffmpeg::Picture::sdr(_width, _height),
+		}
+	}
+
+	#[cfg(all(test, target_os = "macos"))]
 	fn new(
 		prefer_hardware: bool,
 		user: u64,
@@ -713,6 +1003,7 @@ impl Backend {
 						width: frame.width,
 						height: frame.height,
 						rgba: &frame.rgba,
+						picture: platform::video::ffmpeg::Picture::sdr(frame.width, frame.height),
 					});
 				}
 			});
@@ -727,9 +1018,93 @@ impl Backend {
 	fn decode(
 		&mut self,
 		data: &[u8],
+		pts: i64,
 		scratch: &mut Vec<u8>,
 	) -> Result<Option<(u32, u32)>, DecodeError> {
 		match self {
+			Self::Ffmpeg(decoder, last_picture) => {
+				let mut admission_error = None;
+				let validation = if decoder.codec() == 0 {
+					crate::video_sps::validate_dimensions(data, |dimensions| {
+						let result = decoder.reserve(
+							dimensions.coded.0,
+							dimensions.coded.1,
+							dimensions.depth,
+							dimensions.chroma,
+							dimensions.references,
+						);
+						if let Err(error) = result {
+							admission_error = Some(error);
+							return false;
+						}
+						true
+					})
+				} else {
+					match decoder.inspect(data) {
+						Ok(Some(header)) => decoder
+							.reserve(
+								header.coded_width as usize,
+								header.coded_height as usize,
+								header.depth,
+								header.chroma,
+								header.references,
+							)
+							.map_err(|error| {
+								admission_error = Some(error);
+								"Unsafe video profile"
+							}),
+						Ok(None) => {
+							if last_picture.width == 0 {
+								Err("Missing video sequence header")
+							} else {
+								Ok(())
+							}
+						}
+						Err(error) => {
+							admission_error = Some(error);
+							Err("Unsafe video profile")
+						}
+					}
+				};
+				if let Some(error) = admission_error {
+					return Err(DecodeError::Permanent(error));
+				}
+				validation.map_err(|_| DecodeError::Failed)?;
+				let classify = |error| {
+					if error == platform::video::INVALID {
+						DecodeError::Failed
+					} else {
+						DecodeError::Permanent(error)
+					}
+				};
+				let mut latest = None;
+				if !decoder.send(data, pts).map_err(classify)? {
+					for _ in 0..32 {
+						match decoder.receive(scratch).map_err(classify)? {
+							Some(picture) => latest = Some(picture),
+							None => break,
+						}
+					}
+					if !decoder.send(data, pts).map_err(classify)? {
+						return Err(DecodeError::Busy);
+					}
+				}
+				// Drain ready output before awaiting another input. This also avoids
+				// showing an older retained picture when a codec reorders its frames.
+				for _ in 0..32 {
+					match decoder.receive(scratch).map_err(classify)? {
+						Some(picture) => latest = Some(picture),
+						None => break,
+					}
+				}
+				if let Some(picture) = latest {
+					*last_picture = picture;
+					Ok(Some((picture.width, picture.height)))
+				} else {
+					Ok(None)
+				}
+			}
+			#[cfg(all(test, target_os = "macos"))]
 			Self::Hardware(decoder) => decoder.decode(data).map(|()| None).map_err(|error| {
 				if error == platform::video::BUSY {
 					DecodeError::Busy
@@ -737,6 +1112,7 @@ impl Backend {
 					DecodeError::Failed
 				}
 			}),
+			#[cfg(test)]
 			Self::Software(decoder) => {
 				let decoded = match decoder.decode(data) {
 					Ok(Some(yuv)) => yuv,
@@ -764,6 +1140,7 @@ impl Backend {
 	}
 }
 
+#[cfg(test)]
 fn decode_loop(
 	receive: Receiver<Decode>,
 	sink: VideoSink,
@@ -771,14 +1148,30 @@ fn decode_loop(
 	counters: Arc<DecoderCounters>,
 	prefer_hardware: bool,
 ) {
+	decode_loop_on_adapter(receive, sink, lost, counters, prefer_hardware, None);
+}
+fn decode_loop_on_adapter(
+	receive: Receiver<Decode>,
+	sink: VideoSink,
+	lost: Lost,
+	counters: Arc<DecoderCounters>,
+	prefer_hardware: bool,
+	adapter: Option<model::VideoAdapter>,
+) {
 	let mut decoders: HashMap<u64, Backend> = HashMap::new();
 	let mut active: HashMap<u64, Arc<SourceLifetime>> = HashMap::new();
 	// Users whose hardware decoder rejected the stream fall back to software.
 	let mut software_only: Vec<u64> = Vec::new();
 	// After a decode error, predictions are skipped until a keyframe rebuilds the references.
 	let mut broken: Vec<u64> = Vec::new();
+	let mut failed_keyframes: HashMap<u64, u8> = HashMap::new();
 	let mut scratch = Vec::new();
 	while let Ok(message) = receive.recv() {
+		failed_keyframes.retain(|user, _| {
+			active
+				.get(user)
+				.is_some_and(|lifetime| lifetime.active.load(Ordering::Acquire))
+		});
 		let had_active = !active.is_empty();
 		active.retain(|user, lifetime| {
 			let retained = lifetime.active.load(Ordering::Acquire);
@@ -824,28 +1217,74 @@ fn decode_loop(
 		} else if broken.contains(&frame.user) {
 			continue;
 		}
-		if !decoders.contains_key(&frame.user) {
-			if decoders.len() >= MAX_DECODERS {
+		if decoders
+			.get(&frame.user)
+			.is_some_and(|decoder| match decoder {
+				Backend::Ffmpeg(native, _) => native.codec() != frame.codec.index() as u32,
+				#[cfg(test)]
+				_ => frame.codec != model::voice_settings::VideoCodec::H264,
+			}) {
+			decoders.remove(&frame.user);
+			software_only.retain(|user| *user != frame.user);
+			if !frame.keyframe {
+				mark_broken(frame.user, &mut broken, &lost);
 				continue;
 			}
-			let Some(decoder) = Backend::new(
+		}
+		if !decoders.contains_key(&frame.user) {
+			if decoders.len() >= MAX_DECODERS {
+				fail_source(
+					frame.user,
+					"Too many concurrent videos for the decoder budget",
+					&lifetime,
+					&counters,
+				);
+				continue;
+			}
+			let Some(decoder) = Backend::ffmpeg(
+				frame.codec,
 				prefer_hardware && !software_only.contains(&frame.user),
-				frame.user,
-				&sink,
-				&counters,
-				&lifetime,
+				adapter,
 			) else {
-				counters.errors.fetch_add(1, Ordering::Relaxed);
+				fail_source(
+					frame.user,
+					"No decoder is available for this video codec",
+					&lifetime,
+					&counters,
+				);
 				continue;
 			};
 			decoders.insert(frame.user, decoder);
 		}
+		let data = match crate::video::decoder_frame(&frame.data, frame.codec) {
+			Ok(data) => data,
+			Err(_) => {
+				mark_broken(frame.user, &mut broken, &lost);
+				continue;
+			}
+		};
 		let decoder = decoders.get_mut(&frame.user).expect("decoder inserted");
-		let hardware = !matches!(decoder, Backend::Software(_));
-		let decoded = match decoder.decode(&frame.data, &mut scratch) {
+		let hardware = decoder.hardware();
+		let mut outcome = decoder.decode(&data, i64::from(frame.timestamp), &mut scratch);
+		if hardware && frame.keyframe && outcome.is_err() && outcome != Err(DecodeError::Busy) {
+			decoders.remove(&frame.user);
+			if !software_only.contains(&frame.user) {
+				software_only.push(frame.user);
+			}
+			if let Some(mut fallback) = Backend::ffmpeg(frame.codec, false, None) {
+				outcome = fallback.decode(&data, i64::from(frame.timestamp), &mut scratch);
+				decoders.insert(frame.user, fallback);
+			}
+		}
+		let decoded = match outcome {
 			Ok(Some(picture)) => picture,
 			Ok(None) => {
 				decoder_counts(&decoders, &counters);
+				continue;
+			}
+			Err(DecodeError::Permanent(error)) => {
+				fail_source(frame.user, error, &lifetime, &counters);
+				decoders.remove(&frame.user);
 				continue;
 			}
 			Err(DecodeError::Busy) => {
@@ -865,12 +1304,30 @@ fn decode_loop(
 				if hardware && frame.keyframe && !software_only.contains(&frame.user) {
 					software_only.push(frame.user);
 				}
+				if frame.keyframe {
+					let failures = failed_keyframes.entry(frame.user).or_default();
+					*failures = failures.saturating_add(1);
+					if *failures >= 5 {
+						fail_source(
+							frame.user,
+							"Video could not be decoded after repeated keyframes",
+							&lifetime,
+							&counters,
+						);
+						continue;
+					}
+				}
 				mark_broken(frame.user, &mut broken, &lost);
 				continue;
 			}
 		};
 		decoder_counts(&decoders, &counters);
+		failed_keyframes.remove(&frame.user);
 		let (width, height) = decoded;
+		let picture = decoders
+			.get(&frame.user)
+			.expect("decoded backend")
+			.picture(width, height);
 		if !lifetime.active.load(Ordering::Acquire) {
 			continue;
 		}
@@ -880,10 +1337,12 @@ fn decode_loop(
 			user: frame.user,
 			width,
 			height,
-			rgba: &scratch[..width as usize * height as usize * 4],
+			rgba: &scratch[..picture.bytes],
+			picture,
 		});
 	}
 	// Hardware pictures still in flight must land before the sink goes away.
+	#[cfg(all(test, target_os = "macos"))]
 	for decoder in decoders.values() {
 		if let Backend::Hardware(decoder) = decoder {
 			decoder.flush();
@@ -891,10 +1350,25 @@ fn decode_loop(
 	}
 }
 
+fn fail_source(
+	user: u64,
+	error: &'static str,
+	lifetime: &SourceLifetime,
+	counters: &DecoderCounters,
+) {
+	counters.errors.fetch_add(1, Ordering::Relaxed);
+	if lifetime.active.swap(false, Ordering::AcqRel)
+		&& let Ok(mut failures) = counters.failures.lock()
+		&& failures.len() < MAX_SOURCES
+	{
+		failures.push((user, error));
+	}
+}
+
 fn decoder_counts(decoders: &HashMap<u64, Backend>, counters: &DecoderCounters) {
 	let hardware = decoders
 		.values()
-		.filter(|decoder| matches!(decoder, Backend::Hardware(_)))
+		.filter(|decoder| decoder.hardware())
 		.count();
 	counters.hardware.store(hardware as u64, Ordering::Relaxed);
 	counters
@@ -1001,6 +1475,8 @@ mod tests {
 				offer(
 					queue,
 					Encoded {
+						timestamp: 0,
+						codec: model::voice_settings::VideoCodec::H264,
 						user,
 						data: data.to_vec(),
 						keyframe: true
@@ -1017,7 +1493,34 @@ mod tests {
 	}
 
 	#[test]
-	fn receiver_admission_rejects_oversized_sps_before_native_decode() {
+	fn malformed_frames_fail_boundedly_and_recovery_resets_the_count() {
+		let mut receivers = Receivers::default();
+		receivers.announce(7, 700).unwrap();
+		for _ in 0..4 {
+			assert!(receivers.reject_malformed(7).is_none());
+		}
+		receivers.admitted(7);
+		for _ in 0..4 {
+			assert!(receivers.reject_malformed(7).is_none());
+		}
+		assert!(receivers.reject_malformed(7).is_some());
+		assert!(!receivers.has_sources());
+		assert!(!receivers.awaiting());
+		assert!(receivers.malformed.is_empty());
+		receivers.announce(7, 701).unwrap();
+		// Packet loss only requests a keyframe; it cannot poison this counter.
+		for _ in 0..100 {
+			receivers.require_keyframe(7);
+		}
+		assert!(receivers.reject_malformed(7).is_none());
+		receivers.announce(8, 701).unwrap();
+		assert!(receivers.malformed.is_empty());
+		assert!(receivers.reject_malformed(999).is_none());
+		assert!(receivers.malformed.is_empty());
+	}
+
+	#[test]
+	fn receiver_admission_accepts_the_former_1080p_limit() {
 		let data = decoder_cleanup_keyframe(2048, 1152);
 		assert!(data.len() < MAX_FRAME_BYTES);
 		assert!(has_parameter_sets(&data) && is_keyframe(&data));
@@ -1030,9 +1533,11 @@ mod tests {
 		);
 		let (queue, receive) = decoder_cleanup_queue(1);
 		assert!(
-			!offer(
+			offer(
 				&queue,
 				Encoded {
+					timestamp: 0,
+					codec: model::voice_settings::VideoCodec::H264,
 					user: 7,
 					data,
 					keyframe: true,
@@ -1040,8 +1545,8 @@ mod tests {
 			)
 			.unwrap()
 		);
-		assert!(receive.try_recv().is_err());
-		assert!(queue.active.lock().unwrap().is_empty());
+		assert!(matches!(receive.try_recv(), Ok(Decode::Frame(..))));
+		assert_eq!(queue.active.lock().unwrap().len(), 1);
 		assert_eq!(queue.bytes.available_permits(), QUEUE_BYTES);
 	}
 
@@ -1054,6 +1559,8 @@ mod tests {
 				offer(
 					&queue,
 					Encoded {
+						timestamp: 0,
+						codec: model::voice_settings::VideoCodec::H264,
 						user: 7,
 						data,
 						keyframe: true
@@ -1066,9 +1573,11 @@ mod tests {
 		let lifetime = queue.source_lifetime(7).unwrap();
 		let data = decoder_cleanup_keyframe(2048, 1152);
 		assert!(
-			!offer(
+			offer(
 				&queue,
 				Encoded {
+					timestamp: 0,
+					codec: model::voice_settings::VideoCodec::H264,
 					user: 7,
 					data,
 					keyframe: true
@@ -1077,7 +1586,7 @@ mod tests {
 			.unwrap()
 		);
 		assert!(lifetime.active.load(Ordering::Acquire));
-		assert!(receive.try_recv().is_err());
+		assert!(matches!(receive.try_recv(), Ok(Decode::Frame(..))));
 		assert_eq!(queue.bytes.available_permits(), QUEUE_BYTES);
 		// Malformed SPS and SPS without its body must also stay outside the queue.
 		for data in [vec![0, 0, 1, 0x67], vec![0, 0, 1, 0x67, 66, 0, 52, 0x80]] {
@@ -1085,6 +1594,8 @@ mod tests {
 				!offer(
 					&queue,
 					Encoded {
+						timestamp: 0,
+						codec: model::voice_settings::VideoCodec::H264,
 						user: 7,
 						data,
 						keyframe: true
@@ -1098,6 +1609,8 @@ mod tests {
 			offer(
 				&queue,
 				Encoded {
+					timestamp: 0,
+					codec: model::voice_settings::VideoCodec::H264,
 					user: 7,
 					data,
 					keyframe: true
@@ -1117,6 +1630,8 @@ mod tests {
 					offer(
 						&queue,
 						Encoded {
+							timestamp: 0,
+							codec: model::voice_settings::VideoCodec::H264,
 							user: 7,
 							data: data.clone(),
 							keyframe: true
@@ -1132,6 +1647,8 @@ mod tests {
 					offer(
 						&queue,
 						Encoded {
+							timestamp: 0,
+							codec: model::voice_settings::VideoCodec::H264,
 							user: 7,
 							data: data.clone(),
 							keyframe: true
@@ -1194,6 +1711,8 @@ mod tests {
 			offer(
 				&queue,
 				Encoded {
+					timestamp: 0,
+					codec: model::voice_settings::VideoCodec::H264,
 					user: 1,
 					data: data.clone(),
 					keyframe: true
@@ -1208,6 +1727,8 @@ mod tests {
 				offer(
 					&queue,
 					Encoded {
+						timestamp: 0,
+						codec: model::voice_settings::VideoCodec::H264,
 						user: 7,
 						data: data.clone(),
 						keyframe: true
@@ -1222,6 +1743,8 @@ mod tests {
 			!offer(
 				&queue,
 				Encoded {
+					timestamp: 0,
+					codec: model::voice_settings::VideoCodec::H264,
 					user: 7,
 					data: data.clone(),
 					keyframe: true
@@ -1234,6 +1757,8 @@ mod tests {
 		while !offer(
 			&queue,
 			Encoded {
+				timestamp: 0,
+				codec: model::voice_settings::VideoCodec::H264,
 				user: 7,
 				data: data.clone(),
 				keyframe: true,
@@ -1261,6 +1786,8 @@ mod tests {
 			offer(
 				&queue,
 				Encoded {
+					timestamp: 0,
+					codec: model::voice_settings::VideoCodec::H264,
 					user: 7,
 					data: vec![0, 0, 1, 0x41, 0x80],
 					keyframe: true
@@ -1293,6 +1820,8 @@ mod tests {
 			offer(
 				&queue,
 				Encoded {
+					timestamp: 0,
+					codec: model::voice_settings::VideoCodec::H264,
 					user: 8,
 					data: vec![0, 0, 1, 0x41, 0x80],
 					keyframe: true
@@ -1546,7 +2075,10 @@ mod tests {
 		assert!(is_keyframe(&[0, 0, 0, 1, 0x67, 1, 0, 0, 1, 0x65, 2]));
 		assert!(!is_keyframe(&[0, 0, 0, 1, 0x41, 9]));
 		assert!(bounded(1920, 1080).is_ok());
-		assert!(bounded(1920, 1081).is_err());
+		assert!(bounded(1920, 1081).is_ok());
+		assert!(bounded(6144, 2560).is_ok());
+		assert!(bounded(7680, 4320).is_ok());
+		assert!(bounded(7680, 4321).is_err());
 		assert!(bounded(0, 4).is_err());
 	}
 	#[test]
@@ -1575,7 +2107,7 @@ mod tests {
 		let mut allocation = None;
 		for _ in 0..4 {
 			for (decoder, data, dimensions) in &mut streams {
-				assert_eq!(decoder.decode(data, &mut scratch), Ok(Some(*dimensions)));
+				assert_eq!(decoder.decode(data, 0, &mut scratch), Ok(Some(*dimensions)));
 				let bytes = dimensions.0 as usize * dimensions.1 as usize * 4;
 				assert!(
 					scratch[..bytes]
@@ -1626,7 +2158,7 @@ mod tests {
 			for _ in 0..60 {
 				for (decoder, data) in decoders.iter_mut().zip(&streams) {
 					let previous = scratch.len();
-					let (width, height) = decoder.decode(data, &mut scratch).unwrap().unwrap();
+					let (width, height) = decoder.decode(data, 0, &mut scratch).unwrap().unwrap();
 					std::hint::black_box(&scratch[..width as usize * height as usize * 4]);
 					length_changes += usize::from(previous != scratch.len());
 					peak_capacity = peak_capacity.max(scratch.capacity());
@@ -1668,7 +2200,7 @@ mod tests {
 			let mut data = Vec::new();
 			encoded.write_vec(&mut data);
 			assert!(!data.is_empty());
-			assert!(decoder.decode(&data, &mut scratch).unwrap().is_none());
+			assert!(decoder.decode(&data, 0, &mut scratch).unwrap().is_none());
 		}
 		decoder.flush();
 		let delivered = {
@@ -1685,7 +2217,7 @@ mod tests {
 		lifetime.active.store(false, Ordering::Release);
 		let mut data = Vec::new();
 		encoder.encode(&yuv).unwrap().write_vec(&mut data);
-		decoder.decode(&data, &mut scratch).unwrap();
+		decoder.decode(&data, 0, &mut scratch).unwrap();
 		decoder.flush();
 		assert_eq!(pictures.lock().unwrap().len() as u64, delivered);
 		assert_eq!(
@@ -1740,7 +2272,7 @@ mod tests {
 			.unwrap();
 			let mut scratch = Vec::new();
 			// Session start-up (IOSurface, Metal) is a one-time cost; time steady state only.
-			let _ = decoder.decode(&frames[0], &mut scratch);
+			let _ = decoder.decode(&frames[0], 0, &mut scratch);
 			decoder.flush();
 			count.store(0, std::sync::atomic::Ordering::Relaxed);
 			let start = std::time::Instant::now();
@@ -1769,6 +2301,8 @@ mod tests {
 			offer(
 				&sender,
 				Encoded {
+					timestamp: 0,
+					codec: model::voice_settings::VideoCodec::H264,
 					user: 1,
 					data: vec![0, 0, 0, 1, 0x65, 1, 2, 3],
 					keyframe: true,

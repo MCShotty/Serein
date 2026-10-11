@@ -73,7 +73,11 @@ fn nal_ranges(frame: &[u8]) -> Result<Vec<Range<usize>>, &'static str> {
 	Ok(units)
 }
 
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct Dimensions {
+	pub depth: u32,
+	pub chroma: u32,
+	pub references: u32,
 	/// Native reference surfaces use macroblock dimensions, before cropping.
 	pub coded: (usize, usize),
 	pub visible: (usize, usize),
@@ -190,6 +194,7 @@ fn prefix(escaped: &[u8]) -> Result<(Bits, u32, Dimensions), &'static str> {
 		return Err(INVALID);
 	}
 	let mut chroma = 1;
+	let mut depth = 8;
 	if matches!(
 		profile,
 		100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135
@@ -199,7 +204,10 @@ fn prefix(escaped: &[u8]) -> Result<(Bits, u32, Dimensions), &'static str> {
 			return Err(INVALID);
 		}
 		let separate_planes = chroma == 3 && bits.flag()?;
-		if bits.ue()? > 6 || bits.ue()? > 6 {
+		let luma = bits.ue()?;
+		let chroma_depth = bits.ue()?;
+		depth = 8 + luma.max(chroma_depth);
+		if luma > 6 || chroma_depth > 6 {
 			return Err(INVALID);
 		}
 		bits.read(1)?;
@@ -283,6 +291,9 @@ fn prefix(escaped: &[u8]) -> Result<(Bits, u32, Dimensions), &'static str> {
 		return Err(INVALID);
 	}
 	let dimensions = Dimensions {
+		depth,
+		chroma,
+		references: refs,
 		coded: (
 			usize::try_from(width).map_err(|_| INVALID)?,
 			usize::try_from(height).map_err(|_| INVALID)?,

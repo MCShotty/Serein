@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/opt.h>
@@ -20,6 +21,7 @@
 #endif
 #include <windows.h>
 #include <dxgi.h>
+#include <dxgi1_6.h>
 #include <d3d11.h>
 #include <libavutil/hwcontext_d3d11va.h>
 #elif defined(__linux__)
@@ -30,8 +32,153 @@
 #elif defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
 #include <VideoToolbox/VideoToolbox.h>
+#include <libavutil/hwcontext_videotoolbox.h>
 #include <dlfcn.h>
+#include <CoreGraphics/CoreGraphics.h>
+#include <dispatch/dispatch.h>
+#include <objc/message.h>
+#include <objc/runtime.h>
+#include <pthread.h>
 #endif
+
+#if defined(_WIN32)
+static uint32_t capture_white(HMONITOR monitor)
+{
+    MONITORINFOEXW info = {0};
+    info.cbSize = sizeof(info);
+    if (!GetMonitorInfoW(monitor, (MONITORINFO *)&info)) return 203;
+    UINT32 paths_count = 0, modes_count = 0;
+    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &paths_count, &modes_count) != ERROR_SUCCESS ||
+        !paths_count || paths_count > 64 || modes_count > 256) return 203;
+    DISPLAYCONFIG_PATH_INFO paths[64];
+    DISPLAYCONFIG_MODE_INFO modes[256];
+    if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &paths_count, paths, &modes_count, modes, NULL) != ERROR_SUCCESS)
+        return 203;
+    for (UINT32 i = 0; i < paths_count; ++i) {
+        DISPLAYCONFIG_SOURCE_DEVICE_NAME name = {0};
+        name.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+        name.header.size = sizeof(name);
+        name.header.adapterId = paths[i].sourceInfo.adapterId;
+        name.header.id = paths[i].sourceInfo.id;
+        if (DisplayConfigGetDeviceInfo(&name.header) != ERROR_SUCCESS ||
+            wcscmp(name.viewGdiDeviceName, info.szDevice)) continue;
+        DISPLAYCONFIG_SDR_WHITE_LEVEL white = {0};
+        white.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL;
+        white.header.size = sizeof(white);
+        white.header.adapterId = paths[i].targetInfo.adapterId;
+        white.header.id = paths[i].targetInfo.id;
+        if (DisplayConfigGetDeviceInfo(&white.header) == ERROR_SUCCESS) {
+            uint64_t nits = (uint64_t)white.SDRWhiteLevel * 80 / 1000;
+            if (nits >= 80 && nits <= 1000) return (uint32_t)nits;
+        }
+    }
+    return 203;
+}
+#elif defined(__APPLE__) && defined(__aarch64__)
+typedef struct CaptureDisplayQuery { uint32_t display; double headroom; } CaptureDisplayQuery;
+static void capture_display_query(void *context)
+{
+    CaptureDisplayQuery *query = context;
+    /* AppKit screen enumeration belongs on the main thread. No capture starts here. */
+    id pool = ((id (*)(id, SEL))objc_msgSend)((id)objc_getClass("NSAutoreleasePool"), sel_registerName("new"));
+    id screens = ((id (*)(id, SEL))objc_msgSend)((id)objc_getClass("NSScreen"), sel_registerName("screens"));
+    unsigned long count = ((unsigned long (*)(id, SEL))objc_msgSend)(screens, sel_registerName("count"));
+    CFStringRef key = CFSTR("NSScreenNumber");
+    for (unsigned long index = 0; index < count && index < 64; ++index) {
+        id screen = ((id (*)(id, SEL, unsigned long))objc_msgSend)(screens, sel_registerName("objectAtIndex:"), index);
+        id description = ((id (*)(id, SEL))objc_msgSend)(screen, sel_registerName("deviceDescription"));
+        id number = ((id (*)(id, SEL, id))objc_msgSend)(description, sel_registerName("objectForKey:"), (id)key);
+        uint32_t display = ((uint32_t (*)(id, SEL))objc_msgSend)(number, sel_registerName("unsignedIntValue"));
+        if (display == query->display) {
+            query->headroom = ((double (*)(id, SEL))objc_msgSend)(screen, sel_registerName("maximumExtendedDynamicRangeColorComponentValue"));
+            break;
+        }
+    }
+    ((void (*)(id, SEL))objc_msgSend)(pool, sel_registerName("drain"));
+}
+#endif
+
+int serein_capture_luminance(uint64_t source, int window, SereinCaptureLuminance *output)
+{
+    if (!source || !output || (window != 0 && window != 1)) return 0;
+    memset(output, 0, sizeof(*output));
+#if defined(_WIN32)
+    HMONITOR monitor = window ? MonitorFromWindow((HWND)(uintptr_t)source, MONITOR_DEFAULTTONULL) :
+                              (HMONITOR)(uintptr_t)source;
+    if (!monitor) return 0;
+    HMODULE library = LoadLibraryExW(L"dxgi.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!library) return 0;
+    HRESULT (WINAPI *create)(REFIID, void **) = NULL;
+    FARPROC symbol = GetProcAddress(library, "CreateDXGIFactory1");
+    memcpy(&create, &symbol, sizeof(create));
+    const IID factory_iid = {0x770aae78, 0xf26f, 0x4dba, {0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87}};
+    const IID output_iid = {0x068346e8, 0xaaec, 0x4b84, {0xad, 0xd7, 0x13, 0x7f, 0x51, 0x3f, 0x77, 0xa1}};
+    IDXGIFactory1 *factory = NULL;
+    int result = 0;
+    if (!create || FAILED(create(&factory_iid, (void **)&factory)) || !factory) goto done;
+    for (UINT a = 0; a < 32 && !result; ++a) {
+        IDXGIAdapter1 *adapter = NULL;
+        if (FAILED(IDXGIFactory1_EnumAdapters1(factory, a, &adapter)) || !adapter) break;
+        for (UINT i = 0; i < 64 && !result; ++i) {
+            IDXGIOutput *base = NULL;
+            IDXGIOutput6 *display = NULL;
+            if (FAILED(IDXGIAdapter1_EnumOutputs(adapter, i, &base)) || !base) break;
+            DXGI_OUTPUT_DESC1 desc = {0};
+            if (SUCCEEDED(IDXGIOutput_QueryInterface(base, &output_iid, (void **)&display)) && display &&
+                SUCCEEDED(IDXGIOutput6_GetDesc1(display, &desc)) && desc.Monitor == monitor &&
+                desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 &&
+                isfinite(desc.MaxLuminance) && desc.MaxLuminance > 80.0f) {
+                output->unit_nits = 80;
+                output->white_nits = capture_white(monitor);
+                output->peak_nits = (uint32_t)fminf(10000.0f, fmaxf((float)output->white_nits, desc.MaxLuminance));
+                result = 1;
+            }
+            if (display) IDXGIOutput6_Release(display);
+            IDXGIOutput_Release(base);
+        }
+        IDXGIAdapter1_Release(adapter);
+    }
+done:
+    if (factory) IDXGIFactory1_Release(factory);
+    FreeLibrary(library);
+    return result;
+#elif defined(__APPLE__) && defined(__aarch64__)
+    if (__builtin_available(macOS 15.0, *)) {
+        CaptureDisplayQuery query = {(uint32_t)source, 0.0};
+        if (window) {
+            CFArrayRef windows = CGWindowListCopyWindowInfo(kCGWindowListOptionIncludingWindow, (CGWindowID)source);
+            CGRect rect = CGRectNull;
+            if (windows && CFArrayGetCount(windows) == 1) {
+                CFDictionaryRef info = CFArrayGetValueAtIndex(windows, 0);
+                CFDictionaryRef bounds = CFDictionaryGetValue(info, kCGWindowBounds);
+                if (bounds) CGRectMakeWithDictionaryRepresentation(bounds, &rect);
+            }
+            if (windows) CFRelease(windows);
+            CGDirectDisplayID displays[16];
+            uint32_t count = 0;
+            if (CGRectIsNull(rect) || CGGetDisplaysWithRect(rect, 16, displays, &count) != kCGErrorSuccess || !count)
+                return 0;
+            double area = -1.0;
+            for (uint32_t i = 0; i < count; ++i) {
+                CGRect intersection = CGRectIntersection(rect, CGDisplayBounds(displays[i]));
+                double current = intersection.size.width * intersection.size.height;
+                if (current > area) { area = current; query.display = displays[i]; }
+            }
+        }
+        if (pthread_main_np()) capture_display_query(&query);
+        else dispatch_sync_f(dispatch_get_main_queue(), &query, capture_display_query);
+        if (isfinite(query.headroom) && query.headroom > 1.0) {
+            output->unit_nits = output->white_nits = 203;
+            output->peak_nits = (uint32_t)fmin(10000.0, 203.0 * query.headroom);
+            return 1;
+        }
+    }
+    return 0;
+#else
+    (void)window;
+    return 0;
+#endif
+}
 
 int serein_video_adapter_valid(const SereinVideoAdapter *a)
 {
@@ -351,4 +498,56 @@ int serein_video_bind_adapter(AVCodecContext *codec, int backend, const SereinVi
         result = 1;
     }
     return result;
+}
+
+int serein_video_bind_decoder(AVCodecContext *codec, const SereinVideoAdapter *a)
+{
+    if (!codec || !serein_video_adapter_valid(a))
+        return 0;
+    char device[80];
+#if defined(_WIN32)
+    const int index = serein_video_dxgi_device(a);
+    if (index < 0)
+        return 0;
+    snprintf(device, sizeof(device), "%d", index);
+    if (av_hwdevice_ctx_create(&codec->hw_device_ctx, AV_HWDEVICE_TYPE_D3D11VA,
+                              device, NULL, 0) < 0)
+        return 0;
+    if (!d3d11_matches(codec->hw_device_ctx, a)) {
+        av_buffer_unref(&codec->hw_device_ctx);
+        return 0;
+    }
+    return 1;
+#elif defined(__linux__)
+    if (a->vendor_id == 0x10de) {
+        const int index = serein_video_cuda_device(a);
+        if (index < 0)
+            return 0;
+        snprintf(device, sizeof(device), "%d", index);
+        return av_hwdevice_ctx_create(&codec->hw_device_ctx, AV_HWDEVICE_TYPE_CUDA,
+                                      device, NULL, 0) >= 0;
+    }
+    if (a->vendor_id == 0x8086)
+        return serein_video_bind_adapter(codec, 4, a);
+    if (a->vendor_id == 0x1002 && serein_video_drm_device(a, device, sizeof(device)))
+        return av_hwdevice_ctx_create(&codec->hw_device_ctx, AV_HWDEVICE_TYPE_VAAPI,
+                                      device, NULL, 0) >= 0;
+    return 0;
+#elif defined(__APPLE__)
+    (void)device;
+    /* VideoToolbox's decoder GPU binding is provided through the session
+     * specification, not the default device. Do not pick an unrelated GPU. */
+    if (a->identity != SEREIN_GPU_METAL_REGISTRY)
+        return 0;
+    if (av_hwdevice_ctx_create(&codec->hw_device_ctx, AV_HWDEVICE_TYPE_VIDEOTOOLBOX, NULL, NULL, 0) < 0)
+        return 0;
+    AVHWDeviceContext *device_context = (AVHWDeviceContext *)codec->hw_device_ctx->data;
+    AVVTDeviceContext *selected = device_context->hwctx;
+    if (!selected) { av_buffer_unref(&codec->hw_device_ctx); return 0; }
+    selected->gpu_registry_id = a->value;
+    return 1;
+#else
+    (void)device;
+    return 0;
+#endif
 }

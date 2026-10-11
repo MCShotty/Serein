@@ -49,13 +49,14 @@ def stage_payload(root, stage, prefix="usr"):
         raise ValueError("Installation prefix must be usr or app")
     doc = stage / prefix / "share/doc/serein"
     copy(root / "serein", stage / prefix / "bin/serein")
-    # The three replaceable LGPL/BSD libraries are independent of host FFmpeg.
-    for name in ("libavcodec-serein.so.61", "libavutil-serein.so.59", "libopenh264-serein.so.8"):
+    # The replaceable LGPL/BSD libraries are independent of host FFmpeg.
+    for name in ("libavcodec-serein.so.61", "libavutil-serein.so.59", "libavformat-serein.so.61", "libswscale-serein.so.8", "libswresample-serein.so.5", "libopenh264-serein.so.8"):
         copy(root / "lib" / name, stage / prefix / "lib/serein" / name)
-    for name in ("build.json", "configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "serein-openh264.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE"):
+    for name in ("build.json", "configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "serein-openh264.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE", "dav1d-COPYING"):
         copy(root / "ffmpeg-source" / name, doc / "ffmpeg-source" / name)
     copy(root / "ffmpeg-source/source/ffmpeg-7.1.5.tar.xz", doc / "ffmpeg-source/source/ffmpeg-7.1.5.tar.xz")
     copy(root / "ffmpeg-source/source/openh264-2.6.0-source.tar.bz2", doc / "ffmpeg-source/source/openh264-2.6.0-source.tar.bz2")
+    copy(root / "ffmpeg-source/source/dav1d-1.5.1.tar.xz", doc / "ffmpeg-source/source/dav1d-1.5.1.tar.xz")
     if (root / "ffmpeg-source/nv-codec-headers-README").is_file():
         copy(root / "ffmpeg-source/nv-codec-headers-README", doc / "ffmpeg-source/nv-codec-headers-README")
         copy(root / "ffmpeg-source/source/nv-codec-headers-12.2.72.0.tar.gz",
@@ -156,7 +157,7 @@ def package(root, application_version):
             encoding="utf-8")
         (stage / "DEBIAN").mkdir()
         (debian / "shlibs.local").write_text(
-            "libavcodec-serein 61 serein\nlibavutil-serein 59 serein\nlibopenh264-serein 8 serein\n", encoding="utf-8")
+            "libavcodec-serein 61 serein\nlibavutil-serein 59 serein\nlibavformat-serein 61 serein\nlibswscale-serein 8 serein\nlibswresample-serein 5 serein\nlibopenh264-serein 8 serein\n", encoding="utf-8")
         # Ignore our private SONAMEs; scan their native dependency closure too.
         dependencies = output("dpkg-shlibdeps", "-O", "-l" + str(stage / "usr/lib/serein"),
                               "-x" + "serein", "debian/serein/usr/bin/serein",
@@ -275,7 +276,7 @@ def rpm_package(temporary, stage, application_version, distro):
         "%global debug_package %{nil}\n%global __os_install_post %{nil}\n"
         "%global _build_id_links none\n"
         "%global __provides_exclude_from ^/usr/lib/serein/.*$\n"
-        "%global __requires_exclude ^(libavcodec-serein\\.so\\.61|libavutil-serein\\.so\\.59|libopenh264-serein\\.so\\.8).*\n"
+        "%global __requires_exclude ^(libavcodec-serein\\.so\\.61|libavutil-serein\\.so\\.59|libavformat-serein\\.so\\.61|libswscale-serein\\.so\\.8|libswresample-serein\\.so\\.5|libopenh264-serein\\.so\\.8).*\n"
         f"Name: serein\nVersion: {version}\nRelease: {release}\n"
         "Summary: Unofficial native Discord client\nLicense: (MIT OR Apache-2.0) AND LGPL-2.1-or-later AND BSD-2-Clause\n"
         "URL: https://github.com/ViceVerse-cz/Serein\n"
@@ -330,7 +331,7 @@ def arch_package(temporary, stage, application_version, libraries):
                "gst-plugins-good", "gst-plugins-base", "gst-plugin-pipewire"}
     # Resolve linked libraries to the native pacman package/version (ABI floor).
     for path in re.findall(r"(?:=>\s+|^\s*)(/\S+)", libraries, re.MULTILINE):
-        if Path(path).name in {"libavcodec-serein.so.61", "libavutil-serein.so.59", "libopenh264-serein.so.8"}:
+        if Path(path).name in {"libavcodec-serein.so.61", "libavutil-serein.so.59", "libavformat-serein.so.61", "libswscale-serein.so.8", "libswresample-serein.so.5", "libopenh264-serein.so.8"}:
             continue
         owner = output("pacman", "-Qqo", path)
         name, installed_version = output("pacman", "-Q", owner).split()

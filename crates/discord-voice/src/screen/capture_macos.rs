@@ -173,6 +173,7 @@ fn choose_with_system_picker(
 #[derive(Clone)]
 struct Handler {
 	frames: SyncSender<RawFrame>,
+	format: crate::screen::RawFormat,
 	stop: Arc<AtomicBool>,
 }
 
@@ -274,11 +275,20 @@ impl SCStreamOutputTrait for Handler {
 			return;
 		};
 		let (buffer_width, buffer_height) = (guard.width(), guard.height());
+		let expected = if matches!(self.format, crate::screen::RawFormat::LinearRgba16 { .. }) {
+			PixelFormat::RGhA
+		} else {
+			PixelFormat::BGRA
+		};
+		if PixelFormat::from(guard.pixel_format()) != expected {
+			self.stop.store(true, Ordering::Release);
+			return;
+		}
 		// ScreenCaptureKit draws a window of another shape into the corner of the configured
 		// picture; keep only that content so the encoder letterboxes it centered.
 		let (left, top, width, height) =
 			content_pixels(sample.content_rect(), buffer_width, buffer_height);
-		let Some(row_bytes) = width.checked_mul(4) else {
+		let Some(row_bytes) = width.checked_mul(self.format.bytes()) else {
 			self.stop.store(true, Ordering::Release);
 			return;
 		};
@@ -295,7 +305,7 @@ impl SCStreamOutputTrait for Handler {
 			|| height == 0
 			|| buffer_width > MAX_FRAME_WIDTH as usize
 			|| buffer_height > MAX_FRAME_HEIGHT as usize
-			|| stride < buffer_width * 4
+			|| stride < buffer_width * self.format.bytes()
 			|| source_len > MAX_RAW_BYTES
 			|| data_len > MAX_RAW_BYTES
 		{
@@ -319,13 +329,14 @@ impl SCStreamOutputTrait for Handler {
 			.skip(top)
 			.take(height)
 		{
-			data.extend_from_slice(&row[left * 4..][..row_bytes]);
+			data.extend_from_slice(&row[left * self.format.bytes()..][..row_bytes]);
 		}
 		let (Ok(width), Ok(height)) = (u32::try_from(width), u32::try_from(height)) else {
 			self.stop.store(true, Ordering::Release);
 			return;
 		};
 		let _ = self.frames.try_send(RawFrame {
+			format: self.format,
 			width,
 			height,
 			stride: row_bytes,
@@ -373,11 +384,17 @@ fn content_pixels(
 	)
 }
 
-struct Delegate(Arc<AtomicBool>);
+struct Delegate {
+	stop: Arc<AtomicBool>,
+	// Starting, active, failed. A rejected HDR start must not cancel the SDR retry.
+	state: Arc<std::sync::atomic::AtomicU8>,
+}
 
 impl SCStreamDelegateTrait for Delegate {
 	fn did_stop_with_error(&self, _error: screencapturekit::error::SCError) {
-		self.0.store(true, Ordering::Release);
+		if self.state.swap(2, Ordering::AcqRel) == 1 {
+			self.stop.store(true, Ordering::Release);
+		}
 	}
 }
 
@@ -476,10 +493,32 @@ impl Capture {
 			#[allow(unreachable_patterns)] // Portal may be absent from platform-scoped models.
 			_ => return Err("The desktop screen picker is available only on Linux"),
 		};
-		let mut config = SCStreamConfiguration::new()
+		let luminance = filter
+			.included_displays()
+			.first()
+			.and_then(|display| {
+				platform::video::ffmpeg::capture_luminance(u64::from(display.display_id()), false)
+			})
+			.or_else(|| {
+				filter.included_windows().first().and_then(|window| {
+					platform::video::ffmpeg::capture_luminance(u64::from(window.window_id()), true)
+				})
+			});
+		let hdr = luminance.is_some();
+		let base = if hdr {
+			screencapturekit::stream::configuration::SCStreamConfiguration::from_preset(screencapturekit::stream::configuration::SCStreamConfigurationPreset::CaptureHDRStreamLocalDisplay)
+            .with_color_space_name("kCGColorSpaceExtendedLinearSRGB")
+		} else {
+			SCStreamConfiguration::new()
+		};
+		let mut config = base
 			.with_width(settings.width)
 			.with_height(settings.height)
-			.with_pixel_format(PixelFormat::BGRA)
+			.with_pixel_format(if hdr {
+				PixelFormat::RGhA
+			} else {
+				PixelFormat::BGRA
+			})
 			.with_preserves_aspect_ratio(true)
 			.with_scales_to_fit(true)
 			.with_shows_cursor(settings.cursor)
@@ -496,7 +535,19 @@ impl Capture {
 		if !config.preserves_aspect_ratio() {
 			return Err("Screen sharing requires macOS 14 or newer");
 		}
-		let handler = Handler {
+		let mut handler = Handler {
+			format: if hdr {
+				{
+					let light = luminance.ok_or("HDR capture metadata is unavailable")?;
+					crate::screen::RawFormat::LinearRgba16 {
+						unit_nits: light.unit_nits,
+						white_nits: light.white_nits,
+						peak_nits: light.peak_nits,
+					}
+				}
+			} else {
+				crate::screen::RawFormat::Bgra8
+			},
 			frames,
 			stop: stop.clone(),
 		};
@@ -506,7 +557,21 @@ impl Capture {
 			ready,
 			audio_epoch,
 		});
-		let stream = Self::start_stream(&filter, &config, &handler, audio_handler.as_ref())?;
+		let stream = match Self::start_stream(&filter, &config, &handler, audio_handler.as_ref()) {
+			Ok(stream) => stream,
+			Err(_) if hdr && !handler.stop.load(Ordering::Acquire) => {
+				// Keep the picker-approved filter and audio configuration on the SDR retry.
+				config
+					.set_capture_dynamic_range(
+						screencapturekit::stream::configuration::SCCaptureDynamicRange::SDR,
+					)
+					.set_pixel_format(PixelFormat::BGRA)
+					.set_color_space_name("kCGColorSpaceSRGB");
+				handler.format = crate::screen::RawFormat::Bgra8;
+				Self::start_stream(&filter, &config, &handler, audio_handler.as_ref())?
+			}
+			Err(error) => return Err(error),
+		};
 		Ok(Self {
 			stream,
 			filter,
@@ -526,8 +591,15 @@ impl Capture {
 		if handler.stop.load(Ordering::Acquire) {
 			return Err("Screen sharing cancelled");
 		}
-		let mut stream =
-			SCStream::new_with_delegate(filter, config, Delegate(handler.stop.clone()));
+		let state = Arc::new(std::sync::atomic::AtomicU8::new(0));
+		let mut stream = SCStream::new_with_delegate(
+			filter,
+			config,
+			Delegate {
+				stop: handler.stop.clone(),
+				state: state.clone(),
+			},
+		);
 		if stream
 			.add_output_handler(handler.clone(), SCStreamOutputType::Screen)
 			.is_none()
@@ -547,6 +619,13 @@ impl Capture {
 		stream
 			.start_capture()
 			.map_err(|_| "Screen capture could not be started")?;
+		if state
+			.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+			.is_err()
+		{
+			let _ = stream.stop_capture();
+			return Err("Screen capture could not be started");
+		}
 		Ok(stream)
 	}
 }

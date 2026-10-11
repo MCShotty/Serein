@@ -2218,7 +2218,7 @@ impl Desktop {
 			pointer: pointer::Pointer::default(),
 			downloads: downloads::Downloads::default(),
 			audio: audio::Audio::default(),
-			video: video::Video::default(),
+			video: video::Video::for_adapter(video_adapter),
 			demo_video_autoplay: if std::env::args().any(|arg| arg == "--demo-video-paused") {
 				Some(true)
 			} else if std::env::args().any(|arg| arg == "--demo-video-playing") {

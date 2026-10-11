@@ -49,7 +49,7 @@ class BundleTest(unittest.TestCase):
             "sources": {"ffmpeg": builder.SOURCES["ffmpeg"]},
         }))
         for name in ("configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "COPYING.LGPLv2.1",
-                     "OpenH264-LICENSE", "source/ffmpeg-7.1.5.tar.xz", "source/openh264-2.6.0-source.tar.bz2"):
+                     "OpenH264-LICENSE", "dav1d-COPYING", "source/dav1d-1.5.1.tar.xz", "source/ffmpeg-7.1.5.tar.xz", "source/openh264-2.6.0-source.tar.bz2"):
             (provenance / name).write_bytes(b"synthetic source/notice")
         return prefix
 
@@ -113,7 +113,7 @@ class BundleTest(unittest.TestCase):
             notices.mkdir(parents=True)
             backends = builder.encoder_backends("Linux", False)
             recipe = {"sources": builder.SOURCES, "system": "Linux", "architecture": "x86_64", **backends,
-                      "encoders": sorted(builder.encoder_names(backends)),
+                      "encoders": sorted(builder.encoder_names(backends)), "decoders": sorted(builder.decoder_names(backends)),
                       "toolchain": builder.toolchain_options("Linux", False),
                       "recipe_sha256": hashlib.sha256(Path(builder.__file__).read_bytes()).hexdigest()}
             (notices / "build.json").write_text(json.dumps(recipe))
@@ -128,9 +128,9 @@ class BundleTest(unittest.TestCase):
 
     def test_cached_build_requires_platform_artifacts_and_source_payload(self):
         headers = ("libavcodec/avcodec.h", "libavutil/avutil.h", "libavutil/error.h", "libavutil/frame.h",
-                   "libavutil/hwcontext.h", "libavutil/mem.h", "libavutil/opt.h")
-        provenance = ("build-ffmpeg.py", "configure.json", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE",
-                      "source/ffmpeg-7.1.5.tar.xz", "source/openh264-2.6.0-source.tar.bz2",
+                   "libavutil/hwcontext.h", "libavutil/mem.h", "libavutil/opt.h", "libavformat/avformat.h", "libswscale/swscale.h", "libswresample/swresample.h")
+        provenance = ("build-ffmpeg.py", "configure.json", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE", "dav1d-COPYING", "source/dav1d-1.5.1.tar.xz",
+                      "source/ffmpeg-7.1.5.tar.xz", "source/openh264-2.6.0-source.tar.bz2", "source/dav1d-1.5.1.tar.xz", "dav1d-COPYING",
                       "nv-codec-headers-README", "source/nv-codec-headers-12.2.72.0.tar.gz", "AMF-LICENSE",
                       "source/AMF-1.4.36-headers.tar", "oneVPL-LICENSE", "oneVPL-third-party-programs.txt",
                       "source/libvpl-2.14.0.tar.gz")
@@ -146,6 +146,10 @@ class BundleTest(unittest.TestCase):
                 aliases = {"Linux": ["lib/libavcodec-serein.so", "lib/libavutil-serein.so"],
                            "Darwin": ["lib/libavcodec-serein.dylib", "lib/libavutil-serein.dylib"],
                            "Windows": ["lib/avcodec-serein.lib", "lib/avutil-serein.lib"]}[system]
+                for name, version in (("avformat", "61"), ("swscale", "8"), ("swresample", "5")):
+                    relative_files.append(f"lib/pkgconfig/lib{name}-serein.pc")
+                    aliases.append(f"lib/lib{name}-serein.so" if system == "Linux" else
+                                   f"lib/lib{name}-serein.dylib" if system == "Darwin" else f"lib/{name}-serein.lib")
                 relative_files += aliases + ["share/serein-ffmpeg/" + name for name in provenance]
                 backends = builder.encoder_backends(system, False)
                 query_files = []
@@ -172,7 +176,7 @@ class BundleTest(unittest.TestCase):
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_bytes(b"synthetic required artifact")
                 recipe = {"sources": builder.SOURCES, "system": system, "architecture": "x86_64", **backends,
-                          "encoders": sorted(builder.encoder_names(backends)),
+                          "encoders": sorted(builder.encoder_names(backends)), "decoders": sorted(builder.decoder_names(backends)),
                           "toolchain": builder.toolchain_options(system, False),
                           "recipe_sha256": hashlib.sha256(Path(builder.__file__).read_bytes()).hexdigest()}
                 (prefix / "share/serein-ffmpeg/build.json").write_text(json.dumps(recipe))
@@ -274,7 +278,8 @@ class BundleTest(unittest.TestCase):
                             "str(r/'libopenh264-serein.so.8')],text=True); "
                             "assert 'codec_internal' not in exports; "
                             "assert all((' '+n+'@') not in exports and (' '+n+'\\n') not in exports for n in sys.argv[2:])",
-                            str(root), *builder.OPENH264_APIS], check=True)
+                            str(root), *builder.OPENH264_APIS], check=True,
+                           env=os.environ | {"LD_LIBRARY_PATH": str(root)})
             # Private first must not satisfy the host plugin's dependency even
             # if both OpenH264 builds have upstream ABI major eight.
             subprocess.run([os.sys.executable, "-c",
@@ -283,7 +288,7 @@ class BundleTest(unittest.TestCase):
                             "plugin=ctypes.CDLL(str(r/'plugin.so')); "
                             "assert plugin.host_codec_version()==24; "
                             "assert private.serein_WelsCreateSVCEncoder()==26",
-                            str(root)], check=True)
+                            str(root)], check=True, env=os.environ | {"LD_LIBRARY_PATH": str(root)})
             self.assertIn("serein-openh264.map", source_patch)
             self.assertIn("LDFLAGS += -lpthread", (root / "build/platform-gnu-chain.mk").read_text())
             with self.assertRaisesRegex(ValueError, "unpatched OpenH264"):
@@ -306,12 +311,12 @@ class BundleTest(unittest.TestCase):
                     self.assertEqual("hevc_videotoolbox" in enabled, system == "Darwin")
                     self.assertNotIn("av1_videotoolbox", enabled)
                     self.assertEqual("--enable-vaapi" in options, system == "Linux" and not arm64)
-                    self.assertEqual("--enable-d3d11va" in options, system == "Windows" and not arm64)
+                    self.assertEqual("--enable-d3d11va" in options, system == "Windows")
                     self.assertNotIn("--enable-libmfx", options)
 
     @unittest.skipUnless(os.environ.get("FFMPEG_DIR") and bundle.platform.system() in bundle.LIBRARIES,
                          "Requires a native FFmpeg build; no media is opened")
-    def test_native_codec_registry_is_exact_and_contains_no_decoders(self):
+    def test_native_codec_registry_matches_the_encoder_and_decoder_allowlists(self):
         prefix = Path(os.environ["FFMPEG_DIR"])
         system = bundle.platform.system()
         codec = native_codec(prefix, system)
@@ -320,14 +325,17 @@ class BundleTest(unittest.TestCase):
         codec.av_codec_is_encoder.argtypes = [ctypes.c_void_p]
         codec.av_codec_is_encoder.restype = ctypes.c_int
         state = ctypes.c_void_p()
-        registered = set()
+        encoders, decoders = set(), set()
         while value := codec.av_codec_iterate(ctypes.byref(state)):
-            self.assertTrue(codec.av_codec_is_encoder(value))
             # AVCodec's first member is const char *name in pinned FFmpeg 7.
+            registered = encoders if codec.av_codec_is_encoder(value) else decoders
             registered.add(ctypes.cast(value, ctypes.POINTER(ctypes.c_char_p)).contents.value.decode())
         recipe = json.loads((prefix / "share/serein-ffmpeg/build.json").read_text())
-        self.assertEqual(registered, set(recipe["encoders"]))
-        self.assertEqual(registered, builder.encoder_names({name: recipe[name] for name in ("nvenc", "amf", "qsv", "videotoolbox")}))
+        backends = {name: recipe[name] for name in ("nvenc", "amf", "qsv", "videotoolbox")}
+        self.assertEqual(encoders, set(recipe["encoders"]))
+        self.assertEqual(encoders, builder.encoder_names(backends))
+        self.assertEqual(decoders, set(recipe["decoders"]))
+        self.assertEqual(decoders, builder.decoder_names(backends))
 
     def test_amf_offline_rebuild_uses_shipped_headers_without_sdk(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(builder.urllib.request, "urlopen") as download:
@@ -375,13 +383,23 @@ class BundleTest(unittest.TestCase):
                 "        dev_select.drm_major = major(drm_node_info.st_dev);\n"
                 "        dev_select.drm_minor = minor(drm_node_info.st_dev);\n"
                 "    if (select->has_uuid) {\n")
+            for directory, version in [("libavformat", "LIBAVFORMAT"), ("libswscale", "LIBSWSCALE"), ("libswresample", "LIBSWRESAMPLE")]:
+                (root / directory).mkdir()
+                (root / directory / (directory + ".v")).write_text(version + "_MAJOR { global: av*; sw*; local: *; };\n")
+            (root / "libavutil/hwcontext_videotoolbox.h").write_text("typedef struct AVVTFramesContext {\n")
+            (root / "libavutil/hwcontext_videotoolbox.c").write_text("    .type                 = AV_HWDEVICE_TYPE_VIDEOTOOLBOX,\n")
+            (root / "libavcodec/videotoolbox.c").write_text('#include "videotoolbox.h"\n    avc_info = CFDictionaryCreateMutable(kCFAllocatorDefault,\n')
             (root / "configure").write_text('hevc_qsv_encoder_select="hevcparse qsvenc"\n')
+            (root / "libavcodec/libdav1d.c").write_text(
+                "    ret = av_image_get_buffer_size(format, w, h, DAV1D_PICTURE_ALIGNMENT);\n")
             source_patch = builder.patch_ffmpeg(root)
             self.assertIn("+ret = ff_get_encode_buffer(avctx, &pkt.pkt, q->packet_size, 0);", source_patch)
             self.assertEqual((root / "libavcodec/serein_qsv_feature_validation.h").read_text(),
                              builder.QSV_FEATURE_VALIDATION)
             self.assertEqual((root / "libavcodec/serein_amf_split_encoding.h").read_text(),
                              builder.AMF_SPLIT_ENCODING)
+            self.assertIn("p->p.bpc > 10", (root / "libavcodec/libdav1d.c").read_text())
+            self.assertIn("(int64_t)w * h > (int64_t)7680 * 4352", source_patch)
             with self.assertRaisesRegex(ValueError, "exactly one"):
                 builder.patch_ffmpeg(root)
 
@@ -540,7 +558,7 @@ class BundleTest(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "posix" and os.environ.get("FFMPEG_DIR") and bundle.platform.system() == "Linux",
                          "Requires the native Linux FFmpeg build; no media is opened")
-    def test_host_decoder_plugin_does_not_bind_to_encoder_only_ffmpeg(self):
+    def test_host_decoder_plugin_does_not_bind_to_private_ffmpeg(self):
         prefix = Path(os.environ["FFMPEG_DIR"])
         codec = native_codec(prefix, "Linux", mode=ctypes.RTLD_GLOBAL)
         codec.avcodec_find_encoder_by_name.argtypes = [ctypes.c_char_p]
@@ -550,13 +568,13 @@ class BundleTest(unittest.TestCase):
         self.assertTrue(codec.avcodec_find_encoder_by_name(b"libopenh264"))
         for name in ("h264_vaapi", "hevc_vaapi", "av1_vaapi"):
             self.assertFalse(codec.avcodec_find_encoder_by_name(name.encode()))
-        self.assertFalse(codec.avcodec_find_decoder_by_name(b"h264"))
+        self.assertTrue(codec.avcodec_find_decoder_by_name(b"h264"))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "host.c").write_text('void *avcodec_find_decoder_by_name(const char *name) { static int codec; return &codec; }\n')
+            (root / "host.c").write_text('#include <stdint.h>\nvoid *avcodec_find_decoder_by_name(const char *name) { return (void *)(uintptr_t)0xdec0de; }\n')
             (root / "host.v").write_text("LIBAVCODEC_61 { global: avcodec_*; local: *; };\n")
-            (root / "plugin.c").write_text('void *avcodec_find_decoder_by_name(const char *);\n'
-                                           'int incoming_decoder_present(void) { return avcodec_find_decoder_by_name("h264") != 0; }\n')
+            (root / "plugin.c").write_text('#include <stdint.h>\nvoid *avcodec_find_decoder_by_name(const char *);\n'
+                                           'int incoming_decoder_present(void) { return (uintptr_t)avcodec_find_decoder_by_name("h264") == 0xdec0de; }\n')
             subprocess.run(["cc", "-shared", "-fPIC", "-Wl,-soname,libavcodec.so.61",
                             "-Wl,--version-script=" + str(root / "host.v"), "-o", str(root / "libavcodec.so.61"),
                             str(root / "host.c")], check=True)
@@ -582,8 +600,8 @@ class BundleTest(unittest.TestCase):
                 nvenc = system != "Darwin"
                 (notices / "build.json").write_text(json.dumps({"system": system, "nvenc": nvenc, "amf": nvenc, "qsv": nvenc,
                     "sources": {"ffmpeg": builder.SOURCES["ffmpeg"]}}))
-                for name in ("configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE",
-                             "source/ffmpeg-7.1.5.tar.xz", "source/openh264-2.6.0-source.tar.bz2", "nv-codec-headers-README",
+                for name in ("configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE", "dav1d-COPYING", "source/dav1d-1.5.1.tar.xz",
+                             "source/ffmpeg-7.1.5.tar.xz", "source/openh264-2.6.0-source.tar.bz2", "source/dav1d-1.5.1.tar.xz", "dav1d-COPYING", "nv-codec-headers-README",
                              "source/nv-codec-headers-12.2.72.0.tar.gz", "AMF-LICENSE", "source/AMF-1.4.36-headers.tar",
                              "oneVPL-LICENSE", "oneVPL-third-party-programs.txt", "source/libvpl-2.14.0.tar.gz"):
                     (notices / name).write_text("synthetic source/notice")

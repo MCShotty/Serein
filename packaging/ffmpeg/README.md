@@ -1,7 +1,9 @@
-# Shared FFmpeg video encoders
+# Shared FFmpeg media libraries
 
 The Experimental camera/screen-share engine links to a small FFmpeg 7.1.5
-LGPL-2.1-or-later build of libavcodec/libavutil. Stable uses the original platform
+LGPL-2.1-or-later build of libavcodec, libavutil, libavformat, libswscale and
+libswresample. The native bridge in `crates/platform` also serves incoming
+streams and bounded video-attachment playback. Stable uses the original platform
 H264 encoders: Media Foundation on Windows, VideoToolbox on macOS and GStreamer
 VA-API/NVENC on Linux, with source-built Rust OpenH264 fallback.
 
@@ -39,13 +41,28 @@ fallback applies only to H264 selection/negotiation. An explicit HEVC/AV1 select
 cannot send H264 bytes
 under that codec's transport metadata. FFmpeg Media Foundation and all three
 `h264_vaapi`/`hevc_vaapi`/`av1_vaapi` encoders,
-GPL/nonfree components, command-line programs, networking, demuxers, decoders,
-filters and scaling/resampling libraries are disabled in the bundled build.
-Native capture and incoming decoding have separate platform dependencies.
-`build.json` records the exact compiled encoder names; configure and native
-registry checks reject extra encoders and decoders.
+GPL/nonfree components, command-line programs, networking and avfilter are
+disabled. Decoder allowlists include H.264/HEVC, AV1/dav1d and supported
+hardware paths, plus AAC, Opus, Vorbis, MP3 and required PCM audio. MOV/MP4,
+Matroska/WebM, Ogg and WAV demuxers, scaling and audio resampling serve attachment
+playback. `build.json` records exact encoder and decoder names; native registry
+checks reject additions outside those allowlists. Decoders receive an anonymous
+reader bounded to 100 MiB, never a service URL or credentials.
 
-On Linux/macOS install Python 3.12+, make, pkg-config, a C/C++ compiler and nasm;
+Incoming streams admit visible pictures through 7680×4320, including portrait
+equivalents and 6144×2560. Admission checks coded geometry, reference counts and
+8–10-bit gray/4:2:0 profiles before picture allocation. Media working-set
+reservations are shared across players and decoders; they are not an OS RSS or
+GPU-memory measurement. Only the latest display picture is retained.
+
+PQ/HLG pictures keep P010 pixels and color metadata until presentation. The
+renderer uses an advertised HDR surface on an active HDR display, otherwise
+tone maps to SDR. HDR capture is capability gated and defaults to SDR streaming
+when receiver ten-bit compatibility is unknown. Codec availability alone does
+not establish HDR negotiation. H.264 remains the compatible SDR sender path.
+
+On Linux/macOS install Python 3.12+, make, pkg-config, a C/C++ compiler, nasm,
+Meson 1.9.2 and Ninja 1.13.0;
 Linux also needs CMake, patchelf, libva and libdrm development packages. Then,
 from the repository root:
 
@@ -56,7 +73,8 @@ cargo xtask check
 cargo xtask package
 ```
 
-Windows uses MSYS2 bash with make, pkgconf and nasm, native CMake/NMake, and an initialized MSVC
+Windows uses MSYS2 bash with make, pkgconf and nasm, Meson/Ninja installed for
+Windows Python, native CMake/NMake, and an initialized MSVC
 developer environment matching the Rust target. Run the same builder through
 Windows Python, then set `FFMPEG_DIR` to its absolute native prefix for Cargo.
 The Windows CI jobs show the complete setup. Source archives have exact SHA-256
@@ -76,7 +94,9 @@ and work directory rather than relabelling previously built libraries.
 
 Packages contain replaceable shared libraries and the complete corresponding
 FFmpeg source archive, LGPL text, build recipe, source hashes, source patch and configure
-arguments in `ffmpeg-source` (Linux: `share/doc/serein/ffmpeg-source`). OpenH264
+arguments in `ffmpeg-source` (Linux: `share/doc/serein/ffmpeg-source`). dav1d 1.5.1
+is statically linked with its unmodified BSD-2-Clause notice and full source archive.
+OpenH264
 and NVENC headers retain their BSD/MIT notices. AMF 1.4.36 public headers retain
 AMD's MIT license and standards/patent notice. Intel oneVPL 2.14.0's MIT license,
 third-party notice and complete source archive accompany its statically linked
@@ -91,12 +111,13 @@ Serein's MIT/Apache application sources remain available in the repository.
 The FFmpeg build uses the `-serein` library suffix and `SEREIN_LIBAVCODEC_61` /
 `SEREIN_LIBAVUTIL_59` ELF symbol versions so it can coexist with the host
 FFmpeg used by GStreamer's incoming-video plugins. The version-script changes,
-QSV allocation/dependency fixes, checked QSV quality negotiation, explicit
+The other three libraries use their corresponding private symbol versions.
+QSV allocation/dependency fixes, dav1d allocation limits, checked QSV quality negotiation, explicit
 VideoToolbox GPU registry selection and AMF external Vulkan-device support are retained as
 `serein-ffmpeg.patch` with the original source archive. QSV requests packet allocation through the app's capped buffer
 callback, so an excessive driver-advised packet size fails before allocation.
 The pinned HEVC-QSV encoder also selects its internal HEVC SEI helpers, which
-upstream 7.1.5 omits from that encoder's configure dependencies; no decoder is
+upstream 7.1.5 omits from that encoder's configure dependencies; the shared decoders are
 enabled. Linux shared-library linking uses `-z defs`, rejecting unresolved
 symbols before installation.
 
@@ -141,7 +162,7 @@ flags and Windows registry/COM/GUID libraries without statically linking libva.
 On Linux installed libraries live in `lib/serein`, with executable-relative
 lookup; the portable staging tree uses `lib`. macOS uses `Contents/Frameworks`
 with `@rpath` install names and signs each library before the app bundle.
-Windows places the three DLLs alongside `serein.exe`. OpenH264's MSVC recipe
+Windows places the five FFmpeg DLLs and OpenH264 alongside `serein.exe`. OpenH264's MSVC recipe
 uses `-MT`; oneVPL's Windows build selects its static CRT, and FFmpeg explicitly
 uses `-MT` too. Dispatcher-owned objects are released by the matching SDK APIs;
 FFmpeg owns its frame/packet buffers. This avoids adding a Visual C++ runtime or
@@ -155,7 +176,7 @@ Intel driver device; VA-API encoders remain disabled in Experimental. Stable's
 Linux VA-API/NVENC path uses system GStreamer plugins independently. Windows AMF/QSV use
 D3D11 devices bound by the renderer's LUID. Linux AMF derives a Vulkan device
 from that physical GPU's explicit DRM render node and gives its native handles
-to AMF; no AMD VA-API driver interface or Vulkan video encoder is used. The
+to AMF; encoding uses no AMD VA-API driver interface or Vulkan video encoder. The
 bundled patch checks DRM character-device numbers, requires exact Vulkan DRM
 device matching, and rejects unavailable identity rather than selecting another
 GPU by vendor/model. macOS Stable and Experimental require the renderer GPU's

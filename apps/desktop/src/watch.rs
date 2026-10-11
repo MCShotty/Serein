@@ -79,6 +79,7 @@ struct Context {
 	streamer: Id,
 }
 struct Pending {
+	video_adapter: Option<model::VideoAdapter>,
 	context: Context,
 	user: Id,
 	peer: Option<Id>,
@@ -99,6 +100,7 @@ struct Live {
 	task: JoinHandle<()>,
 	events: watch::Receiver<Option<Notice>>,
 	frames: Arc<Mutex<Option<egui::ColorImage>>>,
+	hdr: Arc<Mutex<Option<Arc<platform::video::ffmpeg::Frame>>>>,
 }
 
 #[derive(Default)]
@@ -228,6 +230,7 @@ impl Watch {
 			self.notice = message;
 			state.stop_watching();
 			ui.voice_stream_view = None;
+			ui.voice_stream_hdr = None;
 			ui.voice_stream_status = self.status;
 			return command.or_else(|| {
 				let context = context.filter(|context| context.generation == state.generation)?;
@@ -265,6 +268,7 @@ impl Watch {
 				streamer,
 			};
 			self.pending = Some(Pending {
+				video_adapter: call.video_adapter,
 				context,
 				user: call.user,
 				peer: call.peer,
@@ -312,7 +316,17 @@ impl Watch {
 				self.ended = Some("The stream connection ended");
 			}
 			let image = live.frames.try_lock().ok().and_then(|mut slot| slot.take());
+			let hdr = live.hdr.try_lock().ok().and_then(|mut slot| slot.take());
+			if let Some(frame) = hdr {
+				ui.voice_stream_hdr = Some(crate::video::media_view(
+					frame,
+					ui.voice_stream_hdr.as_ref(),
+				));
+				ui.voice_stream_view = None;
+				self.status = "Watching the stream";
+			}
 			if let Some(image) = image {
+				ui.voice_stream_hdr = None;
 				if let Some(texture) = &mut ui.voice_stream_view {
 					texture.set(image, egui::TextureOptions::LINEAR);
 				} else {
@@ -326,6 +340,7 @@ impl Watch {
 			}
 		} else {
 			ui.voice_stream_view = None;
+			ui.voice_stream_hdr = None;
 		}
 		ui.voice_stream_status = if wanted.is_some() {
 			self.status
@@ -355,12 +370,29 @@ impl Watch {
 			request: pending.context.stream_request,
 		};
 		let frames = Arc::new(Mutex::new(None));
+		let hdr = Arc::new(Mutex::new(None));
+		let hdr_slot = hdr.clone();
 		let slot = frames.clone();
 		let wake = ctx.clone();
 		let streamer = pending.context.streamer.0;
 		let sink: discord_voice::VideoSink = Arc::new(move |frame: discord_voice::RemoteFrame| {
 			if frame.user != streamer {
 				return;
+			}
+			if frame.picture.hdr() {
+				if let Ok(owned) = platform::video::ffmpeg::Frame::copy(frame.picture, frame.rgba) {
+					if let Ok(mut slot) = slot.lock() {
+						*slot = None;
+					}
+					if let Ok(mut slot) = hdr_slot.lock() {
+						*slot = Some(Arc::new(owned));
+					}
+					wake.request_repaint();
+				}
+				return;
+			}
+			if let Ok(mut slot) = hdr_slot.lock() {
+				*slot = None;
 			}
 			if slot
 				.lock()
@@ -375,14 +407,23 @@ impl Watch {
 		let audio = pending.audio;
 		let task = runtime.spawn(async move {
 			let (status_send, status_wake) = (send.clone(), wake.clone());
-			let result =
-				discord_voice::watch_stream(credentials, identity, sink, audio, move |event| {
+			let result = discord_voice::watch_stream_on_adapter(
+				credentials,
+				identity,
+				sink,
+				audio,
+				pending.video_adapter,
+				move |event| {
 					let status = match event {
 						Status::Connecting => "Connecting to the stream…",
 						Status::Discovering => "Checking the stream network…",
 						Status::TransportReady | Status::Securing => "Securing the stream…",
 						Status::WaitingForPeer => "Waiting for the streamer…",
 						Status::Ready { .. } => "Stream secured · waiting for video",
+						Status::RemoteVideoFailed { error, .. } => {
+							status_send.send_replace(Some(Notice::Failed(error)));
+							return Ok(());
+						}
 						Status::RemoteAudio | Status::Speaking(_) | Status::CameraAvailable(_) => {
 							return Ok(());
 						}
@@ -390,8 +431,9 @@ impl Watch {
 					status_send.send_replace(Some(Notice::Status(status)));
 					status_wake.request_repaint();
 					Ok(())
-				})
-				.await;
+				},
+			)
+			.await;
 			if let Err(error) = result {
 				send.send_replace(Some(Notice::Failed(error)));
 			}
@@ -403,6 +445,7 @@ impl Watch {
 			task,
 			events,
 			frames,
+			hdr,
 		});
 		Ok(())
 	}
@@ -446,6 +489,7 @@ mod tests {
 					task: runtime.spawn(std::future::pending()),
 					events,
 					frames: Arc::new(Mutex::new(None)),
+					hdr: Arc::new(Mutex::new(None)),
 				}),
 				ended: None,
 				sequence: 0,
@@ -485,6 +529,7 @@ mod tests {
 
 	fn frame(width: u32, height: u32, rgba: &[u8]) -> discord_voice::RemoteFrame<'_> {
 		discord_voice::RemoteFrame {
+			picture: Default::default(),
 			user: 7,
 			width,
 			height,

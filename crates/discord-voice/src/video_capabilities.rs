@@ -38,6 +38,25 @@ pub fn query_on_adapter(
 	})
 }
 
+/// Independent profile query on the selected GPU; no capture or synthetic encode.
+pub fn query_ten_bit(
+	backend: HardwareBackend,
+	codec: VideoCodec,
+	adapter: model::VideoAdapter,
+) -> ProbeResult {
+	let backend = match backend {
+		HardwareBackend::Nvenc => 1,
+		HardwareBackend::VideoToolbox => 2,
+		HardwareBackend::Amf => 3,
+		HardwareBackend::Qsv => 4,
+	};
+	query_result(crate::video_gpu::query_ten_bit(
+		backend,
+		codec.index() as i32,
+		adapter,
+	))
+}
+
 fn query_result(result: i32) -> ProbeResult {
 	match result {
 		1 => ProbeResult::Available,
@@ -101,6 +120,7 @@ fn probe_with<E: ProbeEncoder>(
 		profile: Profile::Main,
 		codec,
 		adapter: None,
+		hdr: None,
 	};
 	let screen = Config {
 		width: 1280,
@@ -111,6 +131,7 @@ fn probe_with<E: ProbeEncoder>(
 		profile: Profile::Main,
 		codec,
 		adapter: None,
+		hdr: None,
 	};
 	// Each helper drops its encoder before the next native context is opened.
 	let camera = probe_profile(camera, backend, &mut open);

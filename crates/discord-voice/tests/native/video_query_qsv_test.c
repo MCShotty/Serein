@@ -56,6 +56,11 @@ static const char *mode;
 static int releases, unloads, enumerations, filters, forbidden;
 static mfxImplDescription description;
 static struct encoder encoder;
+static struct encprofile profile;
+static struct encmemdesc memory;
+static mfxU32 color_format;
+static int profile_case;
+static mfxU32 selected_codec = MFX_CODEC_AV1;
 static mfxExtendedDeviceId extended_device;
 int serein_query_qsv(int codec);
 mfxLoader MFX_CDECL MFXLoad(void) {
@@ -97,7 +102,18 @@ mfxStatus MFX_CDECL MFXEnumImplementations(mfxLoader loader, mfxU32 index, mfxIm
     description.Enc.NumCodecs = 1;
     description.Enc.Codecs = &encoder;
     encoder.CodecID = !strcmp(mode, "av1") ? MFX_CODEC_AV1 : MFX_CODEC_AVC;
-    if (!strcmp(mode, "scoped") && index == 1) encoder.CodecID = MFX_CODEC_AV1;
+    if (!strcmp(mode, "scoped") && index == 1) {
+        encoder.CodecID = selected_codec;
+        if (profile_case) {
+            memset(&profile,0,sizeof(profile));memset(&memory,0,sizeof(memory));
+            encoder.NumProfiles = profile_case == 5 ? 65 : 1; encoder.Profiles = &profile;
+            profile.Profile = selected_codec == MFX_CODEC_HEVC ?
+                (profile_case == 3 ? MFX_PROFILE_HEVC_MAIN : MFX_PROFILE_HEVC_MAIN10) : MFX_PROFILE_AV1_MAIN;
+            profile.NumMemTypes = 1; profile.MemDesc = &memory;
+            memory.NumColorFormats = profile_case == 4 ? 65 : 1; memory.ColorFormats = &color_format;
+            color_format = profile_case == 2 ? MFX_FOURCC_NV12 : MFX_FOURCC_P010;
+        }
+    }
     if (!strcmp(mode, "legacy") || (!strcmp(mode, "error-then-supported") && !index)) {
         description.ApiVersion.Major = 1;
         memset(&description.Enc, 0, sizeof(description.Enc));
@@ -162,6 +178,21 @@ int main(void) {
     releases = unloads = enumerations = filters = forbidden = 0;
     assert(serein_query_qsv_on_adapter(2, &target) == 1);
     assert(unloads == 1 && releases == 4 && forbidden == 0);
+    assert(serein_query_qsv_on_adapter(5, &target) == -1); /* Missing metadata. */
+    profile_case = 1;
+    assert(serein_query_qsv_on_adapter(5, &target) == 1);
+    profile_case = 2;
+    assert(serein_query_qsv_on_adapter(5, &target) == 0);
+    assert(serein_query_qsv_on_adapter(2, &target) == 1);
+    for (profile_case = 4; profile_case <= 5; profile_case++)
+        assert(serein_query_qsv_on_adapter(5, &target) == -1);
+    selected_codec = MFX_CODEC_HEVC; profile_case = 1;
+    assert(serein_query_qsv_on_adapter(4, &target) == 1);
+    profile_case = 3;
+    assert(serein_query_qsv_on_adapter(4, &target) == 0);
+    assert(serein_query_qsv_on_adapter(3, &target) == 0);
+    selected_codec = MFX_CODEC_AV1; profile_case = 0;
+    assert(forbidden == 0);
     target.bus = 3;
     assert(serein_query_qsv_on_adapter(2, &target) == 0);
     target.identity = SEREIN_GPU_UNIDENTIFIED;

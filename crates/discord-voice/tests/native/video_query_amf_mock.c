@@ -72,6 +72,8 @@ static amf_int32 input_count(AMFIOCaps *self) { (void)self; return is("bad-count
 static AMF_RESULT input_format(AMFIOCaps *self, amf_int32 index, AMF_SURFACE_FORMAT *format, amf_bool *native) {
     (void)self; assert(index >= 0 && index < 2); *native = true;
     if(is("format-failed")) return AMF_FAIL;
+    const char *hdr = getenv("SEREIN_HDR_FIXTURE");
+    if (hdr && strcmp(hdr,"eight") && index == 1) { *format = AMF_SURFACE_P010; return AMF_OK; }
     *format = is("no-420") ? AMF_SURFACE_BGRA : index == 1 && !is("no-nv12") ? AMF_SURFACE_NV12 : AMF_SURFACE_YUV420P;
     return AMF_OK;
 }
@@ -96,8 +98,17 @@ static const AMFContext1Vtbl context_vtable = {
 static const AMFComponentVtbl component_vtable = {
     .Release=component_release, .Init=component_init, .SubmitInput=component_submit, .GetCaps=component_caps
 };
+static AMF_RESULT caps_property(AMFCaps *self, const wchar_t *name, AMFVariantStruct *value) {
+    (void)self; assert(!wcscmp(name, AMF_VIDEO_ENCODER_HEVC_CAP_MAX_PROFILE));
+    const char *hdr = getenv("SEREIN_HDR_FIXTURE");
+    if (hdr && !strcmp(hdr,"error")) return AMF_FAIL;
+    memset(value,0,sizeof(*value));
+    value->type = hdr && !strcmp(hdr,"bad-type") ? AMF_VARIANT_BOOL : AMF_VARIANT_INT64;
+    value->int64Value = hdr && !strcmp(hdr,"main") ? AMF_VIDEO_ENCODER_HEVC_PROFILE_MAIN : AMF_VIDEO_ENCODER_HEVC_PROFILE_MAIN_10;
+    return AMF_OK;
+}
 static const AMFCapsVtbl caps_vtable = {
-    .Release=caps_release, .GetAccelerationType=caps_accel, .GetInputCaps=caps_input
+    .Release=caps_release, .GetProperty=caps_property, .GetAccelerationType=caps_accel, .GetInputCaps=caps_input
 };
 static const AMFIOCapsVtbl input_vtable = {
     .Release=input_release, .GetNumOfFormats=input_count, .GetFormatAt=input_format

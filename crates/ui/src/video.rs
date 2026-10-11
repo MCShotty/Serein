@@ -33,6 +33,7 @@ pub struct VideoUi {
 	pub seen: bool,
 	pub volume: f32,
 	texture: Option<egui::TextureHandle>,
+	pub media: Option<MediaView>,
 	/// Staging pixels for the current frame. The renderer drops its reference after the
 	/// upload, so the same allocation is refilled each frame instead of reallocating up to
 	/// 8 MB per frame (1080p at 60 fps churned ~500 MB/s through the allocator).
@@ -57,6 +58,7 @@ impl Default for VideoUi {
 			seen: false,
 			volume: 1.0,
 			texture: None,
+			media: None,
 			frame: None,
 			shade: None,
 			controls_focused: false,
@@ -70,6 +72,7 @@ impl VideoUi {
 		self.exit_fullscreen();
 		self.active = None;
 		self.texture = None;
+		self.media = None;
 		self.frame = None;
 		self.state = VideoState::Idle;
 		self.position = 0.0;
@@ -134,12 +137,13 @@ impl VideoUi {
 		height: usize,
 		rgba: &[u8],
 	) -> bool {
+		self.media = None;
 		if self.active.is_none()
 			|| width == 0
 			|| height == 0
-			|| width > 1920
-			|| height > 1920
-			|| width * height > 1920 * 1080
+			|| width > 7680
+			|| height > 7680
+			|| width * height > 7680 * 4320
 			|| rgba.len() != width * height * 4
 		{
 			return false;
@@ -182,6 +186,7 @@ impl VideoUi {
 			_ => {
 				self.active = Some((message.channel, message.id, attachment.clone()));
 				self.texture = None;
+				self.media = None;
 				self.frame = None;
 				self.state = VideoState::Loading;
 				self.position = 0.0;
@@ -255,7 +260,13 @@ impl VideoUi {
 		});
 		let painter = ui.painter().with_clip_rect(stage);
 		painter.rect_filled(stage, CORNER, egui::Color32::BLACK);
-		if let Some(texture) = self.texture.as_ref().filter(|_| active) {
+		if let Some(media) = self.media.as_ref().filter(|_| active) {
+			let scale = (stage.width() / media.size.x).min(stage.height() / media.size.y);
+			media.paint(
+				ui,
+				egui::Rect::from_center_size(stage.center(), media.size * scale),
+			);
+		} else if let Some(texture) = self.texture.as_ref().filter(|_| active) {
 			let size = texture.size_vec2();
 			let scale = (stage.width() / size.x).min(stage.height() / size.y);
 			let image_rect = egui::Rect::from_center_size(stage.center(), size * scale);
@@ -853,5 +864,43 @@ mod tests {
 			assert!(video.active.is_none() && video.texture.is_none());
 			assert!(matches!(video.command, Some(VideoCommand::Stop)));
 		}
+	}
+}
+
+/// A high precision video view supplied by the desktop renderer. UI code never
+/// reads media planes or performs color conversion.
+#[derive(Clone)]
+pub struct MediaView {
+	pub size: egui::Vec2,
+	/// Renderer-owned per-player cache, reused across frames and dropped with the view.
+	pub resource: std::sync::Arc<dyn std::any::Any + Send + Sync>,
+	pub failure: std::sync::Arc<std::sync::Mutex<Option<&'static str>>>,
+	pub callback: std::sync::Arc<dyn Fn(egui::Rect) -> egui::PaintCallback + Send + Sync>,
+}
+impl MediaView {
+	pub fn paint(&self, ui: &egui::Ui, rect: egui::Rect) {
+		ui.painter()
+			.with_clip_rect(rect)
+			.add(egui::Shape::Callback((self.callback)(rect)));
+		if let Ok(failure) = self.failure.lock()
+			&& let Some(error) = *failure
+		{
+			let painter = ui.painter().with_clip_rect(rect);
+			let text = painter.layout(
+				error.into(),
+				egui::FontId::proportional(13.0),
+				egui::Color32::WHITE,
+				(rect.width() - 24.0).max(1.0),
+			);
+			painter.galley(
+				rect.center() - text.size() / 2.0,
+				text,
+				egui::Color32::WHITE,
+			);
+		}
+		// Also revisit presentation capabilities while paused, without polling
+		// capture devices or changing the user's playback state.
+		ui.ctx()
+			.request_repaint_after(std::time::Duration::from_secs(1));
 	}
 }

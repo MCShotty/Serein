@@ -22,6 +22,11 @@ import urllib.request
 
 
 SOURCES = {
+    "dav1d": {
+        "file": "dav1d-1.5.1.tar.xz",
+        "url": "https://downloads.videolan.org/pub/videolan/dav1d/1.5.1/dav1d-1.5.1.tar.xz",
+        "sha256": "401813f1f89fa8fd4295805aa5284d9aed9bc7fc1fdbe554af4292f64cbabe21",
+    },
     "ffmpeg": {
         "file": "ffmpeg-7.1.5.tar.xz",
         "url": "https://ffmpeg.org/releases/ffmpeg-7.1.5.tar.xz",
@@ -301,6 +306,13 @@ def encoder_names(backends):
     return names
 
 
+def decoder_names(backends):
+    names = {"h264", "hevc", "av1", "libdav1d", "aac", "opus", "vorbis", "mp3", "pcm_s16le", "pcm_s24le", "pcm_f32le"}
+    if backends["qsv"]:
+        names.update(["h264_qsv", "hevc_qsv", "av1_qsv"])
+    return names
+
+
 def hardware_options(system, backends):
     options = ["--disable-mediafoundation", "--disable-encoder=h264_vaapi,hevc_vaapi,av1_vaapi", "--disable-dxva2"]
     options += ["--enable-vulkan" if system == "Linux" and backends["amf"] else "--disable-vulkan"]
@@ -314,6 +326,16 @@ def hardware_options(system, backends):
     options += (["--enable-videotoolbox", "--install-name-dir=@rpath"] if backends["videotoolbox"] else
                 ["--disable-videotoolbox"])
     options += ["--enable-encoder=" + ",".join(sorted(encoder_names(backends) - {"libopenh264"}))] if any(backends.values()) else []
+    if system == "Windows":
+        options += ["--enable-d3d11va", "--enable-hwaccel=h264_d3d11va,hevc_d3d11va,av1_d3d11va"]
+    if system == "Darwin":
+        options += ["--enable-hwaccel=h264_videotoolbox,hevc_videotoolbox"]
+    if backends["nvenc"]:
+        options += ["--enable-nvdec", "--enable-hwaccel=h264_nvdec,hevc_nvdec,av1_nvdec"]
+    if system == "Linux" and backends["qsv"]:
+        # VA's driver interface supplies selected-render-node decoding, including
+        # AMD GPUs. The h264/hevc/av1_vaapi encoders remain explicitly disabled.
+        options += ["--enable-hwaccel=h264_vaapi,hevc_vaapi,av1_vaapi"]
     return options
 
 
@@ -322,10 +344,47 @@ def patch_ffmpeg(tree):
     originals = {}
     replacements = [("libavcodec/libavcodec.v", "LIBAVCODEC_MAJOR", "SEREIN_LIBAVCODEC_MAJOR"),
                     ("libavutil/libavutil.v", "LIBAVUTIL_MAJOR", "SEREIN_LIBAVUTIL_MAJOR"),
+                    ("libavformat/libavformat.v", "LIBAVFORMAT_MAJOR", "SEREIN_LIBAVFORMAT_MAJOR"),
+                    ("libswscale/libswscale.v", "LIBSWSCALE_MAJOR", "SEREIN_LIBSWSCALE_MAJOR"),
+                    ("libswresample/libswresample.v", "LIBSWRESAMPLE_MAJOR", "SEREIN_LIBSWRESAMPLE_MAJOR"),
                     ("libavcodec/qsvenc.c", "ret = av_new_packet(&pkt.pkt, q->packet_size);",
                      "ret = ff_get_encode_buffer(avctx, &pkt.pkt, q->packet_size, 0);"),
                     ("configure", 'hevc_qsv_encoder_select="hevcparse qsvenc"',
                      'hevc_qsv_encoder_select="hevcparse hevc_sei qsvenc"')]
+    # dav1d uses its own pool instead of AVCodecContext.get_buffer2. Reject
+    # oversized or unsupported planes before that allocator obtains a surface.
+    replacements += [("libavcodec/libdav1d.c", "    ret = av_image_get_buffer_size(format, w, h, DAV1D_PICTURE_ALIGNMENT);",
+        """    if (p->p.bpc > 10 || (p->p.layout != DAV1D_PIXEL_LAYOUT_I420 && p->p.layout != DAV1D_PIXEL_LAYOUT_I400) ||
+        p->p.w <= 0 || p->p.h <= 0 || p->p.w > 7680 || p->p.h > 7680 || (int64_t)w * h > (int64_t)7680 * 4352)
+        return AVERROR(ENOSYS);
+    ret = av_image_get_buffer_size(format, w, h, DAV1D_PICTURE_ALIGNMENT);""")]
+    # Bind VT decoding through its public RequiredDecoderGPURegistryID key,
+    # with a private device-context field preserved in the corresponding-source patch.
+    replacements += [
+        ("libavutil/hwcontext_videotoolbox.h", "typedef struct AVVTFramesContext {",
+         "typedef struct AVVTDeviceContext { uint64_t gpu_registry_id; } AVVTDeviceContext;\n\ntypedef struct AVVTFramesContext {"),
+        ("libavutil/hwcontext_videotoolbox.c", "    .type                 = AV_HWDEVICE_TYPE_VIDEOTOOLBOX,",
+         "    .type                 = AV_HWDEVICE_TYPE_VIDEOTOOLBOX,\n    .device_hwctx_size     = sizeof(AVVTDeviceContext),"),
+        ("libavcodec/videotoolbox.c", '#include "videotoolbox.h"',
+         '#include "videotoolbox.h"\n#include <dlfcn.h>'),
+        ("libavcodec/videotoolbox.c", "    avc_info = CFDictionaryCreateMutable(kCFAllocatorDefault,",
+         """    if (avctx->hw_device_ctx) {
+        AVHWDeviceContext *device = (AVHWDeviceContext *)avctx->hw_device_ctx->data;
+        if (device->type == AV_HWDEVICE_TYPE_VIDEOTOOLBOX && device->hwctx) {
+            AVVTDeviceContext *selected = device->hwctx;
+            if (selected->gpu_registry_id) {
+                CFStringRef *key = dlsym(RTLD_DEFAULT, "kVTVideoDecoderSpecification_RequiredDecoderGPURegistryID");
+                if (!key || !*key) { CFRelease(config_info); return NULL; }
+                CFNumberRef number = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt64Type, &selected->gpu_registry_id);
+                if (!number) { CFRelease(config_info); return NULL; }
+                CFDictionarySetValue(config_info, *key, number);
+                CFDictionarySetValue(config_info, kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder, kCFBooleanTrue);
+                CFRelease(number);
+            }
+        }
+    }
+    avc_info = CFDictionaryCreateMutable(kCFAllocatorDefault,"""),
+    ]
     # FFmpeg7.1's VT encoder otherwise silently chooses an unrelated GPU.
     # This public VideoToolbox specification is resolved dynamically so an
     # older SDK can compile, while an OS lacking the key fails closed. Keep
@@ -547,7 +606,8 @@ def validate_completed_build(prefix, system, backends):
     """A recipe stamp is insufficient if a restored build lost required files."""
     required = [f"include/{name}" for name in (
         "libavcodec/avcodec.h", "libavutil/avutil.h", "libavutil/error.h", "libavutil/frame.h",
-        "libavutil/hwcontext.h", "libavutil/mem.h", "libavutil/opt.h")]
+        "libavutil/hwcontext.h", "libavutil/mem.h", "libavutil/opt.h",
+        "libavformat/avformat.h", "libswscale/swscale.h", "libswresample/swresample.h")]
     required += ["lib/pkgconfig/libavcodec-serein.pc", "lib/pkgconfig/libavutil-serein.pc"]
     required += {
         "Linux": ["lib/libavcodec-serein.so", "lib/libavcodec-serein.so.61",
@@ -557,8 +617,16 @@ def validate_completed_build(prefix, system, backends):
         "Windows": ["bin/avcodec-serein-61.dll", "bin/avutil-serein-59.dll", "bin/openh264.dll",
                     "lib/avcodec-serein.lib", "lib/avutil-serein.lib"],
     }[system]
+    for name, version in (("avformat", "61"), ("swscale", "8"), ("swresample", "5")):
+        required.append(f"lib/pkgconfig/lib{name}-serein.pc")
+        if system == "Linux":
+            required += [f"lib/lib{name}-serein.so", f"lib/lib{name}-serein.so.{version}"]
+        elif system == "Darwin":
+            required += [f"lib/lib{name}-serein.dylib", f"lib/lib{name}-serein.{version}.dylib"]
+        else:
+            required += [f"bin/{name}-serein-{version}.dll", f"lib/{name}-serein.lib"]
     provenance = ["build-ffmpeg.py", "configure.json", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE",
-                  "source/ffmpeg-7.1.5.tar.xz", "source/openh264-2.6.0-source.tar.bz2"]
+                  "source/ffmpeg-7.1.5.tar.xz", "source/openh264-2.6.0-source.tar.bz2", "source/dav1d-1.5.1.tar.xz", "dav1d-COPYING"]
     if system == "Linux":
         provenance.append("serein-openh264.patch")
     if backends["nvenc"]:
@@ -605,7 +673,7 @@ def build(args):
     work = args.work_dir.resolve()
     cache.mkdir(parents=True, exist_ok=True)
     recipe = {"sources": SOURCES, "system": system, "architecture": architecture,
-              **backends, "encoders": sorted(encoder_names(backends)), "toolchain": toolchain, "recipe_sha256":
+              **backends, "encoders": sorted(encoder_names(backends)), "decoders": sorted(decoder_names(backends)), "toolchain": toolchain, "recipe_sha256":
               hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     stamp = prefix / "share/serein-ffmpeg/build.json"
     if stamp.is_file() and json.loads(stamp.read_text()) == recipe:
@@ -617,7 +685,7 @@ def build(args):
     if work.exists() and any(work.iterdir()):
         raise ValueError(f"FFmpeg work directory contains an incomplete build; choose a fresh work directory: {work}")
     work.mkdir(parents=True, exist_ok=True)
-    required = ["ffmpeg"] + (["nv-codec-headers"] if nvenc else []) + (["onevpl"] if backends["qsv"] else [])
+    required = ["ffmpeg", "dav1d"] + (["nv-codec-headers"] if nvenc else []) + (["onevpl"] if backends["qsv"] else [])
     archives = {name: fetch(SOURCES[name], cache, args.offline) for name in required}
     archives["openh264-source"] = openh264_source(cache, args.offline)
     if backends["amf"]:
@@ -684,13 +752,23 @@ def build(args):
             content = pc.read_text()
             content = content.replace("Libs: ", "Libs: -ladvapi32 -lole32 -luuid ", 1)
             pc.write_text(content)
+    dav1d_build = work / "dav1d-meson"
+    run("meson", "setup", dav1d_build, trees["dav1d"], f"--prefix={prefix.as_posix()}",
+        "--libdir=lib", "--buildtype=release", "--default-library=static",
+        "-Db_staticpic=true", "-Db_vscrt=mt", "-Denable_tools=false", "-Denable_tests=false",
+        *(["-Denable_asm=false"] if system == "Windows" and arm64 else []), env=env)
+    run("meson", "compile", "-C", dav1d_build, "-j", str(args.jobs), env=env)
+    run("meson", "install", "-C", dav1d_build, env=env)
     configure = [
         f"--prefix={posix(prefix)}", "--build-suffix=-serein", "--disable-autodetect", "--disable-everything",
         "--disable-programs", "--disable-doc", "--disable-network", "--disable-static", "--enable-shared",
-        "--disable-gpl", "--disable-nonfree", "--disable-version3", "--disable-avdevice", "--disable-avformat",
-        "--disable-avfilter", "--disable-swscale", "--disable-swresample", "--disable-postproc",
-        "--disable-vdpau", "--disable-cuvid", "--disable-nvdec", "--disable-cuda-llvm",
+        "--disable-gpl", "--disable-nonfree", "--disable-version3", "--disable-avdevice", "--enable-avformat",
+        "--disable-avfilter", "--enable-swscale", "--enable-swresample", "--disable-postproc",
+        "--disable-vdpau", "--disable-cuvid", "--disable-cuda-llvm",
         "--enable-avcodec", "--enable-avutil", "--enable-libopenh264", "--enable-encoder=libopenh264",
+        "--enable-libdav1d", "--enable-decoder=" + ",".join(sorted(decoder_names(backends))),
+        "--enable-demuxer=mov,matroska", "--enable-parser=h264,hevc,av1,aac,opus,vorbis,mpegaudio",
+
         f"--extra-cflags=-I{posix(prefix / 'include')}",
         f"--extra-ldflags=-L{posix(prefix / 'lib')}" + (" -Wl,-z,defs" if system == "Linux" else ""),
     ]
@@ -713,13 +791,19 @@ def build(args):
               and "_ENCODER 1" in line}
     if actual != expected:
         raise ValueError(f"Unexpected FFmpeg encoder allowlist: {sorted(actual)}, expected {sorted(expected)}")
-    if any(line.startswith("#define CONFIG_") and "_DECODER 1" in line for line in component_config.splitlines()):
-        raise ValueError("FFmpeg outgoing encoder build must not include decoders")
+    expected_decoders = {name.upper() for name in decoder_names(backends)}
+    actual_decoders = {line.split()[1].removeprefix("CONFIG_").removesuffix("_DECODER")
+                       for line in component_config.splitlines() if line.startswith("#define CONFIG_")
+                       and "_DECODER 1" in line}
+    if actual_decoders != expected_decoders:
+        raise ValueError(f"Unexpected FFmpeg decoder allowlist: {sorted(actual_decoders)}")
+    if "#define CONFIG_NETWORK 0" not in configuration:
+        raise ValueError("Media decoders must never perform network I/O")
     run("make", f"-j{args.jobs}", cwd=trees["ffmpeg"], env=env)
     run("make", "install", cwd=trees["ffmpeg"], env=env)
     if system == "Windows":
         # FFmpeg installs MSVC import libraries with DLLs in bin; Cargo searches lib.
-        for name in ("avcodec-serein.lib", "avutil-serein.lib"):
+        for name in ("avcodec-serein.lib", "avutil-serein.lib", "avformat-serein.lib", "swscale-serein.lib", "swresample-serein.lib"):
             shutil.copyfile(prefix / "bin" / name, prefix / "lib" / name)
     if system == "Linux":
         for library in (prefix / "lib").glob("*.so.*"):
@@ -759,6 +843,7 @@ def build(args):
     if openh264_patch is not None:
         (notices / "serein-openh264.patch").write_text(openh264_patch)
     shutil.copyfile(trees["ffmpeg"] / "COPYING.LGPLv2.1", notices / "COPYING.LGPLv2.1")
+    shutil.copyfile(trees["dav1d"] / "COPYING", notices / "dav1d-COPYING")
     shutil.copyfile(trees["openh264-source"] / "LICENSE", notices / "OpenH264-LICENSE")
     if nvenc:
         shutil.copyfile(trees["nv-codec-headers"] / "README", notices / "nv-codec-headers-README")

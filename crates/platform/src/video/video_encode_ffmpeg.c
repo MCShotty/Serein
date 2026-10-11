@@ -108,7 +108,7 @@ static int configure_backend(SereinAvc *encoder, int backend)
     }
     if (backend == 1) {
         /* AV1 NVENC has no private profile option; the context requests Main. */
-        return (av1 || set_option(codec, "profile", h264 && encoder->baseline ? "baseline" : "main")) &&
+        return (av1 || set_option(codec, "profile", h264 && encoder->baseline ? "baseline" : (!h264 && !av1 && (encoder->features & 12)) ? "main10" : "main")) &&
                (h264 || set_option(codec, "split_encode_mode", encoder->split_requested ? "2" : "disabled")) &&
                set_option(codec, "preset", "p5") && set_option(codec, "tune", "hq") &&
                set_option(codec, "rc", "cbr") &&
@@ -118,7 +118,7 @@ static int configure_backend(SereinAvc *encoder, int backend)
     }
     if (backend == 3) {
         const int hevc = encoder->kind == 1;
-        if (!set_option(codec, "profile", h264 && encoder->baseline ? "constrained_baseline" : "main") ||
+        if (!set_option(codec, "profile", h264 && encoder->baseline ? "constrained_baseline" : (!h264 && !av1 && (encoder->features & 12)) ? "main10" : "main") ||
             !set_option(codec, "usage", hevc ? "high_quality" : "transcoding") ||
             !set_option(codec, "quality", hevc ? "quality" : "balanced") ||
             !set_option(codec, "rc", "cbr") ||
@@ -144,7 +144,7 @@ static int configure_backend(SereinAvc *encoder, int backend)
                av_opt_set_int(codec->priv_data, "max_au_size", (int64_t)encoder->max_bytes * 8, 0) >= 0;
     }
     if (backend == 4) {
-        if (!set_option(codec, "profile", h264 && encoder->baseline ? "baseline" : "main") ||
+        if (!set_option(codec, "profile", h264 && encoder->baseline ? "baseline" : (!h264 && !av1 && (encoder->features & 12)) ? "main10" : "main") ||
             !set_option(codec, "preset", "medium") ||
             !set_option(codec, "look_ahead_depth", encoder->features & 2 ? "16" : "0") ||
             !set_option(codec, "extbrc", encoder->features & 2 ? "1" : "0") ||
@@ -170,7 +170,7 @@ static int configure_backend(SereinAvc *encoder, int backend)
         return !h264 || (set_option(codec, "look_ahead", "0") && set_option(codec, "repeat_pps", "1") &&
                           set_option(codec, "cavlc", encoder->baseline ? "1" : "0"));
     }
-    return !av1 && set_option(codec, "profile", h264 && encoder->baseline ? "baseline" : "main") &&
+    return !av1 && set_option(codec, "profile", h264 && encoder->baseline ? "baseline" : (!h264 && !av1 && (encoder->features & 12)) ? "main10" : "main") &&
            set_option(codec, "realtime", "0") && set_option(codec, "allow_sw", "0") &&
            set_option(codec, "max_ref_frames", encoder->features & 1 ? "0" : "1");
 }
@@ -258,7 +258,7 @@ static void *open_with_split(int width, int height, int fps, int bitrate,
         (width & 1) || (height & 1) || fps <= 0 || fps > 60 ||
         bitrate <= 0 || bitrate > 100000000 ||
         (baseline != 0 && baseline != 1) || backend < 0 || backend > 4 || kind < 0 || kind > 2 ||
-        features < 0 || features > 3 || (baseline && features) || (kind == 0 && (features & 1)) ||
+        features < 0 || features > 11 || (features & 12) == 12 || ((features & 12) && kind == 0) || (baseline && (features & 3)) || (kind == 0 && (features & 1)) ||
         max_bytes == 0 || max_bytes > SEREIN_MAX_PACKET_BYTES)
         return NULL;
 
@@ -280,7 +280,7 @@ static void *open_with_split(int width, int height, int fps, int bitrate,
     if (!encoder)
         return NULL;
     /* Dimension checks above bound every input picture to at most 47.5 MiB. */
-    encoder->input_bytes = (size_t)width * (size_t)height * 3 / 2;
+    encoder->input_bytes = (size_t)width * (size_t)height * 3 / ((features & 12) ? 1 : 2);
     encoder->max_bytes = max_bytes;
     encoder->baseline = baseline;
     encoder->kind = kind;
@@ -302,15 +302,15 @@ static void *open_with_split(int width, int height, int fps, int bitrate,
     codec->get_encode_buffer = bounded_encode_buffer;
     codec->width = width;
     codec->height = height;
-    codec->pix_fmt = backend == 4 ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P;
+    codec->pix_fmt = (features & 12) ? AV_PIX_FMT_P010LE : backend == 4 ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P;
     /* Both RGB/BGRA converters pack limited-range BT.601 samples, including
      * at HD resolutions. Signal that matrix instead of allowing a decoder or
      * hardware encoder to infer BT.709 from picture size. Matrix conversion
      * preserves the captured SDR RGB primaries and sRGB transfer function. */
     codec->color_range = AVCOL_RANGE_MPEG;
-    codec->colorspace = AVCOL_SPC_SMPTE170M;
-    codec->color_primaries = AVCOL_PRI_BT709;
-    codec->color_trc = AVCOL_TRC_IEC61966_2_1;
+    codec->colorspace = (features & 12) ? AVCOL_SPC_BT2020_NCL : AVCOL_SPC_SMPTE170M;
+    codec->color_primaries = (features & 12) ? AVCOL_PRI_BT2020 : AVCOL_PRI_BT709;
+    codec->color_trc = (features & 4) ? AVCOL_TRC_SMPTE2084 : (features & 8) ? AVCOL_TRC_ARIB_STD_B67 : AVCOL_TRC_IEC61966_2_1;
     codec->time_base = (AVRational){1, fps};
     codec->framerate = (AVRational){fps, 1};
     codec->sample_aspect_ratio = (AVRational){1, 1};
@@ -325,7 +325,7 @@ static void *open_with_split(int width, int height, int fps, int bitrate,
     codec->max_b_frames = b_frames;
     codec->thread_count = width * height <= 640 * 480 ? 2 : 4;
     codec->profile = kind == 0 ? (baseline ? AV_PROFILE_H264_BASELINE : AV_PROFILE_H264_MAIN) :
-                     kind == 1 ? AV_PROFILE_HEVC_MAIN : AV_PROFILE_AV1_MAIN;
+                     kind == 1 ? ((features & 12) ? AV_PROFILE_HEVC_MAIN_10 : AV_PROFILE_HEVC_MAIN) : AV_PROFILE_AV1_MAIN;
     /* Output stays in decoder submission order. Packet PTS travels through the
      * bounded Rust timeline instead of being replaced with the output clock. */
     codec->flags = (int)((unsigned int)codec->flags | AV_CODEC_FLAG_CLOSED_GOP);
@@ -526,6 +526,19 @@ static int packet_fits(const AVPacket *packet, size_t max_bytes, size_t capacity
  * interleaves U/V directly into the allocated frame, with no extra scratch. */
 static void copy_picture(AVFrame *frame, const uint8_t *input)
 {
+    if (frame->format == AV_PIX_FMT_P010LE) {
+        size_t offset = 0;
+        for (int plane = 0; plane < 2; plane++) {
+            const size_t row_bytes = (size_t)frame->width * 2;
+            const int rows = frame->height >> (plane != 0);
+            for (int row = 0; row < rows; row++) {
+                memcpy(frame->data[plane] + (size_t)row * (size_t)frame->linesize[plane], input + offset, row_bytes);
+                offset += row_bytes;
+            }
+        }
+        return;
+    }
+
     size_t offset = 0;
     for (int plane = 0; plane < (frame->format == AV_PIX_FMT_NV12 ? 1 : 3); plane++) {
         int width = frame->width >> (plane != 0);

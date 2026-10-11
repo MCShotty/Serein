@@ -567,8 +567,10 @@ software fallback. Stable supports H.264. Experimental selects the shared FFmpeg
 backend and offers H.264, H.265 and AV1. Camera settings are snapshotted when a call
 starts; a local camera preview uses the current settings and stops when they change.
 Screen sharing snapshots the settings at the explicit Share gesture. Changes do not
-alter an already negotiated stream. Existing incoming playback remains H.264-only
-and capped at 1080p; these choices expand outgoing resolution, not receiver budgets.
+alter an already negotiated stream. Incoming H.264, HEVC and AV1 use the shared
+FFmpeg decoder, admitting visible pictures through 7680×4320 (including portrait
+and 6144×2560) after coded geometry, profile and reference validation. The decoder
+prefers the renderer GPU and falls back to the bundled software decoders.
 
 Experimental queries hardware codec capabilities when Voice & Video is opened.
 The H.264, H.265 and AV1 rows show driver-reported NVENC, AMD AMF, Intel Quick Sync
@@ -680,11 +682,30 @@ validation. Stable retains OpenH264's original screen-content tuning.
 
 Official builds use the pinned minimal LGPL recipe in
 [`scripts/build-ffmpeg.py`](../scripts/build-ffmpeg.py), with GPL/nonfree components,
-networking, CLI programs, demuxers and decoders disabled. Replaceable shared
+networking and CLI programs disabled. Explicit decoder/demuxer allowlists cover
+H.264, HEVC, AV1 and supported anonymous video attachments. Replaceable shared
 libraries, license and corresponding source/patch/recipe travel with each package.
 Private library names and ELF symbol versions keep the system GStreamer FFmpeg
 plugin independent. The source patch also supplies HEVC QSV's missing internal SEI
-helper dependency; no decoder is registered in the outgoing library.
+helper dependency and bounds dav1d's separate picture allocator. dav1d 1.5.1
+provides software AV1 decoding with its BSD-2-Clause notice and corresponding source.
+
+HDR capture preserves half-float or P010 pixels when the approved native source
+provides usable color metadata. Outgoing Discord codec negotiation does not
+establish receiver 10-bit compatibility, so these sources currently tone-map to
+SDR; H.264 remains SDR. The native HEVC/AV1 encoder supports PQ/HLG P010 input,
+with 10-bit driver queries separate from ordinary codec support. No HDR signaling
+is invented. Incoming PQ/HLG streams and supported HDR attachments share the same
+color conversion: native HDR on an opaque compatible display/surface and automatic
+tone mapping elsewhere. SDR UI brightness remains unchanged.
+
+The receive queue allows 32 MiB across at most eight active decoders and sixteen
+announced sources, with an 8 MiB complete-access-unit limit. Shared media uses a
+3 GiB aggregate reservation for conservative surface estimates and retained
+pictures; it is an admission budget, not a measured process/GPU memory ceiling.
+Only the latest picture is delivered for display. Unsupported profiles, resource
+limits and repeated malformed complete frames produce playback errors; transient
+loss, rekeying and congestion retain the bounded keyframe recovery path.
 
 Camera output preserves its default 128 KiB encoded-picture budget, rising to
 256 KiB at 720p, 512 KiB at 1080p, 1 MiB at 1440p and 2 MiB at 4K/8K. Screen

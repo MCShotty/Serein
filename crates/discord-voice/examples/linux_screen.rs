@@ -37,8 +37,7 @@ mod video_backend;
 #[path = "../src/video_encode.rs"]
 mod video_encode;
 #[cfg(target_os = "linux")]
-#[path = "../src/video_gpu.rs"]
-mod video_gpu;
+use platform::video::ffmpeg as video_gpu;
 #[cfg(target_os = "linux")]
 #[path = "../src/video_receive.rs"]
 mod video_receive;

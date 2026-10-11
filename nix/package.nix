@@ -43,6 +43,8 @@
     fetchurl,
     python3,
     nasm,
+    meson,
+    ninja,
     patchelf,
     libva,
     libdrm,
@@ -59,6 +61,11 @@
             url = "https://codeload.github.com/cisco/openh264/tar.gz/refs/tags/v2.6.0";
             name = "openh264-2.6.0.tar.gz";
             sha256 = "558544ad358283a7ab2930d69a9ceddf913f4a51ee9bf1bfb9e377322af81a69";
+        })
+        (fetchurl {
+            url = "https://downloads.videolan.org/pub/videolan/dav1d/1.5.1/dav1d-1.5.1.tar.xz";
+            name = "dav1d-1.5.1.tar.xz";
+            sha256 = "401813f1f89fa8fd4295805aa5284d9aed9bc7fc1fdbe554af4292f64cbabe21";
         })
     ] ++ lib.optionals isLinux [
         (fetchurl {
@@ -90,7 +97,7 @@
         pname = "serein-ffmpeg";
         version = "7.1.5";
         dontUnpack = true;
-        nativeBuildInputs = [python3 pkg-config nasm]
+        nativeBuildInputs = [python3 pkg-config nasm meson ninja]
             ++ lib.optionals isLinux [cmake patchelf]
             ++ lib.optionals isDarwin [darwin.sigtool cctools];
         CC = "${stdenv.cc}/bin/cc";
@@ -99,6 +106,7 @@
             ++ lib.optionals isLinux [libdrm]
             ++ lib.optionals (isLinux && stdenv.hostPlatform.isx86_64) [libva];
         dontUseCmakeConfigure = true;
+        dontUseMesonConfigure = true;
         installPhase = ''
             runHook preInstall
             mkdir sources

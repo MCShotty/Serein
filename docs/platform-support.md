@@ -374,6 +374,28 @@ Both exclude Serein's playback and capture other applications even when sharing 
 window. There is no whole-output fallback. Hardware exclusion and receiving sound in
 an official client remain unverified.
 
+## Shared attachment decoding and HDR
+
+Supported H.264, HEVC and AV1 attachments use the bundled FFmpeg media bridge in
+`crates/platform`, with hardware decoding on the renderer's selected GPU and
+bounded software fallback (dav1d for AV1). Anonymous attachment readers are
+limited to 100 MiB and two hours; FFmpeg network protocols are disabled. Native
+players remain a fallback for formats outside the bundled demux/codec allowlists.
+Audio synchronization, seeking, rotation, pause, volume and cancellation remain
+in the desktop player. Incoming camera/screen video uses the same typed pictures
+through 8K, including 6144×2560, with bounded queues and latest-frame presentation.
+
+PQ and HLG retain ten-bit P010 pixels and explicit range/matrix/primaries. A
+small patch to the pinned `egui-wgpu` chooses linear extended-sRGB presentation
+only when the active opaque surface and display advertise usable HDR support.
+Monitor/HDR changes and surface recovery recheck it; incompatible transparency
+and unsupported displays use SDR tone mapping. Ordinary UI reference white stays
+unchanged. Windows/macOS capture preserve HDR pixels when their APIs support
+them; Linux requires usable portal/compositor pixels and color metadata.
+Unknown receiver ten-bit compatibility uses tone-mapped SDR streaming. These
+paths require current-head native hardware and owner-controlled Discord checks;
+synthetic fixtures establish neither display behavior nor interoperability.
+
 ## Additional macOS attachment codecs
 
 WebM, MOV and MP4 codecs unavailable in the native inline decoder can use an installed
@@ -385,7 +407,7 @@ Native format failures during opening or playback retry conversion once, resumin
 the last displayed position. Sources above the native 1080p limit also use this
 bounded downscaling path. AAC track timestamps need not use the audio sample rate
 as their timescale. Missing FFmpeg or conversion failures appear in the video card. Linux and Windows
-continue to use their installed native codecs. This optional fallback is not bundled
+also retain their installed native codecs as a fallback. This optional fallback is not bundled
 in release packages; actual codec coverage depends on the local FFmpeg build.
 Windows passes MPEG-4/MOV and WebM/Matroska attachments to Media Foundation; a recognized
 container can still fail when its video or audio codec is not installed.

@@ -21,7 +21,7 @@ def run_queries(prefix):
         print("Linux driver-loader fixtures skipped; native platform builds still required")
         return
     here = Path(__file__).resolve().parent
-    source = here.parents[1] / "src"
+    source = here.parents[3] / "crates/platform/src/video"
     include = prefix / "include"
     compiler = shlex.split(os.environ.get("CC", "cc"))
     flags = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-ffunction-sections", "-fdata-sections",
@@ -29,7 +29,7 @@ def run_queries(prefix):
     with tempfile.TemporaryDirectory(prefix="serein-driver-fixtures-") as directory:
         out = Path(directory)
         recipe_spec = importlib.util.spec_from_file_location(
-            "ffmpeg_recipe", source.parents[2] / "scripts/build-ffmpeg.py")
+            "ffmpeg_recipe", source.parents[3] / "scripts/build-ffmpeg.py")
         recipe = importlib.util.module_from_spec(recipe_spec)
         recipe_spec.loader.exec_module(recipe)
         (out / "serein_qsv_feature_validation.h").write_text(recipe.QSV_FEATURE_VALIDATION)
@@ -98,7 +98,7 @@ def run_amf(include_path):
     if not (include / "AMF/core/Factory.h").is_file():
         raise RuntimeError(f"AMF SDK headers are missing from {include}")
     fixture_dir = Path(__file__).resolve().parent
-    source_dir = fixture_dir.parent.parent / "src"
+    source_dir = fixture_dir.parents[3] / "crates/platform/src/video"
     c_compiler = shlex.split(os.environ.get("CC", "cc"))
     cpp_compiler = shlex.split(os.environ.get("CXX", "c++"))
     sdk_flags = ["-isystem", str(include)]
@@ -222,9 +222,83 @@ def run_encoding(prefix):
         executable = Path(directory) / "video-encoding-test"
         subprocess.run([
             *shlex.split(os.environ.get("CC", "cc")), "-std=c11", "-Wall", "-Wextra", "-Werror",
-            "-I" + str(prefix / "include"), "-I" + str(here.parents[1] / "src"),
+            "-I" + str(prefix / "include"), "-I" + str(here.parents[3] / "crates/platform/src/video"),
             str(here / "video_encode_timing_test.c"), "-L" + str(prefix / "lib"),
             "-Wl,-rpath," + str(prefix / "lib"), "-lavcodec-serein", "-lavutil-serein",
+            "-o", str(executable),
+        ], check=True)
+        subprocess.run([str(executable)], check=True)
+
+
+    # Exercise the actual decoder copy path: odd visible HDR crops need rounded
+    # chroma strides, not an even-dimension rejection or a truncated allocation.
+    with tempfile.TemporaryDirectory(prefix="serein-decode-fixture-") as directory:
+        root = Path(directory)
+        source = root / "cropped.c"
+        source.write_text(r'''
+#include <assert.h>
+#include "video_decode_ffmpeg.c"
+int main(void) {
+    SereinDecoder *d = serein_decode_open(0, NULL, 0);
+    assert(d);
+    const enum AVPixelFormat formats[] = {AV_PIX_FMT_YUV420P10LE, AV_PIX_FMT_P010LE,
+        AV_PIX_FMT_YUV420P, AV_PIX_FMT_NV12, AV_PIX_FMT_GRAY10LE, AV_PIX_FMT_GRAY8};
+    for (size_t variant = 0; variant < sizeof(formats) / sizeof(formats[0]); ++variant)
+    for (int full = 0; full < 2; ++full) {
+    AVFrame *f = d->frame;
+    av_frame_unref(f);
+    f->format = formats[variant];
+    f->width = 33; f->height = 17;
+    f->color_trc = AVCOL_TRC_SMPTE2084;
+    f->color_primaries = AVCOL_PRI_BT2020;
+    f->colorspace = AVCOL_SPC_BT2020_NCL;
+    f->color_range = full ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
+    assert(av_frame_get_buffer(f, 32) == 0);
+    const AVPixFmtDescriptor *description = av_pix_fmt_desc_get(f->format);
+    for (int component = 0; component < description->nb_components; ++component) {
+        const AVComponentDescriptor *c = &description->comp[component];
+        int w = component ? 17 : 33, h = component ? 9 : 17;
+        unsigned sample = component ? 1u << (c->depth - 1) : full ? 0 : 16u << (c->depth - 8);
+        unsigned word = sample << c->shift;
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                uint8_t *at = f->data[c->plane] + y * f->linesize[c->plane] + x * c->step + c->offset;
+                at[0] = (uint8_t)word;
+                if (c->depth + c->shift > 8) at[1] = (uint8_t)(word >> 8);
+            }
+        }
+    }
+    d->pending = 1;
+    SereinPicture picture;
+    assert(serein_decode_receive(d, &picture, NULL, 0) == 1);
+    assert(picture.width == 33 && picture.height == 17 && picture.format == 1);
+    assert(picture.bytes == 2 * 33 * 17 + 4 * 17 * 9);
+    uint8_t *guard = malloc(picture.bytes + 2);
+    assert(guard); memset(guard, 0x5a, picture.bytes + 2);
+    assert(serein_decode_receive(d, &picture, guard + 1, picture.bytes) == 1);
+    assert(guard[0] == 0x5a && guard[picture.bytes + 1] == 0x5a);
+    for (size_t at = 0; at < picture.bytes; at += 2) {
+        uint16_t word = (uint16_t)(guard[at + 1] | guard[at + 2] << 8);
+        unsigned expected = at < 2 * 33 * 17 ? (full ? 0 : 64 << 6) : 512 << 6;
+        if (word != expected)
+            fprintf(stderr, "crop offset=%zu word=%u\n", at, (unsigned)word);
+        assert(word == expected);
+    }
+    free(guard);
+    }
+    serein_decode_close(d);
+    puts("Odd HDR crops preserve exact P010 strides, black levels and output bounds");
+    return 0;
+}
+''')
+        bridge = here.parents[3] / "crates/platform/src/video"
+        executable = root / "cropped-test"
+        subprocess.run([
+            *shlex.split(os.environ.get("CC", "cc")), "-std=c11", "-Wall", "-Wextra", "-Werror",
+            "-I" + str(prefix / "include"), "-I" + str(bridge), str(source),
+            str(bridge / "video_gpu.c"), "-L" + str(prefix / "lib"),
+            "-Wl,-rpath," + str(prefix / "lib"), "-lavcodec-serein", "-lavutil-serein",
+            "-lavformat-serein", "-lswscale-serein", "-lswresample-serein", "-lm", "-ldl",
             "-o", str(executable),
         ], check=True)
         subprocess.run([str(executable)], check=True)
@@ -242,9 +316,10 @@ def run_patch(archive):
         modified = root / "modified"
         reproduced = root / "reproduced"
         # Only these upstream files are involved; no large build/capture fixture.
-        paths = ["configure", "libavcodec/libavcodec.v", "libavutil/libavutil.v", "libavcodec/qsvenc.c",
+        paths = ["configure", "libavcodec/libavcodec.v", "libavutil/libavutil.v", "libavformat/libavformat.v", "libavutil/hwcontext_videotoolbox.h", "libavutil/hwcontext_videotoolbox.c", "libavcodec/videotoolbox.c",
+                 "libswscale/libswscale.v", "libswresample/libswresample.v", "libavcodec/qsvenc.c",
                  "libavcodec/amfenc.c", "libavcodec/amfenc.h", "libavcodec/amfenc_hevc.c",
-                 "libavcodec/amfenc_av1.c", "libavcodec/videotoolboxenc.c", "libavutil/hwcontext_vulkan.c"]
+                 "libavcodec/amfenc_av1.c", "libavcodec/videotoolboxenc.c", "libavutil/hwcontext_vulkan.c", "libavcodec/libdav1d.c"]
         with tarfile.open(archive) as source:
             for path in paths:
                 content = source.extractfile("ffmpeg-7.1.5/" + path).read()

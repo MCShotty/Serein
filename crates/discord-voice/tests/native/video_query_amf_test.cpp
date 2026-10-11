@@ -56,11 +56,27 @@ int main() {
     assert(serein_query_amf_on_adapter(2, &target) == 0);
     target.bus = 2;
     assert(serein_query_amf_on_adapter(2, &target) == 1);
+    assert(devices == 2 && released == 2);
+    assert(setenv("SEREIN_HDR_FIXTURE","ten",1) == 0);
+    assert(serein_query_amf_on_adapter(5, &target) == 1);
+    assert(serein_query_amf_on_adapter(4, &target) == 1);
+    assert(setenv("SEREIN_HDR_FIXTURE","eight",1) == 0);
+    assert(serein_query_amf_on_adapter(5, &target) == 0);
+    assert(serein_query_amf_on_adapter(2, &target) == 1);
+    assert(setenv("SEREIN_HDR_FIXTURE","main",1) == 0);
+    assert(serein_query_amf_on_adapter(4, &target) == 0);
+    assert(setenv("SEREIN_HDR_FIXTURE","error",1) == 0);
+    assert(serein_query_amf_on_adapter(4, &target) == -1);
+    assert(setenv("SEREIN_HDR_FIXTURE","bad-type",1) == 0);
+    assert(serein_query_amf_on_adapter(4, &target) == -1);
+    assert(serein_query_amf_on_adapter(3, &target) == 0);
+    assert(unsetenv("SEREIN_HDR_FIXTURE") == 0);
     target.bus = 3;
     assert(serein_query_amf_on_adapter(2, &target) == -1);
     target.identity = SEREIN_GPU_UNIDENTIFIED;
     assert(serein_query_amf_on_adapter(2, &target) == -1);
-    assert(devices == 2 && released == 2);
+    assert(devices == released);
+    assert(devices == 9);
 }
 
 #elif !defined(SEREIN_AMF_SCOPED_FIXTURE)

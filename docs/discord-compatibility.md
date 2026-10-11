@@ -545,7 +545,8 @@ October 6: outgoing camera presets now extend through 7680×4320, with 15/30/60 
 selection and a preserved 640×480/15 fps default. Higher resolution requires a
 sufficient native capture mode; the selected frame rate requests the closest
 supported native interval and caps encoding, without guaranteeing sustained fps.
-Existing incoming H.264 playback remains capped at 1080p. Physical 8K/60 fps capture
+Incoming playback now uses shared H.264/HEVC/AV1 decoding through 8K; the exact
+6144×2560/60 cadence has an offline RTP/DAVE decoded-picture fixture. Physical 8K/60 fps capture
 and official-client viewing remain unverified.
 Native limits, platform requirements and the owner-operated validation gate are in
 [Camera in calls](voice.md#camera-in-calls-macos-windows-and-linux). Camera recording remains unsupported. This section supersedes older camera-exclusion
@@ -671,9 +672,10 @@ the original platform encoders. Experimental excludes Media Foundation and VA-AP
 encoders. Quick Sync on Linux uses the iHD
 VA driver interface for its device. These hardware paths and actual runtime
 availability remain unverified locally. The pipeline has one source
-queue (at most 7680×4320 / 132,710,400 bytes per buffer; PipeWire negotiates 2–4 buffers), one raw frame per encode/preview
-branch (screen at most 132,710,400 bytes), one raw appsink frame per branch
-(screen ≤132,710,400 bytes; preview ≤925,696 bytes including padding), and the existing
+queue (at most 7680×4320, with a 265,420,800-byte raw ceiling including HDR;
+PipeWire negotiates 2–4 buffers), one raw frame per encode/preview
+branch, one raw appsink frame per branch
+(preview ≤925,696 bytes including padding), and the existing
 three-frame / 6-MiB encoded transport queue. Each processing stage can additionally hold
 its current buffer. Driver, compositor and codec surface pools are separate native
 allocations. Raw queues discard old frames before encoding; encoded pressure blocks
@@ -724,7 +726,19 @@ permission, virtual device, output rerouting or recording file is added.
 
 Gateway opcodes 18/19 and STREAM_CREATE/STREAM_SERVER_UPDATE/STREAM_DELETE are unofficial normal-user behavior, checked against [discord.py-self](https://github.com/dolfies/discord.py-self/blob/master/discord/gateway.py). A separate RTC connection uses the stream RTC server/channel IDs and the parent call session, sharing one ephemeral DAVE signing identity. The `rtc_server_id - 1` MLS group mapping comes from [discord-native-voice](https://github.com/dolfies/discord-native-voice/blob/master/discord/ext/native_voice/stream_client.py); it is not an official protocol guarantee. Explicit selected-codec negotiation and UDP transport are required; mismatches fail visibly. Video is DAVE-encrypted before matching H.264 RFC 6184, H.265 RFC 7798 or AV1 RTP packetization and per-packet transport AEAD. There is no plaintext fallback. [DAVE protocol](https://github.com/discord/dave-protocol/blob/main/protocol.md) supplies the encryption requirement.
 
-Screen source discovery and capture occur off the UI/audio threads. Application-owned source lists are capped at 64 labels of 256 bytes. Raw BGRA frames are capped at 7680×4320/132,710,400 bytes; macOS requests the selected output dimensions. Windows prechecks source size and stops on oversized callback frames, but its upstream driver adapter can resize its native GPU pool before that callback. One raw frame and three encoded frames can be queued; encoded frames are capped at 2 MiB, encrypted packetization at 2,048 fragments of at most 1,200 transport bytes. Quality presets run through 1440p, 4K and 8K and target 2–50 Mbps, with frame dropping under load. They are limits/targets, not measured delivery guarantees. Camera has separate saved resolution and 15/30/60 fps choices through 8K, requiring a supported native camera mode; local previews remain bounded. Existing incoming playback remains capped at 1080p, and high-resolution transmission to the official client requires owner-operated validation.
+Screen source discovery and capture occur off the UI/audio threads. Application-owned
+source lists are capped at 64 labels of 256 bytes. Raw capture is capped at 7680×4320
+and 265,420,800 bytes, including HDR half floats; BGRA uses at most 132,710,400 bytes.
+macOS requests the selected output dimensions. Windows prechecks source size and stops
+on oversized callback frames, but its upstream driver adapter can resize its native GPU
+pool before that callback. One raw frame and three encoded frames can be queued;
+encoded frames are capped at 2 MiB, encrypted packetization at 2,048 fragments of at
+most 1,200 transport bytes. Quality presets run through 1440p, 4K and 8K and target
+2–50 Mbps, with frame dropping under load. They are limits/targets, not measured
+delivery guarantees. Camera has separate saved resolution and 15/30/60 fps choices
+through 8K, requiring a supported native camera mode; local previews remain bounded.
+Incoming shared decoding admits validated pictures through 8K. High-resolution
+delivery and native HDR interoperability still require owner-operated validation.
 
 Call and stream transports send an eight-byte native UDP ping after discovery and every
 five seconds, including receive-only streams and muted calls. The packet uses the
@@ -2359,8 +2373,11 @@ The outgoing codec is fixed for each call/share and must match the server's expl
 selection. H264/PT101/RTX102, H265/PT103/RTX104 and AV1/PT109/RTX110 follow the
 public interoperability implementation; video signaling remains unofficial.
 Camera mismatch disables video while audio continues; screen mismatch fails the share.
-Receiving remains H.264-only, advertised separately, so these settings concern outgoing
-encoding rather than additional incoming decoder support. DAVE codec selection and
+Receiving advertises H.264, HEVC and AV1 independently of the chosen outgoing codec.
+Shared FFmpeg decoding accepts validated pictures through 8K. PQ/HLG metadata and
+high-bit-depth planes survive decoding into native HDR presentation or automatic SDR
+tone mapping. Bare codec negotiation does not verify receiver 10-bit compatibility;
+outgoing HDR captures therefore use SDR conversion. DAVE codec selection and
 bounded packetization have synthetic roundtrip fixtures, which do not prove live
 Discord playback. Physical AMD/Intel/NVIDIA/Apple encoders and official-client
 H.265/AV1/DAVE interoperability remain unverified; AV1 final-OBU size handling

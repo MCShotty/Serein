@@ -421,6 +421,9 @@ fn package() -> Result<(), String> {
 		for name in [
 			"libavcodec-serein.61.dylib",
 			"libavutil-serein.59.dylib",
+			"libavformat-serein.61.dylib",
+			"libswscale-serein.8.dylib",
+			"libswresample-serein.5.dylib",
 			"libopenh264.8.dylib",
 		] {
 			let library = root.join("Serein.app/Contents/Frameworks").join(name);

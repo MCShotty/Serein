@@ -419,6 +419,7 @@ mod tests {
 			profile: Profile::Baseline,
 			codec: VideoCodec::H264,
 			adapter: None,
+			hdr: None,
 		};
 		let mut encoder = Encoder::assemble(config, stand_in, "openh264enc").unwrap();
 		let mut picture = vec![128; 854 * 480 * 3 / 2];

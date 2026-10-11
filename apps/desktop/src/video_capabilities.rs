@@ -87,13 +87,27 @@ pub fn probe_command() -> Option<i32> {
 			if discord_voice::video_capabilities::backends().contains(&backend) =>
 		{
 			match helper {
-				Helper::Query => match discord_voice::video_capabilities::query_on_adapter(
-					backend, codec, adapter,
-				) {
-					ProbeResult::Available => 1,
-					ProbeResult::Unavailable => 0,
-					_ => 2,
-				},
+				Helper::Query => {
+					let ordinary = discord_voice::video_capabilities::query_on_adapter(
+						backend, codec, adapter,
+					);
+					if ordinary == ProbeResult::Unavailable {
+						0
+					} else if ordinary != ProbeResult::Available {
+						2
+					} else {
+						let high = adapter.map_or(ProbeResult::Failed, |adapter| {
+							discord_voice::video_capabilities::query_ten_bit(
+								backend, codec, adapter,
+							)
+						});
+						match high {
+							ProbeResult::Available => 5,
+							ProbeResult::Unavailable => 1,
+							_ => 9,
+						}
+					}
+				}
 				Helper::Test => {
 					let support = discord_voice::video_capabilities::probe_on_adapter(
 						backend, codec, adapter,
@@ -116,8 +130,17 @@ enum Exit {
 
 fn decode_query(exit: Exit) -> ProbeResult {
 	match exit {
-		Exit::Code(Some(1)) => ProbeResult::Available,
+		Exit::Code(Some(1 | 5 | 9)) => ProbeResult::Available,
 		Exit::Code(Some(0)) => ProbeResult::Unavailable,
+		Exit::TimedOut => ProbeResult::TimedOut,
+		_ => ProbeResult::Failed,
+	}
+}
+
+fn decode_ten_bit(exit: Exit) -> ProbeResult {
+	match exit {
+		Exit::Code(Some(5)) => ProbeResult::Available,
+		Exit::Code(Some(0 | 1)) => ProbeResult::Unavailable,
 		Exit::TimedOut => ProbeResult::TimedOut,
 		_ => ProbeResult::Failed,
 	}
@@ -187,10 +210,14 @@ fn wait_for_helper(command: &mut Command, stop: &AtomicBool, timeout: Duration) 
 fn initial_report() -> DriverCapabilities {
 	let mut report = DriverCapabilities {
 		support: [[ProbeResult::Unavailable; 4]; 3],
+		ten_bit: [[ProbeResult::Unavailable; 4]; 3],
 	};
 	for &backend in discord_voice::video_capabilities::backends() {
 		for codec in VideoCodec::ALL {
 			report.set(backend, codec, ProbeResult::Pending);
+			if codec != VideoCodec::H264 {
+				report.ten_bit[codec.index()][backend.index()] = ProbeResult::Pending;
+			}
 		}
 	}
 	report
@@ -217,7 +244,7 @@ fn reset_test(report: &mut VideoCapabilities, codec: VideoCodec) {
 }
 
 fn finish_pending(report: &mut DriverCapabilities) {
-	for results in &mut report.support {
+	for results in report.support.iter_mut().chain(report.ten_bit.iter_mut()) {
 		for result in results {
 			if *result == ProbeResult::Pending {
 				*result = ProbeResult::Failed;
@@ -237,7 +264,7 @@ fn finish_test(report: &mut VideoCapabilities, codec: VideoCodec) {
 }
 
 enum Update {
-	Driver(HardwareBackend, VideoCodec, ProbeResult),
+	Driver(HardwareBackend, VideoCodec, ProbeResult, ProbeResult),
 	Test(HardwareBackend, VideoCodec, HardwareSupport),
 	Finished,
 }
@@ -274,7 +301,9 @@ fn scan(
 				return;
 			}
 			let update = match operation {
-				Operation::Discover => Update::Driver(backend, codec, decode_query(exit)),
+				Operation::Discover => {
+					Update::Driver(backend, codec, decode_query(exit), decode_ten_bit(exit))
+				}
 				Operation::Test(_) => Update::Test(backend, codec, decode_test(exit)),
 			};
 			if send.try_send(update).is_err() {
@@ -388,11 +417,12 @@ impl Detector {
 			// The fixed matrix fits twelve updates and a terminal message.
 			for _ in 0..13 {
 				match receive.try_recv() {
-					Ok(Update::Driver(backend, codec, support)) => {
+					Ok(Update::Driver(backend, codec, support, ten_bit)) => {
 						if self.operation == Some(Operation::Discover)
 							&& let Some(report) = &mut ui.video_capabilities
 						{
 							report.set(backend, codec, support);
+							report.ten_bit[codec.index()][backend.index()] = ten_bit;
 						}
 					}
 					Ok(Update::Test(backend, codec, support)) => {
@@ -521,6 +551,7 @@ mod tests {
 		assert!(ui.video_encoder_tests.is_none() && ui.video_encoder_tests_request.is_none());
 		let fixture = DriverCapabilities {
 			support: [[ProbeResult::Available; 4]; 3],
+			ten_bit: [[ProbeResult::Pending; 4]; 3],
 		};
 		ui.video_capabilities = Some(fixture);
 		detector.poll(true, &mut ui, &ctx);
@@ -539,6 +570,7 @@ mod tests {
 			backend,
 			VideoCodec::Av1,
 			ProbeResult::Available,
+			ProbeResult::Unavailable,
 		))
 		.unwrap();
 		let stop = Arc::new(AtomicBool::new(false));
@@ -633,6 +665,7 @@ mod tests {
 		let mut ui = settings();
 		let driver = DriverCapabilities {
 			support: [[ProbeResult::Available; 4]; 3],
+			ten_bit: [[ProbeResult::Pending; 4]; 3],
 		};
 		ui.video_capabilities = Some(driver);
 		ui.video_encoder_tests = Some(initial_tests());
@@ -695,6 +728,7 @@ mod tests {
 		let mut ui = settings();
 		let driver = DriverCapabilities {
 			support: [[ProbeResult::Available; 4]; 3],
+			ten_bit: [[ProbeResult::Pending; 4]; 3],
 		};
 		ui.video_capabilities = Some(driver);
 		let tested = HardwareSupport {

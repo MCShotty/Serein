@@ -519,6 +519,7 @@ mod tests {
 		profile: Profile::Main,
 		codec: model::voice_settings::VideoCodec::H264,
 		adapter: None,
+		hdr: None,
 	};
 	const CAMERA: Config = Config {
 		width: 640,
@@ -529,6 +530,7 @@ mod tests {
 		profile: Profile::Baseline,
 		codec: model::voice_settings::VideoCodec::H264,
 		adapter: None,
+		hdr: None,
 	};
 
 	#[test]

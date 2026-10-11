@@ -10,9 +10,9 @@ import tempfile
 
 
 LIBRARIES = {
-    "Linux": ("libavcodec-serein.so.61", "libavutil-serein.so.59", "libopenh264-serein.so.8"),
-    "Darwin": ("libavcodec-serein.61.dylib", "libavutil-serein.59.dylib", "libopenh264.8.dylib"),
-    "Windows": ("avcodec-serein-61.dll", "avutil-serein-59.dll", "openh264.dll"),
+    "Linux": ("libavcodec-serein.so.61", "libavutil-serein.so.59", "libavformat-serein.so.61", "libswscale-serein.so.8", "libswresample-serein.so.5", "libopenh264-serein.so.8"),
+    "Darwin": ("libavcodec-serein.61.dylib", "libavutil-serein.59.dylib", "libavformat-serein.61.dylib", "libswscale-serein.8.dylib", "libswresample-serein.5.dylib", "libopenh264.8.dylib"),
+    "Windows": ("avcodec-serein-61.dll", "avutil-serein-59.dll", "avformat-serein-61.dll", "swscale-serein-8.dll", "swresample-serein-5.dll", "openh264.dll"),
 }
 
 
@@ -59,12 +59,12 @@ def bundle(root, prefix=None):
             replace_darwin_library(origin, libraries / name)
         else:
             shutil.copyfile(origin, libraries / name)
-    for name in ("build.json", "configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE"):
+    for name in ("build.json", "configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE", "dav1d-COPYING"):
         shutil.copyfile(provenance / name, source / name)
     if system == "Linux":
         shutil.copyfile(provenance / "serein-openh264.patch", source / "serein-openh264.patch")
     (source / "source").mkdir(exist_ok=True)
-    for name in ("ffmpeg-7.1.5.tar.xz", "openh264-2.6.0-source.tar.bz2"):
+    for name in ("ffmpeg-7.1.5.tar.xz", "openh264-2.6.0-source.tar.bz2", "dav1d-1.5.1.tar.xz"):
         shutil.copyfile(provenance / "source" / name, source / "source" / name)
     if recipe["nvenc"]:
         shutil.copyfile(provenance / "nv-codec-headers-README", source / "nv-codec-headers-README")

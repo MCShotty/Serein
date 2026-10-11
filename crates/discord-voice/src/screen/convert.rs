@@ -58,6 +58,9 @@ pub(crate) fn bgra_to_i420(
 	output: &mut [u8],
 ) -> Result<(), &'static str> {
 	validate_frame(frame)?;
+	if !matches!(frame.format, super::RawFormat::Bgra8) {
+		return hdr_to_i420(frame, width, height, output);
+	}
 	if width == 0
 		|| height == 0
 		|| width > model::voice_settings::VideoResolution::MAX_WIDTH as usize
@@ -202,6 +205,141 @@ fn chroma([r, g, b]: [u32; 3]) -> (u8, u8) {
 	(u.clamp(0, 255) as u8, v.clamp(0, 255) as u8)
 }
 
+fn hdr_to_i420(
+	frame: &RawFrame,
+	width: usize,
+	height: usize,
+	output: &mut [u8],
+) -> Result<(), &'static str> {
+	if width == 0
+		|| height == 0
+		|| width > 7680
+		|| height > 4320
+		|| !width.is_multiple_of(2)
+		|| !height.is_multiple_of(2)
+		|| output.len() != width * height * 3 / 2
+	{
+		return Err("Invalid HDR conversion size");
+	}
+	let scale = (width as f64 / frame.width as f64).min(height as f64 / frame.height as f64);
+	let w = (frame.width as f64 * scale)
+		.round()
+		.clamp(1.0, width as f64) as usize;
+	let h = (frame.height as f64 * scale)
+		.round()
+		.clamp(1.0, height as f64) as usize;
+	let columns = Axis::new(frame.width as usize, w, width, 1);
+	let rows = Axis::new(frame.height as usize, h, height, 1);
+	let conversion = frame.conversion().ok_or("Missing capture color metadata")?;
+	let (mut y, uv) = output.split_at_mut(width * height);
+	let (mut u, mut v) = uv.split_at_mut(width * height / 4);
+	let bands = std::thread::available_parallelism()
+		.map_or(1, |count| count.get())
+		.clamp(1, 4)
+		.min(height / 64)
+		.max(1);
+	let band_rows = height.div_ceil(bands).next_multiple_of(2);
+	std::thread::scope(|scope| {
+		let mut first = 0;
+		while first < height {
+			let count = band_rows.min(height - first);
+			let (luma, rest) = y.split_at_mut(count * width);
+			y = rest;
+			let chroma_bytes = count / 2 * width / 2;
+			let (band_u, rest_u) = std::mem::take(&mut u).split_at_mut(chroma_bytes);
+			let (band_v, rest_v) = std::mem::take(&mut v).split_at_mut(chroma_bytes);
+			(u, v) = (rest_u, rest_v);
+			let job = HdrBand {
+				frame,
+				columns: &columns,
+				rows: &rows,
+				conversion: &conversion,
+				width,
+				first,
+				luma,
+				u: band_u,
+				v: band_v,
+			};
+			if first + count >= height {
+				job.run();
+			} else {
+				scope.spawn(move || job.run());
+			}
+			first += count;
+		}
+	});
+	Ok(())
+}
+struct HdrBand<'a> {
+	frame: &'a RawFrame,
+	columns: &'a Axis,
+	rows: &'a Axis,
+	conversion: &'a platform::video::ffmpeg::SdrConverter,
+	width: usize,
+	first: usize,
+	luma: &'a mut [u8],
+	u: &'a mut [u8],
+	v: &'a mut [u8],
+}
+impl HdrBand<'_> {
+	fn run(self) {
+		let mut top = vec![[0; 3]; self.width];
+		let mut bottom = vec![[0; 3]; self.width];
+		for pair in 0..self.luma.len() / self.width / 2 {
+			self.sample(self.first + pair * 2, &mut top);
+			self.sample(self.first + pair * 2 + 1, &mut bottom);
+			let at = pair * 2 * self.width;
+			for (x, rgb) in top.iter().enumerate() {
+				self.luma[at + x] = luma(*rgb);
+			}
+			for (x, rgb) in bottom.iter().enumerate() {
+				self.luma[at + self.width + x] = luma(*rgb);
+			}
+			for x in 0..self.width / 2 {
+				let sum = std::array::from_fn(|c| {
+					(top[2 * x][c]
+						+ top[2 * x + 1][c]
+						+ bottom[2 * x][c] + bottom[2 * x + 1][c]
+						+ 2) / 4
+				});
+				let (u, v) = chroma(sum);
+				self.u[pair * self.width / 2 + x] = u;
+				self.v[pair * self.width / 2 + x] = v;
+			}
+		}
+	}
+	fn sample(&self, row: usize, out: &mut [[u32; 3]]) {
+		let Some(y) = self.rows.tap(row) else {
+			out.fill([0; 3]);
+			return;
+		};
+		let mix = |a: [f32; 3], b: [f32; 3], weight: u32| {
+			std::array::from_fn(|i| a[i] + (b[i] - a[i]) * weight as f32 / 256.0)
+		};
+		for (column, rgb) in out.iter_mut().enumerate() {
+			let Some(x) = self.columns.tap(column) else {
+				*rgb = [0; 3];
+				continue;
+			};
+			let line = |row| {
+				let a = self.frame.nits(x.near, row, self.conversion);
+				if x.weight == 0 {
+					a
+				} else {
+					mix(a, self.frame.nits(x.far, row, self.conversion), x.weight)
+				}
+			};
+			let upper = line(y.near);
+			let nits = if y.weight == 0 {
+				upper
+			} else {
+				mix(upper, line(y.far), y.weight)
+			};
+			*rgb = self.conversion.to_sdr(nits).map(u32::from);
+		}
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -214,10 +352,57 @@ mod tests {
 			}
 		}
 		RawFrame {
+			format: crate::screen::RawFormat::Bgra8,
 			width,
 			height,
 			stride,
 			data,
+		}
+	}
+
+	#[test]
+	fn hdr_conversion_keeps_black_filters_edges_and_validates_planes() {
+		let mut frame = RawFrame {
+			format: crate::screen::RawFormat::LinearRgba16 {
+				unit_nits: 203,
+				white_nits: 203,
+				peak_nits: 1000,
+			},
+			width: 2,
+			height: 2,
+			stride: 16,
+			data: vec![0; 32],
+		};
+		for row in 0..2 {
+			for channel in 0..3 {
+				frame.data[row * 16 + 8 + channel * 2..row * 16 + 10 + channel * 2]
+					.copy_from_slice(&0x3c00u16.to_le_bytes());
+			}
+		}
+		let mut out = vec![0; 4 * 4 * 3 / 2];
+		bgra_to_i420(&frame, 4, 4, &mut out).unwrap();
+		assert_eq!(out[0], 16);
+		assert!(out[1] > out[0] && out[1] < out[2] && out[2] < out[3]);
+		assert!((220..=235).contains(&out[3]));
+		assert!(out[16..].iter().all(|&value| value == 128));
+		for (transfer, full_range, black) in [(16, false, 64u16), (18, true, 0u16)] {
+			frame.format = crate::screen::RawFormat::P010 {
+				transfer,
+				primaries: 9,
+				matrix: 9,
+				full_range,
+				peak_nits: 1000,
+			};
+			frame.stride = 4;
+			frame.data = (0..4)
+				.flat_map(|_| (black << 6).to_le_bytes())
+				.chain((0..2).flat_map(|_| (512u16 << 6).to_le_bytes()))
+				.collect();
+			bgra_to_i420(&frame, 4, 4, &mut out).unwrap();
+			assert!(out[..16].iter().all(|&value| value == 16));
+			assert!(out[16..].iter().all(|&value| value == 128));
+			frame.data.pop();
+			assert!(bgra_to_i420(&frame, 4, 4, &mut out).is_err());
 		}
 	}
 

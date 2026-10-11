@@ -180,6 +180,8 @@ pub struct HardwareSupport {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DriverCapabilities {
 	pub support: [[ProbeResult; 4]; 3],
+	/// Ten-bit profile support, independently queried; never inferred from codec presence.
+	pub ten_bit: [[ProbeResult; 4]; 3],
 }
 
 impl DriverCapabilities {

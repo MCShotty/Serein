@@ -1,4 +1,4 @@
-"""Check a Windows media-v2 release ZIP before uploading it as an update asset."""
+"""Check a Windows media-v3 release ZIP before uploading it as an update asset."""
 
 import argparse
 from pathlib import Path
@@ -11,6 +11,9 @@ REQUIRED_FILES = (
     "serein.exe",
     "avcodec-serein-61.dll",
     "avutil-serein-59.dll",
+    "avformat-serein-61.dll",
+    "swscale-serein-8.dll",
+    "swresample-serein-5.dll",
     "openh264.dll",
     "THIRD_PARTY_NOTICES.md",
     "ffmpeg-source/build.json",
@@ -19,11 +22,14 @@ REQUIRED_FILES = (
     "ffmpeg-source/serein-ffmpeg.patch",
     "ffmpeg-source/COPYING.LGPLv2.1",
     "ffmpeg-source/OpenH264-LICENSE",
+    "ffmpeg-source/dav1d-COPYING",
     "ffmpeg-source/source/ffmpeg-7.1.5.tar.xz",
     "ffmpeg-source/source/openh264-2.6.0-source.tar.bz2",
+    "ffmpeg-source/source/dav1d-1.5.1.tar.xz",
 )
 ALLOWED_ROOTS = {
     "serein.exe", "avcodec-serein-61.dll", "avutil-serein-59.dll", "openh264.dll",
+    "avformat-serein-61.dll", "swscale-serein-8.dll", "swresample-serein-5.dll",
     "ffmpeg-source", "README.md", "LICENSE-MIT", "LICENSE-APACHE",
     "THIRD_PARTY_NOTICES.md", "docs", "licenses", "source",
     "install-notifications.ps1", "setup.ps1",
@@ -32,8 +38,8 @@ ALLOWED_ROOTS = {
 
 def check_archive(path):
     path = Path(path)
-    if not re.fullmatch(r"serein-v[A-Za-z0-9.+-]{1,95}-Windows-(X64|ARM64)-media-v2\.zip", path.name):
-        raise ValueError("Windows FFmpeg ZIPs must use the media-v2 asset name, never the legacy update name")
+    if not re.fullmatch(r"serein-v[A-Za-z0-9.+-]{1,95}-Windows-(X64|ARM64)-media-v3\.zip", path.name):
+        raise ValueError("Windows FFmpeg ZIPs must use the media-v3 asset name, never the legacy update name")
     if path.stat().st_size > 512 * 1024 * 1024:
         raise ValueError("Windows update ZIP exceeds the download limit")
     with zipfile.ZipFile(path) as archive:
@@ -69,7 +75,7 @@ def main():
     parser.add_argument("archive", type=Path)
     args = parser.parse_args()
     check_archive(args.archive)
-    print(f"Windows media-v2 update asset checked: {args.archive.name}")
+    print(f"Windows media-v3 update asset checked: {args.archive.name}")
 
 
 if __name__ == "__main__":

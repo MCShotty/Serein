@@ -180,7 +180,8 @@ assets/licenses/voice/PROVENANCE.md and staged by the existing voice packager.
 
 Native screen capture uses **screencapturekit 10.0.3** (MIT OR Apache-2.0) on macOS and **windows-capture 2.0.1** (MIT) on Windows. Incoming software decoding uses **openh264 / openh264-sys2 0.9.8** (BSD-2-Clause). Media reuses **image 0.25.10** (MIT OR Apache-2.0) for bounded scaling. Native frameworks are supplied by the OS. Voice and video ship in the standard build. Unmodified available license texts and source provenance are retained in `assets/licenses/voice/PROVENANCE.md`; the noted missing binding license text and existing full per-artifact redistribution review remain outstanding.
 
-Experimental camera and screen sharing use **FFmpeg 7.1.5** libavcodec/libavutil,
+Experimental camera/screen encoding, incoming video and supported attachments
+share **FFmpeg 7.1.5** libavcodec/libavutil/libavformat/libswscale/libswresample,
 source-built **Cisco OpenH264 2.6.0**, and **nv-codec-headers 12.2.72.0** on
 supported NVIDIA platforms. AMD AMF uses **AMF 1.4.36** MIT-licensed public headers;
 the unchanged AMD license includes its standards/patent notice. Intel Quick Sync
@@ -213,13 +214,20 @@ subset is identified separately from its original SDK archive. See `packaging/ff
 MIT OR Apache-2.0. No separately installed GPL FFmpeg library is linked into
 official packages.
 
+Software AV1 decoding uses pinned **dav1d 1.5.1** (BSD-2-Clause), built as a PIC
+static library. Packages retain its complete source archive and unmodified
+`COPYING`; `assets/licenses/voice/PROVENANCE.md` records their SHA-256 values.
+Only `egui-wgpu` is vendored from the existing pinned egui revision for HDR
+surface selection; its unchanged MIT and Apache-2.0 texts and the scoped patch
+description remain in `vendor/egui-wgpu`. The GUI dependency revision is unchanged.
+
 Linux shared OpenH264 uses a private SONAME and prefixed, versioned API symbols
 to avoid incompatible host GStreamer bindings. Its source modifications are
 retained as `ffmpeg-source/serein-openh264.patch` beside the original source
 subset; the supplied build recipe applies them automatically. The Cisco license
 text remains unchanged.
 
-Incoming software H.264 decoding retains **openh264 0.9.8** and
+Stable H.264 encoding and the existing diagnostic helpers retain **openh264 0.9.8** and
 **openh264-sys2 0.9.8** (BSD-2-Clause, Ralf Biedert), built locally with the
 `source` feature. The sys crate bundles **Cisco OpenH264 2.6.0**, as identified
 by `upstream/codec/api/wels/codec_ver.h`; its BSD-2-Clause notice is reproduced

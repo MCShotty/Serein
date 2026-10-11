@@ -4,6 +4,7 @@ use std::borrow::Cow;
 
 const MAX_BYTES: usize = 2 * 1024 * 1024;
 const MAX_UNITS: usize = 2048;
+const MAX_RECEIVE_BYTES: usize = 8 * 1024 * 1024 + 65536;
 
 pub(super) fn nalus(frame: &[u8], codec: VideoCodec) -> Result<Vec<&[u8]>, &'static str> {
 	let mut starts = Vec::new();
@@ -145,6 +146,16 @@ pub(super) fn validate(frame: &[u8], codec: VideoCodec) -> Result<(), &'static s
 	if frame.len() > MAX_BYTES {
 		return Err("Encoded video frame exceeds the sharing limit");
 	}
+	validate_units(frame, codec)
+}
+
+pub(super) fn validate_received(frame: &[u8], codec: VideoCodec) -> Result<(), &'static str> {
+	if frame.is_empty() || frame.len() > MAX_RECEIVE_BYTES {
+		return Err("Received video frame exceeds its limit");
+	}
+	validate_units(frame, codec)
+}
+fn validate_units(frame: &[u8], codec: VideoCodec) -> Result<(), &'static str> {
 	match codec {
 		VideoCodec::H264 | VideoCodec::H265 => nalus(frame, codec).map(|_| ()),
 		VideoCodec::Av1 => {
@@ -158,7 +169,7 @@ pub(super) fn validate(frame: &[u8], codec: VideoCodec) -> Result<(), &'static s
 }
 
 pub(super) fn has_parameters(frame: &[u8], codec: VideoCodec) -> bool {
-	if validate(frame, codec).is_err() {
+	if validate_received(frame, codec).is_err() {
 		return false;
 	}
 	match codec {
@@ -189,7 +200,7 @@ pub(super) fn has_parameters(frame: &[u8], codec: VideoCodec) -> bool {
 }
 
 pub(super) fn is_keyframe(frame: &[u8], codec: VideoCodec) -> bool {
-	if validate(frame, codec).is_err() {
+	if validate_received(frame, codec).is_err() {
 		return false;
 	}
 	match codec {
@@ -250,4 +261,32 @@ pub(super) fn prepare(frame: &[u8], codec: VideoCodec) -> Result<Cow<'_, [u8]>, 
 			Ok(Cow::Owned(output))
 		}
 	}
+}
+
+/// Decode-side OBU framing. The final encrypted OBU had no size; after DAVE
+/// authentication, the decoder receives ordinary sized low-overhead OBUs.
+pub(super) fn decoder_frame(
+	frame: &[u8],
+	codec: VideoCodec,
+) -> Result<Cow<'_, [u8]>, &'static str> {
+	if frame.is_empty() || frame.len() > MAX_RECEIVE_BYTES {
+		return Err("Received video frame exceeds its limit");
+	}
+	if codec != VideoCodec::Av1 {
+		return Ok(Cow::Borrowed(frame));
+	}
+	let units = obus(frame, false)?;
+	if units.iter().all(|unit| unit.header & 2 != 0) {
+		return Ok(Cow::Borrowed(frame));
+	}
+	let mut output = Vec::with_capacity(frame.len().saturating_add(units.len() * 9));
+	for unit in units {
+		output.push(unit.header | 2);
+		if let Some(extension) = unit.extension {
+			output.push(extension);
+		}
+		write_size(unit.payload.len(), &mut output);
+		output.extend_from_slice(unit.payload);
+	}
+	Ok(Cow::Owned(output))
 }

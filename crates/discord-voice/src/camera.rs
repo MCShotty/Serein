@@ -260,6 +260,7 @@ impl CameraEncoder {
 			},
 			codec: video.codec,
 			adapter: None,
+			hdr: None,
 		}
 	}
 

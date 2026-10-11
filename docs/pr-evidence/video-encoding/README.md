@@ -121,10 +121,31 @@ source identities. Some historical After states were uncommitted working trees
 identified by hashes. The archive is not a promise that rerunning an old helper
 against today's source reproduces its original measured binaries.
 
-Fresh native screenshots are unavailable locally because no native window
-capture tools are exposed. Full `cargo xtask check` / `cargo xtask package`
-attempts were blocked by missing GLib development metadata. Native CI requires
-maintainer approval; license/Wasm checks and fresh Windows/macOS/Linux packages
-remain outstanding. The owner-reported vendor/native Discord tests precede
-these extracted heads. No live account, microphone or capture test was run
-for this evidence cleanup.
+### Ultrawide and HDR implementation — October 11, 2026
+
+The starting head is `c4bc650`; `206b73f` consolidates historical screenshots,
+measurement archives and native fixtures before the shared media work. The
+complete PR stays within 150 changed paths. Only egui-wgpu is copied from the
+already pinned GUI revision, with unchanged upstream licenses.
+
+Offline fixtures now decode the exact 6144×2560 H.264 picture through synthetic
+RTP/DAVE, and decode HEVC/AV1 PQ and HLG pictures through that transport. The
+ultrawide fixture carries 60 fps timestamps; it is not a sustained throughput
+measurement. Attachment fixtures exercise HDR, audio draining, seeking,
+cancellation and bounded anonymous reads. Actual native P010 packing tests cover
+odd crops, planar/semiplanar/grayscale layouts, black levels and output guards.
+The production media shader is executed with software Vulkan, including SDR,
+PQ/HLG highlights, rotation, resource cleanup and device recreation.
+
+Normal Linux FFmpeg builds enable NVENC, AMF and QSV, shared decoding and dav1d.
+The cached recipe verifies its recorded inputs before reuse. Native query/preset
+fixtures, source-patch reproduction, library-identity and packaging fixtures
+remain offline; they do not demonstrate physical GPU throughput. Current package
+checks and measurements are tracked in [performance](../../performance.md).
+
+Current native HDR display and Discord interoperability remain owner-controlled
+checks. The owner has agreed to test the CI Windows installer. Outgoing HDR
+captures currently tone-map to SDR because codec selection alone does not
+establish receiver 10-bit compatibility. No live account, microphone or capture
+test is performed by this automation. The retained screenshots are historical,
+with their original revision labels; native window capture is unavailable here.

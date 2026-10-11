@@ -1,6 +1,7 @@
 //! Bounded raw capture/scale pipeline; also exercised with an offline video source.
 use super::{MAX_RAW_BYTES, RawFrame, Settings};
 use ::gstreamer as gst;
+use gst::glib::translate::IntoGlib;
 use gst::prelude::*;
 use gstreamer_app as app;
 use gstreamer_video::{self as video, VideoFrameExt};
@@ -51,17 +52,57 @@ impl Capture {
 			"capsfilter caps=\"video/x-raw(ANY),width=[1,{max_width}],height=[1,{max_height}]\" ! \
 			queue max-size-buffers=1 max-size-bytes={MAX_SOURCE_BYTES} max-size-time=0 leaky=downstream ! \
 			videorate drop-only=true ! video/x-raw(ANY),framerate={}/1 ! \
-			videoconvert name=crop-input ! video/x-raw,format=BGRA ! videocrop name=crop ! \
-			videoconvertscale add-borders=true ! video/x-raw,format=BGRA,{size} ! tee name=split \
+			videoconvert name=crop-input ! capsfilter name=capture-color caps=video/x-raw,format=BGRA ! videocrop name=crop ! \
+			videoconvertscale add-borders=true ! capsfilter name=frame-color caps=video/x-raw,format=BGRA,{size} ! tee name=split \
 			split. ! queue max-size-buffers=1 max-size-bytes={MAX_RAW_BYTES} max-size-time=0 leaky=downstream ! \
 			identity name=gate ! appsink name=frames sync=false async=false max-buffers=1 enable-last-sample=false wait-on-eos=false \
 			split. ! queue max-size-buffers=1 max-size-bytes={MAX_RAW_BYTES} max-size-time=0 leaky=downstream ! \
 			valve name=preview-gate drop-mode=forward-sticky-events ! videorate drop-only=true ! video/x-raw,framerate=10/1 ! \
-			videoconvertscale add-borders=true ! video/x-raw,format=BGRA,width=640,height=360 ! \
+			videoconvertscale add-borders=true ! capsfilter name=preview-color caps=video/x-raw,format=BGRA,width=640,height=360 ! \
 			appsink name=preview sync=false async=false max-buffers=1 drop=true enable-last-sample=false wait-on-eos=false",
 			settings.fps
 		);
 		let bin = gst::parse::bin_from_description(&description, true).map_err(|_| UNAVAILABLE)?;
+		// Preserve HDR only when the compositor supplies both high-bit-depth
+		// pixels and usable transfer/primary metadata. Ordinary capture stays BGRA.
+		let filters = [
+			bin.by_name("capture-color").ok_or(UNAVAILABLE)?.downgrade(),
+			bin.by_name("frame-color").ok_or(UNAVAILABLE)?.downgrade(),
+			bin.by_name("preview-color").ok_or(UNAVAILABLE)?.downgrade(),
+		];
+		let was_hdr = AtomicBool::new(false);
+		bin.by_name("crop-input")
+			.and_then(|element| element.static_pad("sink"))
+			.ok_or(UNAVAILABLE)?
+			.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_, info| {
+				if let Some(gst::PadProbeData::Event(event)) = &info.data
+					&& let gst::EventView::Caps(caps) = event.view()
+				{
+					let hdr = video::VideoInfo::from_caps(caps.caps()).is_ok_and(|info| {
+						info.format_info().depth()[0] >= 10
+							&& matches!(
+								info.colorimetry().transfer().into_glib(),
+								video::ffi::GST_VIDEO_TRANSFER_SMPTE2084
+									| video::ffi::GST_VIDEO_TRANSFER_ARIB_STD_B67
+							) && info.colorimetry().primaries() == video::VideoColorPrimaries::Bt2020
+					});
+					if was_hdr.swap(hdr, Ordering::AcqRel) != hdr {
+						for weak in &filters {
+							let Some(filter) = weak.upgrade() else {
+								continue;
+							};
+							let mut caps = filter.property::<gst::Caps>("caps");
+							if let Some(caps) = caps.get_mut()
+								&& let Some(structure) = caps.structure_mut(0)
+							{
+								structure.set("format", if hdr { "P010_10LE" } else { "BGRA" });
+							}
+							filter.set_property("caps", caps);
+						}
+					}
+				}
+				gst::PadProbeReturn::Ok
+			});
 		let pipeline = gst::Pipeline::new();
 		let failed = Arc::new(AtomicBool::new(false));
 		let changed = Arc::new(tokio::sync::Notify::new());
@@ -289,8 +330,10 @@ fn bound(pad: &gst::Pad, bytes: usize, failed: Arc<AtomicBool>) {
 
 pub(super) fn raw(sample: &gst::Sample) -> Result<RawFrame, &'static str> {
 	let info = video::VideoInfo::from_caps(sample.caps().ok_or(INVALID)?).map_err(|_| INVALID)?;
-	if info.format() != video::VideoFormat::Bgra
-		|| info.width() == 0
+	if !matches!(
+		info.format(),
+		video::VideoFormat::Bgra | video::VideoFormat::P01010le
+	) || info.width() == 0
 		|| info.height() == 0
 		|| info.width() > VideoResolution::MAX_WIDTH
 		|| info.height() > VideoResolution::MAX_HEIGHT
@@ -303,6 +346,48 @@ pub(super) fn raw(sample: &gst::Sample) -> Result<RawFrame, &'static str> {
 	}
 	let frame =
 		video::VideoFrameRef::from_buffer_ref_readable(buffer, &info).map_err(|_| INVALID)?;
+	if info.format() == video::VideoFormat::P01010le {
+		if info.width() % 2 != 0 || info.height() % 2 != 0 {
+			return Err(INVALID);
+		}
+		let color = info.colorimetry();
+		let transfer = match color.transfer().into_glib() {
+			video::ffi::GST_VIDEO_TRANSFER_SMPTE2084 => 16,
+			video::ffi::GST_VIDEO_TRANSFER_ARIB_STD_B67 => 18,
+			_ => return Err(INVALID),
+		};
+		if color.primaries() != video::VideoColorPrimaries::Bt2020
+			|| color.matrix() != video::VideoColorMatrix::Bt2020
+		{
+			return Err(INVALID);
+		}
+		let row = info.width() as usize * 2;
+		let mut data = Vec::with_capacity(row * info.height() as usize * 3 / 2);
+		for plane in 0..2 {
+			let height = info.height() as usize >> plane;
+			let stride = usize::try_from(frame.plane_stride()[plane]).map_err(|_| INVALID)?;
+			let bytes = frame.plane_data(plane as u32).map_err(|_| INVALID)?;
+			if stride < row || bytes.len() < stride * (height - 1) + row {
+				return Err(INVALID);
+			}
+			for line in bytes.chunks(stride).take(height) {
+				data.extend_from_slice(&line[..row]);
+			}
+		}
+		return Ok(RawFrame {
+			width: info.width(),
+			height: info.height(),
+			stride: row,
+			data,
+			format: crate::screen::RawFormat::P010 {
+				transfer,
+				primaries: 9,
+				matrix: 9,
+				full_range: color.range() == video::VideoColorRange::Range0_255,
+				peak_nits: 1000,
+			},
+		});
+	}
 	let stride = usize::try_from(frame.plane_stride()[0]).map_err(|_| INVALID)?;
 	let row = info.width() as usize * 4;
 	let data = frame.plane_data(0).map_err(|_| INVALID)?;
@@ -322,6 +407,7 @@ pub(super) fn raw(sample: &gst::Sample) -> Result<RawFrame, &'static str> {
 		target.copy_from_slice(&source[..row]);
 	}
 	Ok(RawFrame {
+		format: crate::screen::RawFormat::Bgra8,
 		width: info.width(),
 		height: info.height(),
 		stride: row,

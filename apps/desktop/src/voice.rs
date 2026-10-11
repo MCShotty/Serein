@@ -140,6 +140,7 @@ impl Pending {
 enum Notice {
 	TransportReady(u64),
 	CameraAvailable(bool),
+	RemoteVideoFailed(u64, &'static str),
 	WaitingForPeer,
 	Progress(Phase),
 	MediaReady(String),
@@ -175,6 +176,7 @@ struct Live {
 	video_settings: model::voice_settings::VideoSettings,
 	/// Latest decoded camera picture per remote user, replaced (never queued) by the decoder.
 	remote_video: Arc<std::sync::Mutex<RemotePictures>>,
+	remote_hdr: Arc<std::sync::Mutex<RemoteHdrPictures>>,
 	/// Decoded audio of a watched stream, mixed into this call's playback.
 	stream_audio: mpsc::SyncSender<discord_voice::Frame>,
 }
@@ -230,6 +232,7 @@ impl CallCues {
 /// Remote cameras kept as textures at once; matches the transport's source limit.
 const MAX_REMOTE_VIDEO: usize = 16;
 type RemotePictures = Vec<(u64, Arc<egui::ColorImage>, bool)>;
+type RemoteHdrPictures = Vec<(u64, Arc<platform::video::ffmpeg::Frame>)>;
 type CameraPicture = Option<(Arc<egui::ColorImage>, bool)>;
 
 fn queue_camera_frame(
@@ -717,6 +720,7 @@ impl Voice {
 			ui.voice_camera_status = "";
 			ui.voice_privacy_code = None;
 			ui.voice_remote_video.clear();
+			ui.voice_remote_hdr.clear();
 		}
 		let current = self
 			.live
@@ -842,6 +846,17 @@ impl Voice {
 				};
 				match event {
 					Notice::CameraAvailable(available) => live.camera_negotiated = available,
+					Notice::RemoteVideoFailed(user, error) => {
+						if let Ok(mut pictures) = live.remote_video.lock() {
+							pictures.retain(|(owner, _, _)| *owner != user);
+						}
+						ui.voice_remote_video.retain(|(owner, _)| owner.0 != user);
+						ui.voice_remote_hdr.retain(|(owner, _)| owner.0 != user);
+						if let Ok(mut frames) = live.remote_hdr.lock() {
+							frames.retain(|(owner, _)| *owner != user);
+						}
+						ui.voice_camera_status = error;
+					}
 					Notice::TransportReady(revision) => {
 						command = live
 							.negotiation
@@ -979,7 +994,32 @@ impl Voice {
 						.collect::<Vec<_>>()
 				})
 				.unwrap_or_default();
+			let hdr = live
+				.remote_hdr
+				.try_lock()
+				.map(|mut slot| std::mem::take(&mut *slot))
+				.unwrap_or_default();
+			for (user, frame) in hdr {
+				let view = crate::video::media_view(
+					frame,
+					ui.voice_remote_hdr
+						.iter()
+						.find(|(owner, _)| owner.0 == user)
+						.map(|(_, view)| view),
+				);
+				ui.voice_remote_video.retain(|(owner, _)| owner.0 != user);
+				if let Some((_, picture)) = ui
+					.voice_remote_hdr
+					.iter_mut()
+					.find(|(owner, _)| owner.0 == user)
+				{
+					*picture = view;
+				} else if ui.voice_remote_hdr.len() < MAX_REMOTE_VIDEO {
+					ui.voice_remote_hdr.push((Id(user), view));
+				}
+			}
 			for (user, image) in pictures {
+				ui.voice_remote_hdr.retain(|(owner, _)| owner.0 != user);
 				if let Some((_, texture)) = ui
 					.voice_remote_video
 					.iter_mut()
@@ -1011,6 +1051,10 @@ impl Voice {
 				})
 				.unwrap_or_default();
 			ui.voice_remote_video.retain(|(id, _)| visible.contains(id));
+			ui.voice_remote_hdr.retain(|(id, _)| visible.contains(id));
+			if let Ok(mut frames) = live.remote_hdr.lock() {
+				frames.retain(|(id, _)| visible.contains(&Id(*id)));
+			}
 			if let Ok(mut pictures) = live.remote_video.try_lock() {
 				pictures.retain(|(id, _, _)| visible.contains(&Id(*id)));
 			}
@@ -1484,15 +1528,38 @@ impl Voice {
 			muted: listen_only || ui.voice_push_to_talk,
 			camera: 0,
 			video: pending.video_settings,
+			video_adapter: self.video_adapter,
 			deafened: false,
 			user_volumes: ui.voice_user_volumes(),
 			stream_volume: ui.voice_stream_volume(),
 		});
 		let remote_video: Arc<std::sync::Mutex<RemotePictures>> =
 			Arc::new(std::sync::Mutex::new(Vec::new()));
+		let remote_hdr = Arc::new(std::sync::Mutex::new(Vec::new()));
+		let hdr = remote_hdr.clone();
 		let pictures = remote_video.clone();
 		let picture_wake = ctx.clone();
 		let sink: discord_voice::VideoSink = Arc::new(move |frame: discord_voice::RemoteFrame| {
+			if frame.picture.hdr() {
+				if let Ok(owned) = platform::video::ffmpeg::Frame::copy(frame.picture, frame.rgba)
+					&& let Ok(mut hdr) = hdr.lock()
+				{
+					if let Some((_, picture)) = hdr.iter_mut().find(|(user, _)| *user == frame.user)
+					{
+						*picture = Arc::new(owned);
+					} else if hdr.len() < MAX_REMOTE_VIDEO {
+						hdr.push((frame.user, Arc::new(owned)));
+					}
+					if let Ok(mut pictures) = pictures.lock() {
+						pictures.retain(|(user, _, _)| *user != frame.user);
+					}
+					picture_wake.request_repaint();
+				}
+				return;
+			}
+			if let Ok(mut hdr) = hdr.lock() {
+				hdr.retain(|(user, _)| *user != frame.user);
+			}
 			if pictures
 				.lock()
 				.is_ok_and(|mut pictures| store_remote_frame(&mut pictures, frame))
@@ -1564,6 +1631,9 @@ impl Voice {
 							Notice::MediaReady(privacy_code)
 						}
 						Status::RemoteAudio => Notice::RemoteAudio,
+						Status::RemoteVideoFailed { user, error } => {
+							Notice::RemoteVideoFailed(user, error)
+						}
 						Status::Speaking(users) => {
 							speaking.send_replace(*users);
 							status_wake.request_repaint();
@@ -1607,6 +1677,7 @@ impl Voice {
 			camera_negotiated: false,
 			video_settings: pending.video_settings,
 			remote_video,
+			remote_hdr,
 			stream_audio,
 			negotiation: Some(pending),
 		});
@@ -1882,6 +1953,7 @@ mod tests {
 		assert!(store_remote_frame(
 			&mut pictures,
 			discord_voice::RemoteFrame {
+				picture: Default::default(),
 				user: 7,
 				width: 2,
 				height: 1,
@@ -1893,6 +1965,7 @@ mod tests {
 		assert!(store_remote_frame(
 			&mut pictures,
 			discord_voice::RemoteFrame {
+				picture: Default::default(),
 				user: 7,
 				width: 2,
 				height: 1,
@@ -1905,6 +1978,7 @@ mod tests {
 		assert!(store_remote_frame(
 			&mut pictures,
 			discord_voice::RemoteFrame {
+				picture: Default::default(),
 				user: 7,
 				width: 1,
 				height: 1,
@@ -2475,6 +2549,7 @@ mod tests {
 			camera_negotiated: false,
 			video_settings: Default::default(),
 			remote_video: Arc::new(std::sync::Mutex::new(Vec::new())),
+			remote_hdr: Arc::new(std::sync::Mutex::new(Vec::new())),
 			stream_audio,
 		});
 		let failure = |revision| {

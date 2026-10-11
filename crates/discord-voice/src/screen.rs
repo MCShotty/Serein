@@ -31,10 +31,39 @@ use std::sync::{
 #[cfg(not(target_os = "linux"))]
 use std::time::{Duration, Instant};
 
-pub const MAX_RAW_BYTES: usize = 7680 * 4320 * 4;
+pub const MAX_RAW_BYTES: usize = 7680 * 4320 * 8;
 pub const MAX_ENCODED_BYTES: usize = 2 * 1024 * 1024;
 
+#[derive(Clone, Copy, Default)]
+pub enum RawFormat {
+	#[default]
+	Bgra8,
+	/// Linear Rec.709 half floats. Windows scRGB uses 80 nits per unit;
+	/// Apple EDR capture uses the canonical 203-nit reference white.
+	LinearRgba16 {
+		unit_nits: u32,
+		white_nits: u32,
+		peak_nits: u32,
+	},
+	P010 {
+		transfer: u32,
+		primaries: u32,
+		matrix: u32,
+		full_range: bool,
+		peak_nits: u32,
+	},
+}
+impl RawFormat {
+	fn bytes(self) -> usize {
+		match self {
+			Self::Bgra8 => 4,
+			Self::LinearRgba16 { .. } => 8,
+			Self::P010 { .. } => 2,
+		}
+	}
+}
 pub struct RawFrame {
+	pub format: RawFormat,
 	pub width: u32,
 	pub height: u32,
 	pub stride: usize,
@@ -556,6 +585,7 @@ impl ScreenEncoder {
 			profile: crate::video_encode::Profile::Main,
 			codec,
 			adapter: None,
+			hdr: None,
 		}
 	}
 
@@ -680,7 +710,7 @@ pub(crate) fn software_rate_change(current: u32, target: u32) -> bool {
 
 fn validate_frame(frame: &RawFrame) -> Result<(usize, usize), &'static str> {
 	let row_bytes = (frame.width as usize)
-		.checked_mul(4)
+		.checked_mul(frame.format.bytes())
 		.ok_or("Screen capture returned an unsupported frame size")?;
 	let required = frame
 		.stride
@@ -693,8 +723,41 @@ fn validate_frame(frame: &RawFrame) -> Result<(usize, usize), &'static str> {
 		|| frame.data.len() > MAX_RAW_BYTES
 		|| frame.stride < row_bytes
 		|| required > frame.data.len()
+		|| matches!(frame.format, RawFormat::P010 { .. })
+			&& (!frame.width.is_multiple_of(2)
+				|| !frame.height.is_multiple_of(2)
+				|| frame.stride != frame.width as usize * 2
+				|| required + required / 2 != frame.data.len())
 	{
 		return Err("Screen capture returned an unsupported frame size");
+	}
+
+	let valid_color = match frame.format {
+		RawFormat::Bgra8 => true,
+		RawFormat::LinearRgba16 {
+			unit_nits,
+			white_nits,
+			peak_nits,
+		} => {
+			(1..=1000).contains(&unit_nits)
+				&& (80..=1000).contains(&white_nits)
+				&& (white_nits..=10000).contains(&peak_nits)
+		}
+		RawFormat::P010 {
+			transfer,
+			primaries,
+			matrix,
+			peak_nits,
+			..
+		} => {
+			matches!(transfer, 16 | 18)
+				&& matches!(primaries, 1 | 9 | 12)
+				&& matches!(matrix, 1 | 5 | 6 | 9)
+				&& (100..=10000).contains(&peak_nits)
+		}
+	};
+	if !valid_color {
+		return Err("Screen capture returned unsupported color metadata");
 	}
 
 	Ok((row_bytes, required))
@@ -707,18 +770,108 @@ pub(super) fn preview_frame(frame: &RawFrame) -> Result<image::RgbaImage, &'stat
 		.min(1.0);
 	let width = (f64::from(frame.width) * scale).round().max(1.0) as u32;
 	let height = (f64::from(frame.height) * scale).round().max(1.0) as u32;
-	// ponytail: nearest sampling keeps the ten-fps preview cheap; use filtered scaling if needed.
+	// Nearest sampling keeps the ten-fps preview cheap; streaming uses filtered scaling.
+	let conversion = frame.conversion();
 	Ok(image::RgbaImage::from_fn(width, height, |x, y| {
 		let source_x = (x * frame.width / width) as usize;
 		let source_y = (y * frame.height / height) as usize;
-		let offset = source_y * frame.stride + source_x * 4;
-		image::Rgba([
-			frame.data[offset + 2],
-			frame.data[offset + 1],
-			frame.data[offset],
-			255,
-		])
+		let rgb = frame.sdr(source_x, source_y, conversion.as_ref());
+		image::Rgba([rgb[0], rgb[1], rgb[2], 255])
 	}))
+}
+
+impl RawFrame {
+	fn conversion(&self) -> Option<platform::video::ffmpeg::SdrConverter> {
+		use platform::video::ffmpeg::{HdrTransfer, SdrConverter};
+		match self.format {
+			RawFormat::Bgra8 => None,
+			RawFormat::LinearRgba16 {
+				white_nits,
+				peak_nits,
+				..
+			} => Some(SdrConverter::new(
+				1,
+				peak_nits as f32,
+				white_nits as f32,
+				None,
+			)),
+			RawFormat::P010 {
+				primaries,
+				peak_nits,
+				transfer,
+				..
+			} => Some(SdrConverter::new(
+				primaries,
+				peak_nits as f32,
+				203.0,
+				HdrTransfer::from_native(transfer),
+			)),
+		}
+	}
+	fn sdr(
+		&self,
+		x: usize,
+		y: usize,
+		conversion: Option<&platform::video::ffmpeg::SdrConverter>,
+	) -> [u8; 3] {
+		let at = y * self.stride + x * self.format.bytes();
+		if matches!(self.format, RawFormat::Bgra8) {
+			return [self.data[at + 2], self.data[at + 1], self.data[at]];
+		}
+		let conversion = conversion.expect("validated HDR conversion");
+		conversion.to_sdr(self.nits(x, y, conversion))
+	}
+	fn nits(
+		&self,
+		x: usize,
+		y: usize,
+		conversion: &platform::video::ffmpeg::SdrConverter,
+	) -> [f32; 3] {
+		let at = y * self.stride + x * self.format.bytes();
+		match self.format {
+			RawFormat::LinearRgba16 { unit_nits, .. } => std::array::from_fn(|channel| {
+				platform::video::ffmpeg::half([
+					self.data[at + channel * 2],
+					self.data[at + channel * 2 + 1],
+				]) * unit_nits as f32
+			}),
+			RawFormat::P010 {
+				transfer,
+				matrix,
+				full_range,
+				..
+			} => {
+				let word =
+					|at| (u16::from_le_bytes([self.data[at], self.data[at + 1]]) >> 6) as f32;
+				let yy = word(at);
+				let c = self.stride * self.height as usize + y / 2 * self.stride + x / 2 * 4;
+				let uv = [word(c), word(c + 2)];
+				let yy = if full_range {
+					yy / 1023.0
+				} else {
+					(yy - 64.0) / 876.0
+				};
+				let uv = uv.map(|v| (v - 512.0) / if full_range { 1023.0 } else { 896.0 });
+				let (kr, kb) = match matrix {
+					9 => (0.2627, 0.0593),
+					1 => (0.2126, 0.0722),
+					_ => (0.299, 0.114),
+				};
+				let kg = 1.0 - kr - kb;
+				let rgb = [
+					yy + 2.0 * (1.0 - kr) * uv[1],
+					yy - 2.0 * kb * (1.0 - kb) / kg * uv[0] - 2.0 * kr * (1.0 - kr) / kg * uv[1],
+					yy + 2.0 * (1.0 - kb) * uv[0],
+				];
+				conversion.source_nits(
+					rgb,
+					platform::video::ffmpeg::HdrTransfer::from_native(transfer)
+						.expect("validated capture transfer"),
+				)
+			}
+			RawFormat::Bgra8 => [0.0; 3],
+		}
+	}
 }
 
 #[cfg(test)]
@@ -759,6 +912,7 @@ mod tests {
 			reset_generation: 0,
 		};
 		let raw = RawFrame {
+			format: crate::screen::RawFormat::Bgra8,
 			width: 2,
 			height: 2,
 			stride: 8,
@@ -800,6 +954,7 @@ mod tests {
 	#[test]
 	fn idle_screen_keyframe_uses_latest_snapshot_only_when_ready() {
 		let frame = |value| RawFrame {
+			format: crate::screen::RawFormat::Bgra8,
 			width: 2,
 			height: 2,
 			stride: 8,
@@ -825,6 +980,7 @@ mod tests {
 	#[test]
 	fn local_preview_is_bounded_and_converts_padded_bgra_without_media_readiness() {
 		let preview = preview_frame(&RawFrame {
+			format: crate::screen::RawFormat::Bgra8,
 			width: 1,
 			height: 2,
 			stride: 8,
@@ -847,6 +1003,7 @@ mod tests {
 		assert!(!worker.ready.load(Ordering::Acquire));
 		for (width, height) in [(3840, 2160), (2, 4320), (7680, 2)] {
 			let frame = RawFrame {
+				format: crate::screen::RawFormat::Bgra8,
 				width,
 				height,
 				stride: width as usize * 4,
@@ -859,6 +1016,7 @@ mod tests {
 		}
 		assert!(
 			preview_frame(&RawFrame {
+				format: crate::screen::RawFormat::Bgra8,
 				width: 2,
 				height: 2,
 				stride: 4,
@@ -871,6 +1029,7 @@ mod tests {
 	#[test]
 	fn synthetic_frame_is_bounded_and_encodes_a_keyframe() {
 		let frame = RawFrame {
+			format: crate::screen::RawFormat::Bgra8,
 			width: 2,
 			height: 2,
 			stride: 12,
@@ -930,6 +1089,7 @@ mod tests {
 		assert!(
 			convert::bgra_to_i420(
 				&RawFrame {
+					format: crate::screen::RawFormat::Bgra8,
 					width: 2,
 					height: 2,
 					stride: 4,

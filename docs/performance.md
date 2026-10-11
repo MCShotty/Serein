@@ -8,7 +8,7 @@ log and per-run evidence archive has been removed; the summaries below retain th
 
 The [compact evidence record](pr-evidence/video-encoding/README.md) retains
 matched synthetic native captures, narrow/light camera and screen layouts, and
-[unchanged historical samples](pr-evidence/video-encoding/measurements.json).
+[unchanged historical samples](https://github.com/MCShotty/Serein/blob/918a4abe391a9e1619ba678af2b3f204f594cf6e/docs/pr-evidence/video-encoding/measurements.json).
 Older helpers, logs and detailed build records remain in the
 [immutable archive](https://github.com/MCShotty/Serein/tree/faa9660761a2099cf2e6f5b748cf48bfa6871b63/docs/pr-evidence).
 The archive commit identifies storage; each record retains its measured revision,
@@ -61,9 +61,40 @@ limits are retained in the linked records and stage methods.
 These workloads do not establish general speed/quality improvements. Helper
 sizes are not package sizes; sampled RSS is not a memory ceiling. Physical
 8K/60 fps, frame/startup p95, GPU memory, active hardware throughput and fresh
-whole-app/package comparisons remain unmeasured. Full native desktop/package
-checks and fresh captures remain outstanding; local xtask attempts were blocked
-by missing GLib development metadata and native CI requires maintainer approval.
+whole-app/package comparisons remain unmeasured in these historical records.
+Current implementation checks are recorded below separately from these measurements.
+
+### Shared ultrawide/HDR media — October 11, 2026
+
+The baseline is `c4bc650`, with its unchanged normal FFmpeg recipe in a detached
+worktree. The new shared-media recipe is built with NVENC, AMF and QSV enabled,
+H.264/HEVC/AV1 decoding and dav1d 1.5.1. Each revision uses its own Cargo release
+directory, pinned Rust 1.98.1 and the standard voice-inclusive, no-development-data
+package command. No historical executable or manually repaired staging tree is
+used for this comparison.
+
+`cargo xtask check` passes in an offline Linux container using the build host's
+native libraries, CA certificates and a private temporary directory. The container
+avoids the managed sandbox's nonstandard root-directory ownership, which the
+unchanged IPC permission test correctly rejects. Formatting, strict Clippy,
+workspace tests and policy checks pass. Login-handoff and the six license-policy
+fixtures pass. Locked application/fuzz license graphs, native query/preset/packet
+fixtures, source-patch reproduction and packaging fixtures were checked separately.
+
+The actual media shader passes offscreen software-Vulkan tests for SDR, PQ/HLG
+highlights, rotation, odd-crop chroma, resource cleanup and device recreation.
+The exact 6144×2560 picture is decoded through synthetic RTP/DAVE at 60 fps
+timestamp cadence. Four HEVC/AV1 PQ/HLG transport fixtures and HDR attachment
+audio/seek/cancellation fixtures pass. These establish picture/color/lifecycle
+behavior, not sustained 60 fps throughput or live Discord compatibility.
+
+Clean and cached package measurements and current native CI results are reported
+in [#567's Performance and Verification sections](https://github.com/ViceVerse-cz/Serein/pull/567).
+CPU, frame-delivery rate and peak/settled memory during physical HDR playback remain
+unmeasured here. Native window capture and a suitable HDR display are unavailable
+in this environment. The owner has agreed to test the current CI Windows installer
+with the 6144×2560 stream and HDR/SDR display transitions. Outgoing HDR captures
+currently tone-map to SDR until receiver 10-bit compatibility is established.
 
 ## Long-session live memory inspection — October 9, 2026
 

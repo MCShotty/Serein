@@ -16,6 +16,9 @@ const WINDOWS_FILES: &[&str] = &[
 	"serein.exe",
 	"avcodec-serein-61.dll",
 	"avutil-serein-59.dll",
+	"avformat-serein-61.dll",
+	"swscale-serein-8.dll",
+	"swresample-serein-5.dll",
 	"openh264.dll",
 	"ffmpeg-source",
 	"README.md",
@@ -716,6 +719,9 @@ pub(super) fn unpack(
 		"serein.exe",
 		"avcodec-serein-61.dll",
 		"avutil-serein-59.dll",
+		"avformat-serein-61.dll",
+		"swscale-serein-8.dll",
+		"swresample-serein-5.dll",
 		"openh264.dll",
 	]
 	.iter()
@@ -1165,6 +1171,19 @@ mod ffmpeg_update_tests {
 		for (case, omit, extra, valid) in [
 			("complete", None, None, true),
 			("missing", Some("avutil-serein-59.dll"), None, false),
+			(
+				"missing-demuxer",
+				Some("avformat-serein-61.dll"),
+				None,
+				false,
+			),
+			("missing-scaler", Some("swscale-serein-8.dll"), None, false),
+			(
+				"missing-resampler",
+				Some("swresample-serein-5.dll"),
+				None,
+				false,
+			),
 			("unexpected", None, Some("unexpected.dll"), false),
 		] {
 			let stage = root.join(case);
@@ -1174,6 +1193,9 @@ mod ffmpeg_update_tests {
 				"serein.exe",
 				"avcodec-serein-61.dll",
 				"avutil-serein-59.dll",
+				"avformat-serein-61.dll",
+				"swscale-serein-8.dll",
+				"swresample-serein-5.dll",
 				"openh264.dll",
 				"THIRD_PARTY_NOTICES.md",
 				"licenses/fixture.txt",

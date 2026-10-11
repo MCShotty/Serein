@@ -1547,12 +1547,12 @@ name = "discord-voice"
 version = "0.1.0"
 dependencies = [
  "block2 0.6.2",
- "cc",
  "chacha20poly1305",
  "client-core",
  "cpal",
  "davey",
  "dispatch2",
+ "flate2",
  "futures-util",
  "getrandom 0.4.3",
  "gstreamer",
@@ -1575,7 +1575,6 @@ dependencies = [
  "openmls_basic_credential",
  "openmls_rust_crypto",
  "opus2",
- "pkg-config",
  "platform",
  "rtrb",
  "screencapturekit",
@@ -1817,7 +1816,6 @@ dependencies = [
 [[package]]
 name = "egui-wgpu"
 version = "0.36.2"
-source = "git+https://github.com/emilk/egui?rev=8f6d3d6ed99cb24d2e14c43951803d2868db40b1#8f6d3d6ed99cb24d2e14c43951803d2868db40b1"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -5227,8 +5225,10 @@ name = "platform"
 version = "0.1.0"
 dependencies = [
  "ashpd",
+ "cc",
  "client-core",
  "dirs",
+ "flate2",
  "futures-lite",
  "futures-util",
  "getrandom 0.4.3",
@@ -5251,6 +5251,7 @@ dependencies = [
  "objc2-core-video",
  "objc2-foundation 0.3.2",
  "objc2-video-toolbox",
+ "pkg-config",
  "rfd",
  "serde_json",
  "symphonia",

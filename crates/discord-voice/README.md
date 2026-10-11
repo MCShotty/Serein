@@ -112,6 +112,13 @@ Native current-head validation remains pending. Build the pinned LGPL libraries 
 `python3 scripts/build-ffmpeg.py`, then set `FFMPEG_DIR` to `target/ffmpeg/prefix`
 before Cargo; see [platform requirements](../../docs/platform-support.md).
 
+Incoming H.264, HEVC and AV1 use the shared bounded FFmpeg decoder through 8K,
+including 6144×2560 and portrait/cropped pictures. PQ/HLG streams and supported
+attachments render as HDR on compatible displays, with automatic SDR fallback.
+Outgoing HDR sources currently tone-map to SDR because bare codec negotiation
+does not establish receiver 10-bit compatibility. Offline DAVE/picture and color
+fixtures do not establish live Discord or native HDR display interoperability.
+
 Experimental camera/screen streams request split-frame encoding for H.265/AV1
 from 1440p on NVENC/QSV and from 4K (3840×2160 or portrait 2160×3840) on AMF.
 NVENC/QSV require both dimensions to be at least 1440 pixels; AMF requires a

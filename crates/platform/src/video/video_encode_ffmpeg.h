@@ -33,6 +33,11 @@ enum {
     SEREIN_GPU_METAL_REGISTRY = 3
 };
 
+typedef struct SereinCaptureLuminance {
+    uint32_t unit_nits, white_nits, peak_nits;
+} SereinCaptureLuminance;
+int serein_capture_luminance(uint64_t source, int window, SereinCaptureLuminance *output);
+
 struct AVCodecContext;
 int serein_video_adapter_valid(const SereinVideoAdapter *adapter);
 int serein_video_adapter_equal(const SereinVideoAdapter *a, const SereinVideoAdapter *b);
@@ -48,6 +53,8 @@ void *serein_video_vulkan_device(const SereinVideoAdapter *adapter);
  * bound exactly or fail, so another physical GPU is never selected silently. */
 int serein_video_bind_adapter(struct AVCodecContext *codec, int backend,
                              const SereinVideoAdapter *adapter);
+int serein_video_bind_decoder(struct AVCodecContext *codec,
+                              const SereinVideoAdapter *adapter);
 int serein_video_query_on_adapter(int backend, int codec, const SereinVideoAdapter *adapter);
 int serein_query_nvenc_on_adapter(int codec, const SereinVideoAdapter *adapter);
 int serein_query_qsv_on_adapter(int codec, const SereinVideoAdapter *adapter);
@@ -101,6 +108,44 @@ int serein_avc_encode_timed(void *encoder, const uint8_t *contiguous_i420,
                             size_t length, int force_keyframe, uint8_t *output,
                             size_t output_capacity, size_t *output_length,
                             int *keyframe, int64_t *presentation_index);
+
+/* Decoded pixels remain on the owning media worker. SDR is packed RGBA8;
+ * PQ/HLG uses tightly packed P010 (Y followed by interleaved UV), preserving
+ * ten-bit samples and color metadata for display conversion. */
+typedef struct SereinPicture {
+    uint32_t width, height, format, primaries, transfer, matrix, full_range, depth;
+    uint32_t rotation;
+    float peak_nits;
+    int64_t pts;
+    size_t bytes;
+} SereinPicture;
+
+/* Codec 0=H264, 1=HEVC, 2=AV1. hardware requires an exact adapter identity;
+ * unavailable hardware returns NULL so the caller can reopen in software. */
+void *serein_decode_open(int codec, const SereinVideoAdapter *adapter, int hardware);
+void serein_decode_close(void *decoder);
+int serein_decode_hardware(void *decoder);
+/* 1=accepted/picture, 0=needs output/input, -1=malformed, -2=unsupported,
+ * -3=resource limit. Receive(NULL,0) inspects one retained picture; copying it
+ * requires exactly the reported capacity and consumes that picture. */
+int serein_decode_send(void *decoder, const uint8_t *data, size_t bytes, int64_t pts);
+int serein_decode_receive(void *decoder, SereinPicture *picture, uint8_t *output, size_t capacity);
+
+/* Anonymous bounded reader only. Callbacks never receive a URL or credentials. */
+typedef int (*SereinMediaRead)(void *reader, uint8_t *output, int capacity);
+typedef int64_t (*SereinMediaSeek)(void *reader, int64_t offset, int whence);
+typedef struct SereinMediaInfo {
+    uint32_t width, height, depth, references, sample_rate, rotation;
+    double duration;
+} SereinMediaInfo;
+void *serein_media_open(void *reader, SereinMediaRead read, SereinMediaSeek seek,
+                        const SereinVideoAdapter *adapter, SereinMediaInfo *info);
+void serein_media_close(void *media);
+/* poll: 1=sample ready, 0=drain sibling track, 2=EOF, negative=safe decode failure. */
+int serein_media_poll(void *media, int audio);
+int serein_media_video(void *media, SereinPicture *picture, uint8_t *output, size_t capacity, double *pts);
+int serein_media_audio(void *media, float *output, size_t frames, size_t *written, double *pts);
+int serein_media_seek(void *media, double seconds);
 
 #ifdef __cplusplus
 }

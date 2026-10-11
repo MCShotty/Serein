@@ -100,7 +100,7 @@ typedef struct {
 
 static int query_adapter(const SereinNvCuda *cuda,
                          NV_ENCODE_API_FUNCTION_LIST *api, int index, GUID codec,
-                         int *max_b_frames, int *lookahead)
+                         int *max_b_frames, int *lookahead, int ten_bit)
 {
     CUdevice device;
     CUcontext context = NULL;
@@ -156,6 +156,11 @@ static int query_adapter(const SereinNvCuda *cuda,
             break;
         }
         result = width > 0 && height > 0 ? 1 : 0;
+        if (result == 1 && ten_bit) {
+            int supported = 0;
+            caps.capsToQuery = NV_ENC_CAPS_SUPPORT_10BIT_ENCODE;
+            result = api->nvEncGetEncodeCaps(encoder, codec, &caps, &supported) != NV_ENC_SUCCESS ? -1 : supported ? 1 : 0;
+        }
         if (result == 1 && max_b_frames && lookahead) {
             caps.capsToQuery = NV_ENC_CAPS_NUM_MAX_BFRAMES;
             if (api->nvEncGetEncodeCaps(encoder, codec, &caps, max_b_frames) != NV_ENC_SUCCESS) {
@@ -193,8 +198,11 @@ static int query_nvenc(int codec, const SereinVideoAdapter *target,
     uint32_t version = 0;
     int result = -1, adapters = 0, incomplete = 0;
     CUresult cuda_status;
-    if (codec < 0 || codec > 2)
+    const int ten_bit = codec >= 3;
+    if (codec < 0 || codec > 5)
         return 0;
+    codec %= 3;
+    if (ten_bit && codec == 0) return 0;
     const int selected = target ? serein_video_cuda_device(target) : -1;
     if (target && selected < 0)
         return -1;
@@ -246,7 +254,7 @@ static int query_nvenc(int codec, const SereinVideoAdapter *target,
     for (int i = 0; i < adapters && i < SEREIN_NV_MAX_ADAPTERS; i++) {
         if (target && i != selected)
             continue;
-        int adapter = query_adapter(&cuda, &api, i, *codecs[codec], max_b_frames, lookahead);
+        int adapter = query_adapter(&cuda, &api, i, *codecs[codec], max_b_frames, lookahead, ten_bit);
         if (adapter == 1) {
             result = 1;
             goto cleanup;
@@ -262,7 +270,7 @@ cleanup:
     return result;
 }
 
-int serein_query_nvenc(int codec) { return query_nvenc(codec, NULL, NULL, NULL); }
+int serein_query_nvenc(int codec) { return codec < 0 || codec > 2 ? 0 : query_nvenc(codec, NULL, NULL, NULL); }
 int serein_query_nvenc_on_adapter(int codec, const SereinVideoAdapter *adapter)
 { return adapter ? query_nvenc(codec, adapter, NULL, NULL) : -1; }
 int serein_nvenc_features(int codec, const SereinVideoAdapter *adapter,
@@ -326,7 +334,7 @@ static int set_filter(mfxLoader loader, const char *name, mfxU32 value)
     return MFXSetConfigFilterProperty(config, (const mfxU8 *)name, property) == MFX_ERR_NONE;
 }
 
-static int description_supports_codec(const mfxImplDescription *description, mfxU32 codec)
+static int description_supports_codec(const mfxImplDescription *description, mfxU32 codec, int ten_bit)
 {
     if (!description || description->Version.Major != 1 ||
         description->Impl != MFX_IMPL_TYPE_HARDWARE || description->VendorID != 0x8086)
@@ -338,8 +346,22 @@ static int description_supports_codec(const mfxImplDescription *description, mfx
         (description->Enc.NumCodecs && !description->Enc.Codecs))
         return -1;
     for (mfxU16 i = 0; i < description->Enc.NumCodecs; i++) {
-        if (description->Enc.Codecs[i].CodecID == codec)
-            return 1;
+        if (description->Enc.Codecs[i].CodecID == codec) {
+            if (!ten_bit) return 1;
+            const mfxEncoderDescription *enc = &description->Enc;
+            if (!enc->Codecs[i].NumProfiles || enc->Codecs[i].NumProfiles > 64 || !enc->Codecs[i].Profiles) return -1;
+            for (mfxU16 j = 0; j < enc->Codecs[i].NumProfiles; j++) {
+                if (codec == MFX_CODEC_HEVC && enc->Codecs[i].Profiles[j].Profile != MFX_PROFILE_HEVC_MAIN10) continue;
+                if (codec == MFX_CODEC_AV1 && enc->Codecs[i].Profiles[j].Profile != MFX_PROFILE_AV1_MAIN) continue;
+                if (enc->Codecs[i].Profiles[j].NumMemTypes > 16 || (enc->Codecs[i].Profiles[j].NumMemTypes && !enc->Codecs[i].Profiles[j].MemDesc)) return -1;
+                for (mfxU16 k = 0; k < enc->Codecs[i].Profiles[j].NumMemTypes; k++) {
+                    if (enc->Codecs[i].Profiles[j].MemDesc[k].NumColorFormats > 64 || (enc->Codecs[i].Profiles[j].MemDesc[k].NumColorFormats && !enc->Codecs[i].Profiles[j].MemDesc[k].ColorFormats)) return -1;
+                    for (mfxU16 n = 0; n < enc->Codecs[i].Profiles[j].MemDesc[k].NumColorFormats; n++)
+                        if (enc->Codecs[i].Profiles[j].MemDesc[k].ColorFormats[n] == MFX_FOURCC_P010) return 1;
+                }
+            }
+            return 0;
+        }
     }
     return 0;
 }
@@ -376,8 +398,11 @@ static int query_qsv(int codec, const SereinVideoAdapter *target)
     mfxLoader loader;
     int result = -1, incomplete = 0;
     mfxU32 acceleration;
-    if (codec < 0 || codec > 2)
+    const int ten_bit = codec >= 3;
+    if (codec < 0 || codec > 5)
         return 0;
+    codec %= 3;
+    if (ten_bit && codec == 0) return 0;
     loader = MFXLoad();
     if (!loader)
         return -1;
@@ -409,7 +434,7 @@ static int query_qsv(int codec, const SereinVideoAdapter *target)
             continue;
         }
         const int matching = target ? implementation_matches(loader, i, target) : 1;
-        int supported = matching == 1 ? description_supports_codec((const mfxImplDescription *)handle, codecs[codec]) : matching;
+        int supported = matching == 1 ? description_supports_codec((const mfxImplDescription *)handle, codecs[codec], ten_bit) : matching;
         if (MFXDispReleaseImplDescription(loader, handle) != MFX_ERR_NONE)
             supported = -1;
         if (supported == 1) {
@@ -427,7 +452,7 @@ cleanup:
     return result;
 }
 
-int serein_query_qsv(int codec) { return query_qsv(codec, NULL); }
+int serein_query_qsv(int codec) { return codec < 0 || codec > 2 ? 0 : query_qsv(codec, NULL); }
 int serein_query_qsv_on_adapter(int codec, const SereinVideoAdapter *adapter)
 {
     if (!serein_video_adapter_valid(adapter) || adapter->vendor_id != 0x8086)
@@ -466,6 +491,10 @@ int serein_query_qsv_on_adapter(int codec, const SereinVideoAdapter *adapter)
 
 static int query_videotoolbox(int codec, const SereinVideoAdapter *target)
 {
+    if (codec < 0 || codec > 5) return -1;
+    const int ten_bit = codec >= 3;
+    codec %= 3;
+    if (ten_bit && codec == 0) return 0;
     CMVideoCodecType wanted;
     switch (codec) {
     case 0:
@@ -553,6 +582,34 @@ static int query_videotoolbox(int codec, const SereinVideoAdapter *target)
                 continue;
             }
             if (CFBooleanGetValue(hardware)) {
+                if (ten_bit) {
+                    /* Query supported profile values on this exact encoder. No
+                     * compression session or synthetic picture is created. */
+                    CFStringRef identity = CFDictionaryGetValue(encoder, kVTVideoEncoderList_EncoderID);
+                    if (!identity || CFGetTypeID(identity) != CFStringGetTypeID()) { unknown = 1; continue; }
+                    CFMutableDictionaryRef specification = CFDictionaryCreateMutable(NULL, 0,
+                        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+                    if (!specification) { unknown = 1; continue; }
+                    CFDictionarySetValue(specification, kVTVideoEncoderSpecification_EncoderID, identity);
+                    CFDictionarySetValue(specification, kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder, kCFBooleanTrue);
+                    CFDictionaryRef properties = NULL;
+                    CFStringRef selected = NULL;
+                    OSStatus result = VTCopySupportedPropertyDictionaryForEncoder(1920, 1080,
+                        wanted, specification, &selected, &properties);
+                    CFRelease(specification);
+                    if (selected) CFRelease(selected);
+                    if (result || !properties) { if (properties) CFRelease(properties); unknown = 1; continue; }
+                    CFDictionaryRef profile = CFDictionaryGetValue(properties, kVTCompressionPropertyKey_ProfileLevel);
+                    CFArrayRef values = profile && CFGetTypeID(profile) == CFDictionaryGetTypeID() ?
+                        CFDictionaryGetValue(profile, kVTPropertySupportedValueListKey) : NULL;
+                    if (!values || CFGetTypeID(values) != CFArrayGetTypeID() || CFArrayGetCount(values) > 512) {
+                        CFRelease(properties); unknown = 1; continue;
+                    }
+                    int supports = codec == 1 && CFArrayContainsValue(values,
+                        CFRangeMake(0, CFArrayGetCount(values)), kVTProfileLevel_HEVC_Main10_AutoLevel);
+                    CFRelease(properties);
+                    if (!supports) continue;
+                }
                 available = 1;
                 break;
             }
@@ -610,7 +667,7 @@ int serein_video_query(int backend, int codec)
     };
     if (backend < 1 || backend > 4 || codec < 0 || codec > 2)
         return -1;
-    const char *name = names[backend - 1][codec];
+    const char *name = names[backend - 1][codec % 3];
     if (!name || !avcodec_find_encoder_by_name(name))
         return 0;
     switch (backend) {
@@ -630,10 +687,10 @@ int serein_video_query_on_adapter(int backend, int codec, const SereinVideoAdapt
         {"h264_amf", "hevc_amf", "av1_amf"},
         {"h264_qsv", "hevc_qsv", "av1_qsv"},
     };
-    if (backend < 1 || backend > 4 || codec < 0 || codec > 2 ||
+    if (backend < 1 || backend > 4 || codec < 0 || codec > 5 ||
         !serein_video_adapter_valid(adapter))
         return -1;
-    const char *name = names[backend - 1][codec];
+    const char *name = names[backend - 1][codec % 3];
     if (!name || !avcodec_find_encoder_by_name(name))
         return 0;
     /* A capability on another GPU must not advertise the selected adapter. */

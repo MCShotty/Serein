@@ -92,7 +92,11 @@ static NVENCSTATUS NVENCAPI caps(void *encoder, GUID codec, NV_ENC_CAPS_PARAM *p
         *value = mode("no-advanced") ? 0 : 3;
     else if (params->capsToQuery == NV_ENC_CAPS_SUPPORT_LOOKAHEAD)
         *value = mode("no-advanced") ? 0 : 1;
-    else
+    else if (params->capsToQuery == NV_ENC_CAPS_SUPPORT_10BIT_ENCODE) {
+        const char *profile = getenv("SEREIN_HDR_FIXTURE");
+        if (profile && !strcmp(profile,"error")) return NV_ENC_ERR_GENERIC;
+        *value = profile && !strcmp(profile,"eight") ? 0 : 1;
+    } else
         *value = mode("zero-dimensions") ? 0 : 8192;
     return NV_ENC_SUCCESS;
 }
@@ -197,6 +201,18 @@ int main(void) {
     assert(serein_nvenc_features(2, &target, &b_frames, &lookahead) == 1);
     assert(b_frames == 3 && lookahead == 1);
     assert(fixture_nv_forbidden() == 0);
+    /* Codec support is distinct from profile support on the selected device. */
+    assert(setenv("SEREIN_HDR_FIXTURE", "ten", 1) == 0);
+    assert(serein_query_nvenc_on_adapter(5, &target) == 1);
+    assert(setenv("SEREIN_HDR_FIXTURE", "eight", 1) == 0);
+    assert(serein_query_nvenc_on_adapter(5, &target) == 0);
+    assert(serein_query_nvenc_on_adapter(2, &target) == 1);
+    assert(setenv("SEREIN_HDR_FIXTURE", "error", 1) == 0);
+    assert(serein_query_nvenc_on_adapter(5, &target) == -1);
+    assert(serein_query_nvenc_on_adapter(3, &target) == 0);
+    assert(unsetenv("SEREIN_HDR_FIXTURE") == 0);
+    assert(fixture_cuda_created() == fixture_cuda_destroyed());
+    assert(fixture_nv_closed() == fixture_nv_opened() && fixture_nv_forbidden() == 0);
     target.bus = 3;
     fixture_cuda_reset(); fixture_nv_reset();
     assert(serein_query_nvenc_on_adapter(2, &target) == -1);

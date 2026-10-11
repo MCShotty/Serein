@@ -96,6 +96,8 @@ bool unavailable(AMF_RESULT result) {
 }
 
 int query_caps(amf::AMFFactory *factory, amf::AMFContext *context, int codec) {
+    const bool ten_bit = codec >= 3; codec %= 3;
+    if (ten_bit && codec == 0) return 0;
     static const wchar_t *const components[] = {
         AMFVideoEncoderVCE_AVC, AMFVideoEncoder_HEVC, AMFVideoEncoder_AV1
     };
@@ -134,8 +136,16 @@ int query_caps(amf::AMFFactory *factory, amf::AMFContext *context, int codec) {
         amf_bool native = false;
         if (input->GetFormatAt(index, &format, &native) != AMF_OK)
             return -1;
-        if (format == amf::AMF_SURFACE_NV12 || format == amf::AMF_SURFACE_YUV420P)
+        if (ten_bit) {
+            if (format != amf::AMF_SURFACE_P010) continue;
+            if (codec == 1) {
+                amf::AMFVariant profile;
+                if (caps->GetProperty(AMF_VIDEO_ENCODER_HEVC_CAP_MAX_PROFILE, &profile) != AMF_OK || profile.type != amf::AMF_VARIANT_INT64) return -1;
+                if (profile.int64Value < AMF_VIDEO_ENCODER_HEVC_PROFILE_MAIN_10) return 0;
+            }
             return 1;
+        }
+        if (format == amf::AMF_SURFACE_NV12 || format == amf::AMF_SURFACE_YUV420P) return 1;
     }
     return 0;
 }
@@ -266,7 +276,7 @@ int query_devices(amf::AMFFactory *factory, int codec, const SereinVideoAdapter 
 } // namespace
 
 static int query_amf(int codec, const SereinVideoAdapter *target) {
-    if (codec < 0 || codec > 2)
+    if (codec < 0 || codec > 5)
         return -1;
 #if defined(_WIN32)
     Library runtime(AMF_DLL_NAME);
@@ -283,8 +293,9 @@ static int query_amf(int codec, const SereinVideoAdapter *target) {
         return -1;
     return query_devices(factory, codec, target);
 }
-extern "C" int serein_query_amf(int codec) { return query_amf(codec, nullptr); }
+extern "C" int serein_query_amf(int codec) { return codec < 0 || codec > 2 ? -1 : query_amf(codec, nullptr); }
 extern "C" int serein_query_amf_on_adapter(int codec, const SereinVideoAdapter *target) {
+    if (codec == 3) return 0; /* H.264 stays the compatible SDR path. */
     if (!serein_video_adapter_valid(target) || target->vendor_id != 0x1002)
         return -1;
     return query_amf(codec, target);

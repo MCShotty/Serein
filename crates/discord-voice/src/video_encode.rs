@@ -24,8 +24,17 @@ pub(crate) struct Config {
 	pub profile: Profile,
 	pub codec: VideoCodec,
 	pub adapter: Option<model::VideoAdapter>,
+	/// Set only after receiver 10-bit compatibility is established. Codec availability is insufficient.
+	pub hdr: Option<HdrEncoding>,
 }
 
+use platform::video::ffmpeg::HdrTransfer as HdrEncoding;
+fn hdr_flags(transfer: HdrEncoding) -> i32 {
+	match transfer {
+		HdrEncoding::Pq => 4,
+		HdrEncoding::Hlg => 8,
+	}
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Profile {
 	Baseline,
@@ -36,6 +45,7 @@ impl Config {
 	pub(crate) fn picture_bytes(self) -> Result<usize, &'static str> {
 		if self.width == 0
 			|| self.height == 0
+			|| self.hdr.is_some() && self.codec == VideoCodec::H264
 			|| self.width > VideoResolution::MAX_WIDTH
 			|| self.height > VideoResolution::MAX_HEIGHT
 			|| !self.width.is_multiple_of(2)
@@ -47,7 +57,7 @@ impl Config {
 		{
 			return Err("Invalid FFmpeg video encoder settings");
 		}
-		Ok(self.width as usize * self.height as usize * 3 / 2)
+		Ok(self.width as usize * self.height as usize * 3 / if self.hdr.is_some() { 1 } else { 2 })
 	}
 }
 
@@ -362,7 +372,7 @@ impl Encoder {
 					},
 					config.max_bytes,
 					adapter.as_ref().map_or(std::ptr::null(), |value| value),
-					*features,
+					*features | config.hdr.map_or(0, hdr_flags),
 				)
 			};
 			if !pointer.is_null() {
@@ -577,6 +587,7 @@ mod tests {
 		profile: Profile::Baseline,
 		codec: VideoCodec::H264,
 		adapter: None,
+		hdr: None,
 	};
 	#[test]
 	fn rendering_adapter_excludes_other_vendors_and_unknown_hardware() {
@@ -858,6 +869,27 @@ mod tests {
 			let bytes = config.picture_bytes().unwrap();
 			assert_eq!(bytes, width as usize * height as usize * 3 / 2);
 			assert!(bytes <= 7680 * 4320 * 3 / 2);
+			for hdr in [HdrEncoding::Pq, HdrEncoding::Hlg] {
+				assert!(
+					Config {
+						hdr: Some(hdr),
+						..config
+					}
+					.picture_bytes()
+					.is_err()
+				);
+				for codec in [VideoCodec::H265, VideoCodec::Av1] {
+					assert_eq!(
+						Config {
+							codec,
+							hdr: Some(hdr),
+							..config
+						}
+						.picture_bytes(),
+						Ok(width as usize * height as usize * 3)
+					);
+				}
+			}
 		}
 		for config in [
 			Config {

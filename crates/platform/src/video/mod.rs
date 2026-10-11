@@ -7,6 +7,9 @@
 //! * Linux: GStreamer's `decodebin` pulling bytes from the same stream through `appsrc`.
 use std::io::{Read, Seek};
 
+/// Audited, shared FFmpeg native ABI for encoding, decoding and GPU identity.
+pub mod ffmpeg;
+
 #[cfg(target_os = "windows")]
 mod media_foundation;
 #[cfg(target_os = "windows")]
@@ -112,7 +115,7 @@ pub fn check_dimensions(width: u32, height: u32) -> Result<(), &'static str> {
 }
 
 /// Rotate a packed RGBA frame clockwise by a quarter-turn multiple; returns the new dimensions.
-#[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+#[cfg(any(test, target_os = "macos"))]
 pub(crate) fn rotate_rgba(
 	rgba: &[u8],
 	width: u32,

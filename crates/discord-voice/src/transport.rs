@@ -1,11 +1,12 @@
+#[cfg(test)]
+use crate::video_receive::spawn_decoder;
 use crate::{
 	Controls, Frame, Status,
 	crypto::{Dave, Encryption, Identity, MAX_PACKET, MAX_SIGNAL, MODE},
 	diagnostics::{Signal, Video},
 	video_receive::{
-		DecoderQueue, Encoded, MAX_SOURCES, Receivers, SourceLifetime, VideoSink,
-		has_parameter_sets, is_keyframe, offer, pli, remove as remove_decoder, retain_sources,
-		spawn_decoder,
+		Admission, DecoderQueue, Encoded, MAX_SOURCES, Receivers, SourceLifetime, VideoSink, admit,
+		pli, remove as remove_decoder, retain_sources, spawn_decoder_on_adapter,
 	},
 };
 use client_core::voice::VoiceConnection;
@@ -35,6 +36,16 @@ use zeroize::Zeroizing;
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 /// Time a sole member gives the roster announcement before waiting for a peer.
 const PEER_GRACE: Duration = Duration::from_millis(500);
+
+fn malformed_video(
+	receivers: &mut Receivers,
+	decoder: &DecoderQueue,
+	user: u64,
+) -> Option<&'static str> {
+	let error = receivers.reject_malformed(user)?;
+	remove_decoder(decoder, user);
+	Some(error)
+}
 
 fn negotiation_timeout(
 	hello: bool,
@@ -179,12 +190,26 @@ fn offered_codecs(outgoing: Option<VideoCodec>, decode: bool) -> Vec<Value> {
 	let mut codecs = vec![json!({"name":"opus","type":"audio","priority":1000,"payload_type":120})];
 	if let Some(codec) = outgoing {
 		let payload = crate::video::payload_type(codec);
-		codecs.push(json!({"name":crate::video::codec_name(codec),"type":"video","priority":1000,"payload_type":payload,"rtx_payload_type":payload+1,"encode":true,"decode":decode && codec==VideoCodec::H264}));
+		codecs.push(json!({"name":crate::video::codec_name(codec),"type":"video","priority":1000,"payload_type":payload,"rtx_payload_type":payload+1,"encode":true,"decode":decode}));
 	}
-	if decode && outgoing != Some(VideoCodec::H264) {
-		codecs.push(json!({"name":"H264","type":"video","priority":900,"payload_type":101,"rtx_payload_type":102,"encode":false,"decode":true}));
+	if decode {
+		for codec in VideoCodec::ALL {
+			if outgoing == Some(codec) {
+				continue;
+			}
+			let payload = crate::video::payload_type(codec);
+			codecs.push(json!({"name":crate::video::codec_name(codec),"type":"video","priority":900-codec.index()*100,"payload_type":payload,"rtx_payload_type":payload+1,"encode":false,"decode":true}));
+		}
 	}
 	codecs
+}
+fn receive_codec(payload: u8) -> Option<VideoCodec> {
+	match payload {
+		101 => Some(VideoCodec::H264),
+		103 => Some(VideoCodec::H265),
+		109 => Some(VideoCodec::Av1),
+		_ => None,
+	}
 }
 fn codec_negotiation_error(codec: VideoCodec) -> &'static str {
 	match codec {
@@ -333,7 +358,10 @@ async fn run_inner(
 		return Err("Stable video supports H264 only");
 	}
 	let outgoing_codec = video_settings.codec;
-	let (decoder, lost) = match remote_video.map(spawn_decoder).transpose()? {
+	let (decoder, lost) = match remote_video
+		.map(|sink| spawn_decoder_on_adapter(sink, controls.borrow().video_adapter))
+		.transpose()?
+	{
 		Some((decoder, lost)) => (Some(decoder), Some(lost)),
 		None => (None, None),
 	};
@@ -481,6 +509,9 @@ async fn run_inner(
 					emit(Status::Ready{privacy_code:dave.session.voice_privacy_code().unwrap_or_default().into()}).map_err(|_|"Call interface closed")?;
 				}
 				watch.tick(&mut metrics,&mut receivers,decoder.as_ref(),now);
+				if let Some(decoder)=&decoder && let Ok(mut failures)=decoder.counters.failures.lock() {
+					for (user,error) in failures.drain(..) {receivers.remove(user);remove_decoder(decoder,user);emit(Status::RemoteVideoFailed{user,error}).map_err(|_|"Call interface closed")?;}
+				}
 				// Lost or stalled pictures stay frozen until the sender refreshes; ask twice a second at most.
 				if enabled && now>=next_pli && let Some(lost)=&lost && let Some(crypto)=encryption.as_mut() && let Some(socket)=&udp {
 					receivers.absorb(lost);
@@ -582,18 +613,25 @@ async fn run_inner(
 				}
 				let start = metrics.start();
 				let Some(mut rtp)=crypto.open(&packet[..length]) else{metrics.video(Video::OpenFailed,1);continue;};
-				if rtp.payload_type==102 {metrics.video(Video::Rtx,1);let Some((media,sequence))=receivers.restore_rtx(rtp.ssrc,&mut rtp.payload) else{continue;};rtp.ssrc=media;rtp.sequence=sequence;rtp.payload_type=101;}
-				if rtp.payload_type==101 {
+				if matches!(rtp.payload_type,102|104|110) {metrics.video(Video::Rtx,1);let Some((media,sequence))=receivers.restore_rtx(rtp.ssrc,&mut rtp.payload) else{continue;};rtp.ssrc=media;rtp.sequence=sequence;rtp.payload_type-=1;}
+				if matches!(rtp.payload_type,101|103|109) {
 					metrics.video(Video::Packets,1);
 					let Some(decoder)=&decoder else{continue;};
 					if !dave.ready {metrics.video(Video::NotReady,1);continue;}
-					let Some((user,frame))=receivers.push(rtp.ssrc,rtp.sequence,rtp.timestamp,rtp.marker,&rtp.payload) else{continue;};
+					let codec=receive_codec(rtp.payload_type).expect("video payload");
+					let Some((user,frame))=receivers.push_codec(rtp.ssrc,rtp.sequence,rtp.timestamp,rtp.marker,&rtp.payload,codec) else{continue;};
 					if !dave.contains(user) {metrics.video(Video::NotReady,1);continue;}
 					let Ok(data)=dave.session.decrypt(user,davey::MediaType::VIDEO,&frame) else{receivers.require_keyframe(user);metrics.video(Video::DecryptFailed,1);continue;};
-					let keyframe=is_keyframe(&data);
-					if keyframe {metrics.video(Video::Keyframes,1);metrics.video(Video::KeyframesWithoutParams,u64::from(!has_parameter_sets(&data)));}
+					let Ok(data)=crate::video::prepare_received(data,codec) else{if let Some(error)=malformed_video(&mut receivers,decoder,user){emit(Status::RemoteVideoFailed{user,error}).map_err(|_|"Call interface closed")?;}metrics.video(Video::Rejected,1);continue;};
+					let keyframe=crate::video::is_keyframe_for_codec(&data,codec);
+					if keyframe {metrics.video(Video::Keyframes,1);metrics.video(Video::KeyframesWithoutParams,u64::from(!crate::video::has_parameter_sets_for_codec(&data,codec)));}
 					if !receivers.accept(user,keyframe) {metrics.video(Video::Gated,1);continue;}
-					if !offer(decoder,Encoded{user,data,keyframe})? {receivers.require_keyframe(user);metrics.video(Video::QueueFull,1);}
+					match admit(decoder,Encoded{user,data,keyframe,codec,timestamp:rtp.timestamp})? {
+						Admission::Queued => receivers.admitted(user),
+						Admission::Congested => {receivers.require_keyframe(user);metrics.video(Video::QueueFull,1);},
+						Admission::Malformed => {if let Some(error)=malformed_video(&mut receivers,decoder,user){emit(Status::RemoteVideoFailed{user,error}).map_err(|_|"Call interface closed")?;}metrics.video(Video::Rejected,1);},
+						Admission::Unsupported(error) => {receivers.remove(user);remove_decoder(decoder,user);emit(Status::RemoteVideoFailed{user,error}).map_err(|_|"Call interface closed")?;metrics.video(Video::Rejected,1);},
+					}
 					continue;
 				}
 				if rtp.payload_type!=120 {continue;}
@@ -1057,7 +1095,8 @@ fn screen_frame_current(video: &crate::screen::Video, frame: &crate::screen::Enc
 
 /// Send one unofficial Discord Go Live stream on its own voice gateway.
 /// Outgoing H265/AV1 require compatible Experimental hardware. Incoming video
-/// remains H264; live codec negotiation and AV1 DAVE framing are unverified.
+/// supports H264/H265/AV1. Synthetic fixtures cover DAVE/RTP framing; current-head
+/// native Discord interoperability still needs owner-controlled verification.
 ///
 /// `credentials.guild` is the stream RTC server ID and `credentials.channel` is
 /// its RTC channel ID. Discord has not documented the stream MLS group mapping;
@@ -1076,6 +1115,7 @@ pub async fn run_stream(
 			Some(video),
 			None,
 			None,
+			None,
 			emit,
 			url,
 			false,
@@ -1092,6 +1132,17 @@ pub async fn watch_stream(
 	audio: Option<SyncSender<Frame>>,
 	emit: impl Fn(Status) -> Result<(), ()> + Send + 'static,
 ) -> Result<(), &'static str> {
+	watch_stream_on_adapter(credentials, identity, sink, audio, None, emit).await
+}
+
+pub async fn watch_stream_on_adapter(
+	credentials: VoiceConnection,
+	identity: Arc<Identity>,
+	sink: VideoSink,
+	audio: Option<SyncSender<Frame>>,
+	adapter: Option<model::VideoAdapter>,
+	emit: impl Fn(Status) -> Result<(), ()> + Send + 'static,
+) -> Result<(), &'static str> {
 	let url = endpoint(&credentials.endpoint)?;
 	crate::timer::isolated("serein-watch", move || {
 		run_stream_inner(
@@ -1100,6 +1151,7 @@ pub async fn watch_stream(
 			None,
 			Some(sink),
 			audio,
+			adapter,
 			emit,
 			url,
 			false,
@@ -1114,6 +1166,7 @@ async fn run_stream_inner(
 	mut video: Option<crate::screen::Video>,
 	sink: Option<VideoSink>,
 	audio: Option<SyncSender<Frame>>,
+	adapter: Option<model::VideoAdapter>,
 	emit: impl Fn(Status) -> Result<(), ()>,
 	url: String,
 	local_test: bool,
@@ -1125,7 +1178,10 @@ async fn run_stream_inner(
 		return Err("Stable video supports H264 only");
 	}
 	let outgoing_codec = video_settings.codec;
-	let (decoder, lost) = match sink.map(spawn_decoder).transpose()? {
+	let (decoder, lost) = match sink
+		.map(|sink| spawn_decoder_on_adapter(sink, adapter))
+		.transpose()?
+	{
 		Some((decoder, lost)) => (Some(decoder), Some(lost)),
 		None => (None, None),
 	};
@@ -1369,6 +1425,7 @@ async fn run_stream_inner(
 					} else {mixer.clear();}
 				}
 				let stalled=watch.tick(&mut metrics,&mut receivers,decoder.as_ref(),now);
+				if let Some(decoder)=&decoder && let Ok(mut failures)=decoder.counters.failures.lock() && let Some((_,error))=failures.pop() {return Err(error);}
 				// A viewer's subscription lapses silently and video stops with no loss to
 				// observe; refresh the sink wants while watching, and sooner while stalled.
 				if secure && announced && video.is_none() && now>=next_sink_wants {
@@ -1450,9 +1507,9 @@ async fn run_stream_inner(
 					continue;
 				}
 				let Some(mut rtp)=crypto.open(&packet[..length]) else {metrics.video(Video::OpenFailed,1);continue;};
-				if rtp.payload_type==102 {metrics.video(Video::Rtx,1);let Some((media,sequence))=receivers.restore_rtx(rtp.ssrc,&mut rtp.payload) else{continue;};rtp.ssrc=media;rtp.sequence=sequence;rtp.payload_type=101;}
-				if rtp.payload_type==101 {metrics.video(Video::Packets,1);}
-				if !dave.ready {if rtp.payload_type==101 {metrics.video(Video::NotReady,1);}continue;}
+				if matches!(rtp.payload_type,102|104|110) {metrics.video(Video::Rtx,1);let Some((media,sequence))=receivers.restore_rtx(rtp.ssrc,&mut rtp.payload) else{continue;};rtp.ssrc=media;rtp.sequence=sequence;rtp.payload_type-=1;}
+				if matches!(rtp.payload_type,101|103|109) {metrics.video(Video::Packets,1);}
+				if !dave.ready {if matches!(rtp.payload_type,101|103|109) {metrics.video(Video::NotReady,1);}continue;}
 				if rtp.payload_type==120 {
 					if audio.is_none() {continue;}
 					let Some(user)=mixer.user(rtp.ssrc) else {continue;};
@@ -1464,15 +1521,22 @@ async fn run_stream_inner(
 					continue;
 				}
 				let Some(decoder)=&decoder else {continue;};
-				if rtp.payload_type!=101 {continue;}
-				let Some((user,frame))=receivers.push(rtp.ssrc,rtp.sequence,rtp.timestamp,rtp.marker,&rtp.payload) else {continue;};
+				if !matches!(rtp.payload_type,101|103|109) {continue;}
+				let codec=receive_codec(rtp.payload_type).expect("video payload");
+					let Some((user,frame))=receivers.push_codec(rtp.ssrc,rtp.sequence,rtp.timestamp,rtp.marker,&rtp.payload,codec) else {continue;};
 				if !dave.contains(user) {metrics.video(Video::NotReady,1);continue;}
 				let start=metrics.start();
 				let Ok(data)=dave.session.decrypt(user,davey::MediaType::VIDEO,&frame) else {receivers.require_keyframe(user);metrics.poll(false,1,false,0);metrics.video(Video::DecryptFailed,1);continue;};
-				let keyframe=is_keyframe(&data);
-				if keyframe {metrics.video(Video::Keyframes,1);metrics.video(Video::KeyframesWithoutParams,u64::from(!has_parameter_sets(&data)));}
+				let Ok(data)=crate::video::prepare_received(data,codec) else{if let Some(error)=malformed_video(&mut receivers,decoder,user){return Err(error);}metrics.video(Video::Rejected,1);continue;};
+					let keyframe=crate::video::is_keyframe_for_codec(&data,codec);
+				if keyframe {metrics.video(Video::Keyframes,1);metrics.video(Video::KeyframesWithoutParams,u64::from(!crate::video::has_parameter_sets_for_codec(&data,codec)));}
 				if !receivers.accept(user,keyframe) {metrics.video(Video::Gated,1);continue;}
-				if !offer(decoder,Encoded{user,data,keyframe})? {receivers.require_keyframe(user);metrics.poll(false,1,false,0);metrics.video(Video::QueueFull,1);} else {metrics.finish(crate::diagnostics::Stage::VideoReceive,start);}
+				match admit(decoder,Encoded{user,data,keyframe,codec,timestamp:rtp.timestamp})? {
+					Admission::Queued => {receivers.admitted(user);metrics.finish(crate::diagnostics::Stage::VideoReceive,start);},
+					Admission::Congested => {receivers.require_keyframe(user);metrics.video(Video::QueueFull,1);},
+					Admission::Malformed => {if let Some(error)=malformed_video(&mut receivers,decoder,user){return Err(error);}metrics.video(Video::Rejected,1);},
+					Admission::Unsupported(error) => return Err(error),
+				}
 			},
 			event=ws.next()=>{
 				let Some(Ok(event))=event else {return Err("Discord stream socket failed");};
@@ -1509,7 +1573,8 @@ async fn run_stream_inner(
 							},
 							4=>{
 								if encryption.is_some()||udp.is_none()||discovering{return Err("Unexpected stream session description");}
-								if data["mode"].as_str()!=Some(MODE)||data["dave_protocol_version"].as_u64()!=Some(1)||!video_negotiated(data,outgoing_codec){return Err(codec_negotiation_error(outgoing_codec));}
+								let negotiated=if video.is_some(){video_negotiated(data,outgoing_codec)}else{VideoCodec::ALL.into_iter().any(|codec|video_negotiated(data,codec))};
+								if data["mode"].as_str()!=Some(MODE)||data["dave_protocol_version"].as_u64()!=Some(1)||!negotiated{return Err(codec_negotiation_error(outgoing_codec));}
 								let values=data["secret_key"].take();let values=values.as_array().ok_or("Missing stream transport key")?;if values.len()!=32{return Err("Invalid stream transport key");}
 								let mut key=Zeroizing::new([0;32]);for(out,value)in key.iter_mut().zip(values){*out=value.as_u64().and_then(|value|u8::try_from(value).ok()).ok_or("Invalid stream transport key")?;}
 								encryption=Some(Encryption::new(&key));secured_at=Some(Instant::now());send(&mut ws,Message::Binary(dave.key_package()?.into())).await?;metrics.signal(Signal::KeyPackageSent,1);emit(Status::TransportReady).map_err(|_|"Stream interface closed")?;emit(Status::Securing).map_err(|_|"Stream interface closed")?;
@@ -2136,9 +2201,10 @@ mod tests {
 			assert_eq!(send_only[1]["encode"], true);
 			assert_eq!(send_only[1]["decode"], false);
 			let duplex = offered_codecs(Some(codec), true);
-			assert_eq!(duplex[1]["decode"], codec == VideoCodec::H264);
+			assert_eq!(duplex[1]["decode"], true);
+			assert_eq!(duplex.len(), 4);
 			if codec != VideoCodec::H264 {
-				assert_eq!(duplex.len(), 3);
+				assert_eq!(duplex.len(), 4);
 				assert_eq!(duplex[2]["name"], "H264");
 				assert_eq!(duplex[2]["encode"], false);
 				assert_eq!(duplex[2]["decode"], true);
@@ -2151,7 +2217,7 @@ mod tests {
 			assert!(!video_negotiated(&json!({}), codec));
 		}
 		let receive_only = offered_codecs(None, true);
-		assert_eq!(receive_only.len(), 2);
+		assert_eq!(receive_only.len(), 4);
 		assert_eq!(receive_only[1]["name"], "H264");
 		assert_eq!(receive_only[1]["encode"], false);
 		assert_eq!(receive_only[1]["decode"], true);
@@ -2543,6 +2609,7 @@ mod tests {
 						}
 						Status::Connecting | Status::Discovering | Status::Securing
 						| Status::TransportReady | Status::Speaking(_) | Status::CameraAvailable(_) => {}
+                        Status::RemoteVideoFailed { error, .. } => panic!("remote video: {error}"),
 					},
 					result = &mut captured_rx, if !captured => {
 						result.unwrap();

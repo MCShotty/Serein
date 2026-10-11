@@ -1089,7 +1089,12 @@ impl MessagingUi {
 							call.channel == channel && call.camera && call.phase != Phase::Failed
 						})
 				} else {
-					entry.participant.video && self.remote_texture(entry.participant.user).is_some()
+					entry.participant.video
+						&& (self.remote_texture(entry.participant.user).is_some()
+							|| self
+								.voice_remote_hdr
+								.iter()
+								.any(|(user, _)| *user == entry.participant.user))
 				}
 			}
 		}
@@ -1227,37 +1232,43 @@ impl MessagingUi {
 	) {
 		let name = participant_user(state, channel, streamer)
 			.map_or_else(|| "Participant".to_owned(), |user| user.name.clone());
-		let content = match &self.voice_stream_view {
-			Some(texture) => {
-				let content = fit_rect(rect, texture.size_vec2());
-				ui.put(
-					content,
-					egui::Image::from_texture((texture.id(), content.size())).corner_radius(8),
-				);
-				content
-			}
-			None => {
-				ui.painter().rect_filled(rect, 8, TILE_FILL);
-				if rect.height() >= 132.0 {
-					let status = if self.voice_stream_status.is_empty() {
-						"Connecting to the stream…"
-					} else {
-						self.voice_stream_status
-					};
-					let spinner = egui::Rect::from_center_size(
-						rect.center() - egui::vec2(0.0, 18.0),
-						egui::Vec2::splat(24.0),
+		let content = if let Some(media) = &self.voice_stream_hdr {
+			let content = fit_rect(rect, media.size);
+			media.paint(ui, content);
+			content
+		} else {
+			match &self.voice_stream_view {
+				Some(texture) => {
+					let content = fit_rect(rect, texture.size_vec2());
+					ui.put(
+						content,
+						egui::Image::from_texture((texture.id(), content.size())).corner_radius(8),
 					);
-					ui.put(spinner, egui::Spinner::new().color(STAGE_MUTED));
-					ui.painter().text(
-						rect.center() + egui::vec2(0.0, 18.0),
-						egui::Align2::CENTER_CENTER,
-						status,
-						egui::FontId::proportional(13.0),
-						STAGE_MUTED,
-					);
+					content
 				}
-				rect
+				None => {
+					ui.painter().rect_filled(rect, 8, TILE_FILL);
+					if rect.height() >= 132.0 {
+						let status = if self.voice_stream_status.is_empty() {
+							"Connecting to the stream…"
+						} else {
+							self.voice_stream_status
+						};
+						let spinner = egui::Rect::from_center_size(
+							rect.center() - egui::vec2(0.0, 18.0),
+							egui::Vec2::splat(24.0),
+						);
+						ui.put(spinner, egui::Spinner::new().color(STAGE_MUTED));
+						ui.painter().text(
+							rect.center() + egui::vec2(0.0, 18.0),
+							egui::Align2::CENTER_CENTER,
+							status,
+							egui::FontId::proportional(13.0),
+							STAGE_MUTED,
+						);
+					}
+					rect
+				}
 			}
 		};
 		// Even a small strip-sized share names whose screen it is.
@@ -1508,7 +1519,19 @@ impl MessagingUi {
 		if !frameless {
 			ui.painter().rect_filled(rect, 8, TILE_FILL);
 		}
-		if let Some((id, image, mirror)) = video {
+		if !own
+			&& entry.participant.video
+			&& let Some((_, media)) = self
+				.voice_remote_hdr
+				.iter()
+				.find(|(user, _)| *user == entry.participant.user)
+		{
+			let scale = (rect.width() / media.size.x).min(rect.height() / media.size.y);
+			media.paint(
+				ui,
+				egui::Rect::from_center_size(rect.center(), media.size * scale),
+			);
+		} else if let Some((id, image, mirror)) = video {
 			cover_image(ui, rect, id, image, mirror);
 		}
 		let speaking = self.is_speaking(state, entry.channel, &entry.participant);
@@ -5110,6 +5133,7 @@ mod tests {
 		use model::voice_settings::{DriverCapabilities, ProbeResult};
 		DriverCapabilities {
 			support: [[ProbeResult::Unavailable; 4]; 3],
+			ten_bit: [[ProbeResult::Pending; 4]; 3],
 		}
 	}
 
@@ -5319,6 +5343,7 @@ mod tests {
 		let mut messaging = MessagingUi {
 			video_capabilities: Some(DriverCapabilities {
 				support: [[ProbeResult::Available; 4]; 3],
+				ten_bit: [[ProbeResult::Pending; 4]; 3],
 			}),
 			..Default::default()
 		};
@@ -5425,6 +5450,7 @@ mod tests {
 		messaging.video_settings.codec = VideoCodec::H264;
 		messaging.video_capabilities = Some(DriverCapabilities {
 			support: [[ProbeResult::Unavailable; 4]; 3],
+			ten_bit: [[ProbeResult::Pending; 4]; 3],
 		});
 		video_controls_click(&ctx, &mut messaging, 500.0, "AV1");
 		assert_eq!(messaging.video_settings.codec, VideoCodec::H264);
@@ -5486,6 +5512,7 @@ mod tests {
 				let mut messaging = MessagingUi {
 					video_capabilities: Some(DriverCapabilities {
 						support: [[ProbeResult::Available; 4]; 3],
+						ten_bit: [[ProbeResult::Pending; 4]; 3],
 					}),
 					..Default::default()
 				};

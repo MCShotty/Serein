@@ -15,11 +15,11 @@ mod video;
 mod video_backend;
 pub mod video_capabilities;
 mod video_encode;
-mod video_gpu;
+pub(crate) use platform::video::ffmpeg as video_gpu;
 mod video_receive;
 mod video_sps;
 pub use crypto::Identity;
-pub use transport::{run, run_stream, run_with_identity, watch_stream};
+pub use transport::{run, run_stream, run_with_identity, watch_stream, watch_stream_on_adapter};
 pub use video_receive::{RemoteFrame, VideoSink};
 pub mod camera_video;
 
@@ -33,6 +33,8 @@ pub struct Controls {
 	pub camera: u64,
 	/// Immutable outgoing camera settings negotiated when the call starts.
 	pub video: model::voice_settings::VideoSettings,
+	/// Renderer-selected physical GPU for incoming media; unidentified means software.
+	pub video_adapter: Option<model::VideoAdapter>,
 	pub deafened: bool,
 	/// Session-only playback percentages (0–200); zero user IDs are unused.
 	pub user_volumes: [(u64, u16); 64],
@@ -46,6 +48,7 @@ impl Default for Controls {
 			activity_threshold_db: -45,
 			camera: 0,
 			video: Default::default(),
+			video_adapter: None,
 			deafened: false,
 			user_volumes: [(0, 100); 64],
 			stream_volume: 100,
@@ -63,6 +66,10 @@ pub enum Status {
 		privacy_code: String,
 	},
 	RemoteAudio,
+	RemoteVideoFailed {
+		user: u64,
+		error: &'static str,
+	},
 	/// Latest active user IDs, zero-padded to the 64-participant limit.
 	Speaking(Box<[u64; 64]>),
 }

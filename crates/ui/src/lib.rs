@@ -10,7 +10,7 @@ mod forwarding;
 mod role_names;
 pub use audio::{AudioCommand, AudioState, AudioUi};
 mod video;
-pub use video::{VideoCommand, VideoState, VideoUi};
+pub use video::{MediaView, VideoCommand, VideoState, VideoUi};
 mod attachments;
 pub mod external_upload;
 pub use attachments::DownloadUi;
@@ -400,6 +400,8 @@ pub struct MessagingUi {
 	pub voice_remote_video: Vec<(Id, egui::TextureHandle)>,
 	/// Latest picture of the screen share this device chose to watch.
 	pub voice_stream_view: Option<egui::TextureHandle>,
+	pub voice_stream_hdr: Option<MediaView>,
+	pub voice_remote_hdr: Vec<(Id, MediaView)>,
 	pub voice_stream_status: &'static str,
 	/// Session-only stream playback level; unset is 100%. Mute preserves the level.
 	voice_stream_volume: Option<u16>,

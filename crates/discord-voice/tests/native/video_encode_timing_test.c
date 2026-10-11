@@ -248,11 +248,39 @@ static void check_splitting(void)
     mock_open = 0;
 }
 
+static void check_ten_bit_input(void)
+{
+    AVFrame *frame = av_frame_alloc();
+    assert(frame);
+    frame->format = AV_PIX_FMT_P010LE;
+    frame->width = 16;
+    frame->height = 8;
+    assert(av_frame_get_buffer(frame, 32) == 0);
+    uint8_t pixels[16 * 8 * 3];
+    for (size_t at = 0; at < sizeof(pixels); at += 2) {
+        uint16_t value = (uint16_t)((at / 2 % 1024) << 6);
+        pixels[at] = value & 255;
+        pixels[at + 1] = value >> 8;
+    }
+    copy_picture(frame, pixels);
+    size_t offset = 0;
+    for (int plane = 0; plane < 2; plane++) {
+        for (int row = 0; row < (frame->height >> (plane != 0)); row++) {
+            assert(memcmp(frame->data[plane] + row * frame->linesize[plane], pixels + offset, 32) == 0);
+            offset += 32;
+        }
+    }
+    assert(offset == sizeof(pixels));
+    av_frame_free(&frame);
+    assert(!serein_avc_open_on_adapter(16, 8, 30, 100000, 0, 0, 0, 4096, NULL, 4));
+}
+
 int main(void)
 {
     check_presets();
     check_amf_acceptance();
     check_splitting();
+    check_ten_bit_input();
     uint8_t input[64 * 64 * 3 / 2] = {0}, output[4096];
     SereinVideoAdapter unknown = {0};
     /* A supplied unidentified renderer must still permit software fallback. */

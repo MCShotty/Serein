@@ -86,8 +86,10 @@ pub(crate) enum Video {
 	DecodeQueueMs,
 	/// Queued frames discarded after exceeding the latency budget.
 	StaleFrames,
+	/// Invalid data or unsupported resolution/profile; distinct from queue pressure.
+	Rejected,
 }
-const VIDEO_SLOTS: usize = 20;
+const VIDEO_SLOTS: usize = 21;
 
 /// Voice signaling messages, so a handshake that never completes names its own missing step.
 /// Opcodes only; no signaling contents are recorded.
@@ -535,9 +537,10 @@ fn write_report(report: Report, bytes: &mut usize, writer: &mut impl Write) -> b
 			stall_ticks,
 			decode_queue_ms,
 			stale_frames,
+			rejected,
 		] = report.video;
 		line.push_str(&format!(
-			" video: packets={packets} rtx={rtx} open_failed={open_failed} not_ready={not_ready} unknown_ssrc={unknown_ssrc} incomplete={incomplete} complete={complete} decrypt_failed={decrypt_failed} gated={gated} queue_full={queue_full} keyframes={keyframes} keyframes_without_params={keyframes_without_params} pli_sent={pli_sent} awaiting_ticks={awaiting_ticks} decoder_errors={decoder_errors} pictures={pictures} picture_gap_ms={picture_gap_ms} stall_ticks={stall_ticks} decode_queue_ms={decode_queue_ms} stale_frames={stale_frames}"
+			" video: packets={packets} rtx={rtx} open_failed={open_failed} not_ready={not_ready} unknown_ssrc={unknown_ssrc} incomplete={incomplete} complete={complete} decrypt_failed={decrypt_failed} gated={gated} queue_full={queue_full} keyframes={keyframes} keyframes_without_params={keyframes_without_params} pli_sent={pli_sent} awaiting_ticks={awaiting_ticks} decoder_errors={decoder_errors} pictures={pictures} picture_gap_ms={picture_gap_ms} stall_ticks={stall_ticks} decode_queue_ms={decode_queue_ms} stale_frames={stale_frames} rejected={rejected}"
 		));
 	}
 	if report.signal.iter().any(|count| *count != 0) {
