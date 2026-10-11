@@ -3,10 +3,7 @@ fn main() {
 	println!("cargo:rerun-if-changed=src/video_encode_ffmpeg.c");
 	println!("cargo:rerun-if-changed=src/video_encode_ffmpeg.h");
 	println!("cargo:rerun-if-changed=src/video_gpu.c");
-	for file in [
-		"video_query.c",
-		"video_query_amf.cpp",
-	] {
+	for file in ["video_query.c", "video_query_amf.cpp"] {
 		println!("cargo:rerun-if-changed=src/{file}");
 	}
 	let target = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
