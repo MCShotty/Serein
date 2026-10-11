@@ -20,9 +20,9 @@ same default Inter font, 1120×760 viewport and 100% scale.
 | Addition | Before | After |
 | --- | --- | --- |
 | Backend/codec selection | ![Before video settings](../video-backend-settings/before.png) | ![Experimental and AV1](../video-backend-settings/after.png) |
-| Driver queries and optional testing | ![Automatic encode scan](../video-driver-detection/before.png) | ![Driver support and unrun optional test](../video-8k-resolution/camera-before.png) |
-| Camera resolution / frame rate | ![Before camera controls](../video-8k-resolution/camera-before.png) | ![8K and 60 fps camera controls](../video-8k-resolution/camera-after.png) |
-| Screen resolution | ![Original screen presets](../video-8k-resolution/screen-before.png) | ![Screen presets through 8K](../video-8k-resolution/screen-after.png) |
+| Driver queries and optional testing | ![Automatic encode scan](https://github.com/MCShotty/Serein/blob/faa9660761a2099cf2e6f5b748cf48bfa6871b63/docs/pr-evidence/video-driver-detection/before.png) | ![Driver support and unrun optional test](https://github.com/MCShotty/Serein/blob/faa9660761a2099cf2e6f5b748cf48bfa6871b63/docs/pr-evidence/video-8k-resolution/camera-before.png) |
+| Camera resolution / frame rate | ![Before camera controls](https://github.com/MCShotty/Serein/blob/faa9660761a2099cf2e6f5b748cf48bfa6871b63/docs/pr-evidence/video-8k-resolution/camera-before.png) | ![8K and 60 fps camera controls](https://github.com/MCShotty/Serein/blob/faa9660761a2099cf2e6f5b748cf48bfa6871b63/docs/pr-evidence/video-8k-resolution/camera-after.png) |
+| Screen resolution | ![Original screen presets](https://github.com/MCShotty/Serein/blob/faa9660761a2099cf2e6f5b748cf48bfa6871b63/docs/pr-evidence/video-8k-resolution/screen-before.png) | ![Screen presets through 8K](https://github.com/MCShotty/Serein/blob/faa9660761a2099cf2e6f5b748cf48bfa6871b63/docs/pr-evidence/video-8k-resolution/screen-after.png) |
 
 The original backend pair starts at `65811f2`; it predates moving the controls
 to the bottom of Voice & Video. The driver pair starts at
@@ -36,8 +36,8 @@ with Experimental/H.265; After selects 8K/60 fps. Both screen captures select
 the same synthetic source and 720p/30 fps, showing the new available presets.
 Sharing is disabled and no source is captured.
 
-The retained [narrow/light camera](../video-8k-resolution/camera-narrow-light-after.png)
-and [narrow/light screen](../video-8k-resolution/screen-narrow-light-after.png)
+The retained [narrow/light camera](https://github.com/MCShotty/Serein/blob/faa9660761a2099cf2e6f5b748cf48bfa6871b63/docs/pr-evidence/video-8k-resolution/camera-narrow-light-after.png)
+and [narrow/light screen](https://github.com/MCShotty/Serein/blob/faa9660761a2099cf2e6f5b748cf48bfa6871b63/docs/pr-evidence/video-8k-resolution/screen-narrow-light-after.png)
 captures use 760×900 at 125% and 150% respectively. Camera controls wrap; the
 screen picker body scrolls independently of its Cancel/Share footer. These
 are auxiliary UI helpers excluding the production native desktop adapters.
@@ -50,7 +50,7 @@ methods.
 
 ## Performance
 
-[measurements.json](measurements.json) retains six original records without
+[archived measurements](https://github.com/MCShotty/Serein/blob/918a4abe391a9e1619ba678af2b3f204f594cf6e/docs/pr-evidence/video-encoding/measurements.json) retains six original records without
 changing their data: backend/software encoding, driver detection, 8K UI,
 GPU-routing/software encoding, split-option setup and AMF split-request diagnostics.
 Each record includes its
@@ -98,8 +98,9 @@ remain unmeasured in these records.
 
 ## Verification and reproduction
 
-The evidence-only cleanup changes no runtime code, native tests, build recipe,
-dependency, packaging or license files. The recorded split verification at
+The historical records remain immutable. Current native fixtures are grouped by vendor
+and purpose; separately compiled ABI/mock variants and all original assertions remain.
+Fresh implementation measurements will be recorded in [performance](../../performance.md). The recorded split verification at
 `faa9660` includes 464 UI tests, 140 scoped voice tests, selected strict Clippy,
 native fixtures, packaging fixtures, login handoff and replay/soak. Full native
 desktop/package validation is still separate from those scoped results.

@@ -3,13 +3,9 @@ fn main() {
 	println!("cargo:rerun-if-changed=src/video_encode_ffmpeg.c");
 	println!("cargo:rerun-if-changed=src/video_encode_ffmpeg.h");
 	println!("cargo:rerun-if-changed=src/video_gpu.c");
-	println!("cargo:rerun-if-changed=src/video_gpu.h");
 	for file in [
 		"video_query.c",
-		"video_query_nvenc.c",
-		"video_query_qsv.c",
 		"video_query_amf.cpp",
-		"video_query_videotoolbox.c",
 	] {
 		println!("cargo:rerun-if-changed=src/{file}");
 	}
@@ -29,9 +25,6 @@ fn main() {
 		.file("src/video_encode_ffmpeg.c")
 		.file("src/video_gpu.c")
 		.file("src/video_query.c")
-		.file("src/video_query_nvenc.c")
-		.file("src/video_query_qsv.c")
-		.file("src/video_query_videotoolbox.c")
 		.static_crt(target == "windows")
 		.std("c11");
 	if let Some(prefix) = &prefix {

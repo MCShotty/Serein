@@ -1,3 +1,5 @@
+import tarfile
+import hashlib
 #!/usr/bin/env python3
 """Offline driver-query regression fixtures. Never load real GPU drivers.
 
@@ -14,7 +16,7 @@ import sys
 import tempfile
 
 
-def run(prefix):
+def run_queries(prefix):
     if sys.platform != "linux":
         print("Linux driver-loader fixtures skipped; native platform builds still required")
         return
@@ -38,13 +40,13 @@ def run(prefix):
                             "-o", str(executable)], check=True)
             subprocess.run([str(executable)], check=True)
         if (include / "ffnvcodec/nvEncodeAPI.h").is_file():
-            for name, soname in [("cuda", "libcuda.so.1"), ("nvenc", "libnvidia-encode.so.1")]:
+            for variant, soname in [(1, "libcuda.so.1"), (2, "libnvidia-encode.so.1")]:
                 subprocess.run([*compiler, *flags, "-fPIC", "-shared",
-                                str(here / f"video_query_nvenc_{name}.c"),
+                                "-DSEREIN_NVENC_FIXTURE=" + str(variant), str(here / "video_query_nvenc_test.c"),
                                 "-Wl,-soname," + soname, "-o", str(out / soname)], check=True)
             executable = out / "nvenc-test"
-            subprocess.run([*compiler, *flags, "-DSEREIN_HAVE_NVENC_QUERY=1",
-                            str(here / "video_query_nvenc_test.c"), str(source / "video_query_nvenc.c"),
+            subprocess.run([*compiler, *flags, "-DSEREIN_HAVE_NVENC_QUERY=1", "-DSEREIN_QUERY_PART=1",
+                            str(here / "video_query_nvenc_test.c"), str(source / "video_query.c"),
                             str(source / "video_gpu.c"),
                             "-L" + str(out), "-Wl,--no-as-needed", "-l:libcuda.so.1",
                             "-l:libnvidia-encode.so.1", "-ldl", "-o", str(executable)], check=True)
@@ -53,19 +55,19 @@ def run(prefix):
             print("NVENC SDK absent: loader fixture skipped")
         if (include / "vpl/mfxdispatcher.h").is_file():
             executable = out / "qsv-test"
-            subprocess.run([*compiler, *flags, "-DSEREIN_HAVE_QSV_QUERY=1",
-                            str(here / "video_query_qsv_test.c"), str(source / "video_query_qsv.c"),
+            subprocess.run([*compiler, *flags, "-DSEREIN_HAVE_QSV_QUERY=1", "-DSEREIN_QUERY_PART=2",
+                            str(here / "video_query_qsv_test.c"), str(source / "video_query.c"),
                             str(source / "video_gpu.c"),
                             "-o", str(executable)], check=True)
             subprocess.run([str(executable)], check=True)
             executable = out / "qsv-quality-test"
-            subprocess.run([*compiler, *flags, "-I" + str(out), str(here / "video_qsv_quality_test.c"),
+            subprocess.run([*compiler, *flags, "-I" + str(out), "-DSEREIN_QSV_QUALITY_FIXTURE=1", str(here / "video_query_qsv_test.c"),
                             "-o", str(executable)], check=True)
             subprocess.run([str(executable)], check=True)
         else:
             print("QSV SDK absent: dispatcher fixture skipped")
         executable = out / "dispatcher-test"
-        subprocess.run([*compiler, *flags, "-DSEREIN_HAVE_AMF_QUERY=1",
+        subprocess.run([*compiler, *flags, "-DSEREIN_HAVE_AMF_QUERY=1", "-DSEREIN_QUERY_PART=4",
                         str(here / "video_query_dispatcher_test.c"), str(source / "video_query.c"),
                         str(source / "video_gpu.c"),
                         "-o", str(executable)], check=True)
@@ -76,26 +78,217 @@ def run(prefix):
                         "-Wl,--wrap=readlink", "-o", str(executable)], check=True)
         subprocess.run([str(executable)], check=True)
         executable = out / "no-sdk-test"
-        subprocess.run([*compiler, *flags, str(here / "video_query_no_sdk_test.c"),
-                        *(str(source / name) for name in ["video_query.c", "video_query_nvenc.c",
-                                                        "video_query_qsv.c", "video_query_videotoolbox.c"]),
+        subprocess.run([*compiler, *flags, "-DSEREIN_NO_SDK_FIXTURE=1", str(here / "video_query_dispatcher_test.c"),
+                        str(source / "video_query.c"),
                         str(source / "video_gpu.c"),
                         "-o", str(executable)], check=True)
         subprocess.run([str(executable)], check=True)
-        executable = out / "gpu-identity-test"
-        subprocess.run([*compiler, *flags, str(here / "video_gpu_identity_test.c"),
-                        str(source / "video_gpu.c"), "-o", str(executable)], check=True)
-        subprocess.run([str(executable)], check=True)
     if (include / "AMF/core/Factory.h").is_file():
-        spec = importlib.util.spec_from_file_location("amf_fixture", here / "test_amf_query.py")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        module.run(include)
+        run_amf(include)
     else:
         print("AMF SDK absent: component fixture skipped")
 
 
+
+def run_amf(include_path):
+    if sys.platform != "linux":
+        print("AMF native mock tests require Linux's dlopen wrapper; skipped.")
+        return
+    include = Path(include_path).resolve()
+    if not (include / "AMF/core/Factory.h").is_file():
+        raise RuntimeError(f"AMF SDK headers are missing from {include}")
+    fixture_dir = Path(__file__).resolve().parent
+    source_dir = fixture_dir.parent.parent / "src"
+    c_compiler = shlex.split(os.environ.get("CC", "cc"))
+    cpp_compiler = shlex.split(os.environ.get("CXX", "c++"))
+    sdk_flags = ["-isystem", str(include)]
+    warnings = ["-Wall", "-Wextra", "-Werror", "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections"]
+    modes = {
+        "support": 1,
+        "software": 0,
+        "gpu": 0,
+        "unsupported": 0,
+        "bad-accel": -1,
+        "caps-failed": -1,
+        "null-caps": -1,
+        "bad-count": -1,
+        "format-failed": -1,
+        "no-nv12": 1,
+        "no-420": 0,
+        "absent": 0,
+        "component-failed": -1,
+        "null-component": -1,
+        "init-failed": -1,
+        "no-device": 0,
+        "no-interface": -1,
+    }
+    with tempfile.TemporaryDirectory(prefix="serein-amf-query-") as temp:
+        directory = Path(temp)
+        library = directory / "mock-amf.so"
+        executable = directory / "query-test"
+        subprocess.run(
+            c_compiler + ["-std=c11"] + warnings + sdk_flags + [
+                "-fPIC", "-shared", str(fixture_dir / "video_query_amf_mock.c"),
+                "-o", str(library),
+            ],
+            check=True,
+        )
+        subprocess.run(
+            cpp_compiler + ["-std=c++11"] + warnings + sdk_flags + [
+                str(source_dir / "video_query_amf.cpp"),
+                str(fixture_dir / "video_query_amf_test.cpp"),
+                "-Wl,--wrap=dlopen", "-ldl", "-o", str(executable),
+            ],
+            check=True,
+        )
+        environment = {**os.environ, "SEREIN_AMF_TEST_RUNTIME": str(library)}
+        for codec in range(3):
+            for mode, expected in modes.items():
+                subprocess.run(
+                    [str(executable), str(codec), str(expected)],
+                    env={**environment, "AMF_MOCK_MODE": mode},
+                    check=True,
+                    timeout=5,
+                )
+        for codec in [-1, 3]:
+            subprocess.run(
+                [str(executable), str(codec), "-1"],
+                env=environment,
+                check=True,
+                timeout=5,
+            )
+        missing_library = directory / "absent-amf.so"
+        subprocess.run(
+            [str(executable), "0", "0"],
+            env={**environment, "SEREIN_AMF_TEST_RUNTIME": str(missing_library)},
+            check=True,
+            timeout=5,
+        )
+        invalid_library = directory / "invalid-amf.so"
+        invalid_library.write_text("This fixture is deliberately not a shared library.\n")
+        subprocess.run(
+            [str(executable), "0", "-1"],
+            env={**environment, "SEREIN_AMF_TEST_RUNTIME": str(invalid_library)},
+            check=True,
+            timeout=5,
+        )
+        no_api_source = directory / "no-api.c"
+        no_api_source.write_text("int serein_mock_no_api(void) { return 0; }\n")
+        no_api_library = directory / "no-api-amf.so"
+        subprocess.run(
+            c_compiler + ["-std=c11"] + warnings + [
+                "-fPIC", "-shared", str(no_api_source), "-o", str(no_api_library),
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [str(executable), "0", "-1"],
+            env={**environment, "SEREIN_AMF_TEST_RUNTIME": str(no_api_library)},
+            check=True,
+            timeout=5,
+        )
+        if (include / "vulkan/vulkan.h").is_file():
+            scoped_library = directory / "scoped-amf.so"
+            scoped_executable = directory / "scoped-query-test"
+            gpu_object = directory / "gpu.o"
+            subprocess.run(c_compiler + ["-std=c11"] + warnings + sdk_flags + [
+                "-DSEREIN_AMF_SCOPED_FIXTURE=1", "-fPIC", "-shared",
+                str(fixture_dir / "video_query_amf_mock.c"), "-o", str(scoped_library),
+            ], check=True)
+            subprocess.run(c_compiler + ["-std=c11"] + warnings + sdk_flags + [
+                "-c", str(source_dir / "video_gpu.c"), "-o", str(gpu_object),
+            ], check=True)
+            subprocess.run(cpp_compiler + ["-std=c++11"] + warnings + sdk_flags + [
+                "-I" + str(source_dir), "-DSEREIN_HAVE_VULKAN_GPU=1",
+                str(source_dir / "video_query_amf.cpp"),
+                "-DSEREIN_AMF_SCOPED_FIXTURE=1", str(fixture_dir / "video_query_amf_test.cpp"), str(gpu_object),
+                "-Wl,--wrap=dlopen", "-Wl,--wrap=serein_video_vulkan_device", "-ldl",
+                "-o", str(scoped_executable),
+            ], check=True)
+            subprocess.run([str(scoped_executable)],
+                env={**environment, "SEREIN_AMF_TEST_RUNTIME": str(scoped_library), "AMF_MOCK_MODE": "scoped"},
+                timeout=5, check=True)
+            print("AMF scoped query: identical models retain exact Vulkan handles; missing targets stay unknown; all objects released")
+        print(
+            "AMF query: 51 capability cases, invalid codecs, missing/bad runtime "
+            "and missing ABI entry point passed; no encoder Init or submitted frames."
+        )
+
+
+
+def run_encoding(prefix):
+    here = Path(__file__).resolve().parent
+    with tempfile.TemporaryDirectory(prefix="serein-encode-fixture-") as directory:
+        executable = Path(directory) / "video-encoding-test"
+        subprocess.run([
+            *shlex.split(os.environ.get("CC", "cc")), "-std=c11", "-Wall", "-Wextra", "-Werror",
+            "-I" + str(prefix / "include"), "-I" + str(here.parents[1] / "src"),
+            str(here / "video_encode_timing_test.c"), "-L" + str(prefix / "lib"),
+            "-Wl,-rpath," + str(prefix / "lib"), "-lavcodec-serein", "-lavutil-serein",
+            "-o", str(executable),
+        ], check=True)
+        subprocess.run([str(executable)], check=True)
+
+
+
+def run_patch(archive):
+    repository = Path(__file__).resolve().parents[4]
+    spec = importlib.util.spec_from_file_location("ffmpeg_recipe", repository / "scripts/build-ffmpeg.py")
+    recipe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(recipe)
+    assert hashlib.sha256(archive.read_bytes()).hexdigest() == recipe.SOURCES["ffmpeg"]["sha256"]
+    with tempfile.TemporaryDirectory(prefix="serein-ffmpeg-patch-") as directory:
+        root = Path(directory)
+        modified = root / "modified"
+        reproduced = root / "reproduced"
+        # Only these upstream files are involved; no large build/capture fixture.
+        paths = ["configure", "libavcodec/libavcodec.v", "libavutil/libavutil.v", "libavcodec/qsvenc.c",
+                 "libavcodec/amfenc.c", "libavcodec/amfenc.h", "libavcodec/amfenc_hevc.c",
+                 "libavcodec/amfenc_av1.c", "libavcodec/videotoolboxenc.c", "libavutil/hwcontext_vulkan.c"]
+        with tarfile.open(archive) as source:
+            for path in paths:
+                content = source.extractfile("ffmpeg-7.1.5/" + path).read()
+                for tree in [modified, reproduced]:
+                    (tree / path).parent.mkdir(parents=True, exist_ok=True)
+                    (tree / path).write_bytes(content)
+        patch = recipe.patch_ffmpeg(modified)
+        subprocess.run(["patch", "--batch", "--fuzz=0", "-p1"], input=patch, text=True,
+                       cwd=reproduced, stdout=subprocess.DEVNULL, check=True)
+        original_paths = paths.copy()
+        generated_paths = ["libavcodec/serein_qsv_feature_validation.h", "libavcodec/serein_amf_split_encoding.h"]
+        paths.extend(generated_paths)
+        for path in paths:
+            assert (modified / path).read_bytes() == (reproduced / path).read_bytes(), path
+        subprocess.run(["patch", "--batch", "--fuzz=0", "--reverse", "-p1"], input=patch, text=True,
+                       cwd=reproduced, stdout=subprocess.DEVNULL, check=True)
+        with tarfile.open(archive) as source:
+            for path in original_paths:
+                assert (reproduced / path).read_bytes() == source.extractfile("ffmpeg-7.1.5/" + path).read()
+        for path in generated_paths:
+            assert not (reproduced / path).exists()
+        try:
+            recipe.patch_ffmpeg(modified)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Already-patched source must reject a second application")
+    print("Pinned FFmpeg GPU patches reproduce byte-for-byte, reverse cleanly and reject duplicate application")
+
+
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--prefix", type=Path, required=True)
-    run(parser.parse_args().prefix.resolve())
+    parser = argparse.ArgumentParser(description="Offline native media regressions; no GPU/capture access.")
+    parser.add_argument("--suite", choices=["queries", "encoding", "patch", "all"], default="queries")
+    parser.add_argument("--prefix", type=Path)
+    parser.add_argument("--archive", type=Path)
+    args = parser.parse_args()
+    if args.suite in ["queries", "encoding", "all"] and args.prefix is None:
+        parser.error("--prefix is required for query/encoding fixtures")
+    if args.suite in ["patch", "all"] and args.archive is None:
+        parser.error("--archive is required for patch fixtures")
+    if args.suite in ["queries", "all"]:
+        run_queries(args.prefix.resolve())
+    if args.suite in ["encoding", "all"]:
+        run_encoding(args.prefix.resolve())
+    if args.suite in ["patch", "all"]:
+        run_patch(args.archive.resolve())

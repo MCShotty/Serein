@@ -1,4 +1,4 @@
-#include "video_gpu.h"
+#include "video_encode_ffmpeg.h"
 /* AMD driver capability discovery. This creates a device context and reads
  * AMF caps, but never initializes an encoder or submits pictures. */
 #if (defined(_WIN32) || defined(__linux__)) && __has_include(<AMF/core/Factory.h>)

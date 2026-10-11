@@ -6,7 +6,7 @@
 #endif
 /* Explicit renderer GPU binding. Never guess a physical device from a vendor,
  * GPU model name, performance preference, or an encoder's default adapter. */
-#include "video_gpu.h"
+#include "video_encode_ffmpeg.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
