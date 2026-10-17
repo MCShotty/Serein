@@ -10,6 +10,9 @@ mod captcha;
 mod channel_demo;
 mod clipboard;
 #[cfg(feature = "demo")]
+#[cfg(feature = "demo")]
+mod community_demo;
+#[cfg(feature = "demo")]
 mod components_demo;
 mod connection;
 mod credentials;
@@ -3179,6 +3182,20 @@ impl Desktop {
 			self.interaction_upload(command);
 			return;
 		}
+		if let Command::Community {
+			guild,
+			request,
+			action,
+			..
+		} = &command
+			&& !self.state.demo
+			&& !self
+				.state
+				.community_command_allowed(*guild, *request, action)
+		{
+			self.state.command_rejected(command);
+			return;
+		}
 		if let Command::ServerAdmin {
 			guild,
 			request,
@@ -3460,6 +3477,12 @@ impl Desktop {
 					action,
 					&mut self.synthetic_id,
 				),
+				Command::Community {
+					guild,
+					request,
+					action,
+					..
+				} => community_demo::execute(&mut self.state, guild, request, *action),
 				Command::ServerAdmin {
 					guild,
 					request,
