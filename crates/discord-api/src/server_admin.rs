@@ -49,7 +49,7 @@ impl DiscordApi {
 			.map(Outcome::Stickers)
 			.map_err(|_| Failure::Protocol)
 	}
-	async fn admin_member(
+	pub(super) async fn admin_member(
 		&self,
 		guild: Id,
 		user: Id,
@@ -69,6 +69,15 @@ impl DiscordApi {
 			return Err(Failure::Protocol);
 		}
 		match action {
+			Action::Community(action) => self
+				.community_admin(guild, action)
+				.await
+				.map(Outcome::Community),
+			Action::AutoMod(action) => self.automod(guild, action).await.map(Outcome::AutoMod),
+			Action::Moderation(action) => self
+				.moderation(guild, action)
+				.await
+				.map(Outcome::Moderation),
 			Action::Voice { user, change, .. } => {
 				let body = match change {
 					VoiceChange::Move(channel) => {

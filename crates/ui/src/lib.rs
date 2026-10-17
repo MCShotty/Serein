@@ -88,10 +88,12 @@ mod stickers;
 pub fn synthetic_own_profile(user: &model::User) -> model::UserProfile {
 	profiles::synthetic(user, None)
 }
+mod community_admin;
 mod contact_editor;
 pub mod dialog;
 mod join_server;
 mod keybinds;
+mod member_guide;
 mod name_styles;
 mod onboarding;
 mod polls;
@@ -107,10 +109,12 @@ mod search_navigation_tests;
 pub mod select;
 mod server_admin;
 mod server_audit_log;
+mod server_automod;
 mod server_integrations;
 mod server_invite;
 mod server_invites;
 mod server_menu;
+mod server_moderation;
 #[cfg(test)]
 mod server_notification_tests;
 mod server_notifications;
@@ -4505,6 +4509,11 @@ impl MessagingUi {
 		}
 		self.server_menu
 			.show(&ctx, state, self.guild, &mut commands, &mut self.avatars);
+		if let Some(guild) = self.server_menu.guide_requested.take()
+			&& let Some(command) = state.open_server_guide(guild)
+		{
+			commands.push(command);
+		}
 		if let Some(guild) = self.server_menu.settings_requested.take()
 			&& let Some(command) = self.preview_server_settings(state, guild)
 		{
@@ -5588,6 +5597,7 @@ impl MessagingUi {
 			}
 		}
 		self.onboarding.show(&ctx, state, &mut commands);
+		member_guide::show(&ctx, state, &mut self.avatars, &mut commands);
 		self.scroll.clear_if_unbound(&ctx);
 		self.scroll.paint(&ctx);
 		if let Some(gif) = self.timeline.download.gif_favorite_request.take() {
@@ -10159,7 +10169,7 @@ pub fn debug_image_sharing(state: &mut State) -> (Vec<model::ImageShare>, String
 				&mut markdown::FormatCache::default(),
 			),
 			view.pending_upload.as_ref(),
-			(&mut None, &mut false),
+			(&mut None, &mut None, &mut false),
 		);
 	});
 	assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Restore to composer")), "sending artwork has no restore button");
