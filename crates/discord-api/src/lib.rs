@@ -17,6 +17,7 @@ mod onboarding;
 mod profile_edit;
 #[cfg(debug_assertions)]
 pub use profile_edit::debug_profile_board_request_check;
+mod inbox;
 pub mod proxy;
 #[cfg(test)]
 mod proxy_tests;
@@ -883,6 +884,14 @@ impl DiscordApi {
 	}
 	pub async fn execute(&self, command: Command) -> Event {
 		match command {
+			Command::InboxAction { request, action } => Event::InboxAction {
+				request,
+				result: self.inbox_action(&action).await,
+			},
+			Command::Mentions { before, request } => Event::Mentions {
+				request,
+				result: self.mentions(before).await,
+			},
 			Command::ApplicationCommands {
 				channel,
 				guild,
@@ -933,6 +942,27 @@ impl DiscordApi {
 					.map(Box::new),
 			}),
 			Command::GroupAction { action, request } => {
+				if let client_core::group_actions::Action::Create(users) = action {
+					return Event::GroupAction(client_core::group_actions::Event::Created {
+						request,
+						result: self.create_group(users).await,
+					});
+				}
+				if let client_core::group_actions::Action::TransferOwner { channel, user } = action
+				{
+					return Event::GroupAction(client_core::group_actions::Event::MembersLoaded {
+						channel,
+						request,
+						result: self.transfer_group_owner(channel, user).await,
+					});
+				}
+				if let client_core::group_actions::Action::LoadMembers(channel) = action {
+					return Event::GroupAction(client_core::group_actions::Event::MembersLoaded {
+						channel,
+						request,
+						result: self.group_members(channel).await,
+					});
+				}
 				Event::GroupAction(client_core::group_actions::Event::Written {
 					channel: action.channel(),
 					request,
@@ -1142,7 +1172,7 @@ impl DiscordApi {
 					result,
 				}
 			}
-			Command::CancelSearch => Event::Failure(Failure::Protocol),
+			Command::CancelSearch | Command::CancelMentions => Event::Failure(Failure::Protocol),
 			Command::Gifs { query, request } => Event::Gifs {
 				request,
 				result: self.gifs(query.as_deref()).await,

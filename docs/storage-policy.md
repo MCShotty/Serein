@@ -1900,3 +1900,35 @@ No new capture files, media cache, driver installer or secrets are persisted.
 Schema 28 adds the device-wide double-click reaction preset to the reading settings singleton. The bounded index selects one of six Unicode emoji, defaults to ❤️, and persists independently of session emoji recommendations.
 
 Schema 29 adds a bounded boolean opt-in for double-click reactions, disabled for new and migrated settings. The selected Unicode preset is retained while disabled; Reset chat restores the disabled default.
+
+
+## Desktop Inbox (October 17, 2026)
+
+The Inbox is session-only. One recent-mention page holds at most 25 messages / 1 MiB;
+saved messages hold at most 500 entries / 1 MiB, including message bodies and vector
+allocation. The larger item allowance includes service reminders and does not increase
+Discord's bookmark entitlement. Wire responses are capped at 2 MiB. Unread rows refer
+to the existing bounded navigation/read-state snapshot and display at most 100 rows at
+a time; no extra history or directory is fetched. Filters are limited to 128 characters,
+and custom reminder input to 16. No disk schema, account archive or background polling
+is added. Permission/session loss retires snapshots; removed channels lose saved bodies.
+Opening results uses the existing history admission and draft-preserving navigation.
+Saved-message API writes remain explicit, service-authoritative and never automatically
+replayed after an uncertain outcome. Gateway invalidations retire cached pages; refresh
+is deliberate. No service URL, token or message body is written to diagnostic logs.
+
+Desktop messaging disclosure and membership follow-up: per-view restricted-message
+reveals retain at most 500 IDs, author IDs and content hashes, without copied bodies.
+They expire with the account, relationship revision, retained source or view. The group
+member manager retains one on-demand owner/recipient snapshot, at most nine other
+participants and 32 KiB including allocation; changed membership and connection reset
+retire it. Thread tag drafts retain at most five IDs, and group/thread/follow search
+inputs at most 64 characters. Creation/completion correlation retains one fixed-size
+record. No disk schema, background scan, media preload or automatic mutation retry is
+added. Existing history, member-list, HTTP and media budgets remain in force.
+
+Group creation retains at most nine selected friend IDs (at most 16 allocated slots)
+in the UI and one pending creation snapshot, plus one fixed-size returned ID/request
+record. Its wire response is capped at 32 KiB; channel and owner/recipient projections
+are both charged to the event budget. The offline fixture retains at most 64 fixed-size
+group owner ID pairs, cleared at the session boundary; it is never a live data cache.

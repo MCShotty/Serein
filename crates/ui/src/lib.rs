@@ -2,6 +2,7 @@
 //! Native egui views; emits commands without owning transports or session credentials.
 mod account_badge;
 mod account_menu;
+mod announcements;
 #[cfg(test)]
 mod appearance_transparency_tests;
 mod archives;
@@ -48,6 +49,7 @@ pub mod proxy_auth;
 mod rich_presence;
 mod theme_editor;
 mod thread_create;
+mod thread_members;
 pub use extensions_ui::{ExtensionContext, ExtensionEntry, ExtensionRequest, ExtensionUi};
 pub mod emoji;
 mod emoji_details;
@@ -64,10 +66,12 @@ mod formatting;
 mod forum;
 mod forum_settings;
 mod friends;
+mod group_members;
 mod group_menu;
 mod guild_folders;
 mod highlight;
 pub mod icons;
+mod inbox;
 mod invites;
 pub mod local_time;
 mod markdown;
@@ -99,6 +103,7 @@ mod profile_edit;
 mod reactions;
 mod reading;
 mod registered_games;
+mod restricted;
 pub mod screen;
 pub mod scroll;
 mod search;
@@ -239,6 +244,8 @@ pub struct MessagingUi {
 	onboarding: onboarding::OnboardingUi,
 	pub extensions: ExtensionUi,
 	friends: friends::Friends,
+	inbox_open: bool,
+	inbox_controls: inbox::Controls,
 	account_menu: account_menu::AccountMenu,
 	pub own_presence: model::OwnPresence,
 	/// When the custom status clears itself, in milliseconds since the Unix epoch. The
@@ -248,6 +255,7 @@ pub struct MessagingUi {
 	pub own_presence_changed: bool,
 	pub own_presence_status: &'static str,
 	group_menu: group_menu::GroupMenu,
+	group_create: group_members::NewGroup,
 	server_menu: server_menu::ServerMenu,
 	channel_menu: channel_menu::ChannelMenu,
 	pub channel_preferences: model::ChannelPreferences,
@@ -281,6 +289,7 @@ pub struct MessagingUi {
 	archives: archives::ArchivesUi,
 	archive_parent: Option<Id>,
 	thread_create: thread_create::ThreadCreateUi,
+	announcement_follow: announcements::FollowDialog,
 	forum: forum::ForumUi,
 	scroll: scroll::Session,
 	side_press: scroll::SidePress,
@@ -505,6 +514,7 @@ pub struct MessagingUi {
 	composer_edit: Option<(Id, Id)>,
 	edit_sent: Option<SubmittedEdit>,
 	deleting: Option<(Id, Id)>,
+	publishing: Option<(u64, Id, Id)>,
 	ime_active: bool,
 	/// The composer claimed Tab last frame, so egui left it in the input for a suggestion menu.
 	composer_claims_tab: bool,
@@ -1987,6 +1997,25 @@ impl MessagingUi {
 			})
 			.show(ui, |ui| {
 				let ctx = ui.ctx().clone();
+				if ui
+					.add_sized(
+						[ui.available_width(), 30.0],
+						egui::Button::new(language.text("inbox-title")),
+					)
+					.clicked()
+				{
+					self.inbox_open = true;
+					commands.push(state.clear_mentions());
+					let command = match self.inbox_controls.tab {
+						inbox::Tab::Unread => None,
+						inbox::Tab::Mentions => state.request_mentions(None),
+						inbox::Tab::Saved => {
+							state.request_inbox_action(client_core::inbox::Action::Saved)
+						}
+					};
+					commands.extend(command);
+				}
+				ui.add_space(6.0);
 				if self.guild.is_none() {
 					// Search and Friends share one row; Friends is the compact glyph beside it.
 					ui.horizontal(|ui| {
@@ -2485,6 +2514,20 @@ impl MessagingUi {
 					);
 				}
 				if state.selected.is_some() && !selected_voice {
+					if let Some(source) = channel
+						.as_ref()
+						.filter(|channel| channel.kind == 5 && channel.guild.is_some())
+						&& icons::button(
+							ui,
+							icons::Icon::Megaphone,
+							32.0,
+							&i18n::translate("announcement-follow-title"),
+						)
+						.clicked()
+					{
+						state.clear_channel_action_result(source.id);
+						self.announcement_follow.open(state, source.id);
+					}
 					if self.search.open && !self.search.pins() {
 						ui.allocate_ui_with_layout(
 							egui::vec2(240.0_f32.min(ui.available_width() * 0.5).max(120.0), 28.0),
@@ -2543,7 +2586,9 @@ impl MessagingUi {
 						.as_ref()
 						.filter(|c| c.guild.is_some() && matches!(c.kind, 0 | 5 | 15 | 16))
 					{
-						let allowed = state.can_archive(c.id, model::archives::Kind::Public);
+						let allowed = state.can_archive(c.id, model::archives::Kind::Public)
+							|| state.can_create_thread(c.id)
+							|| state.can_create_private_thread(c.id);
 						let archive = ui
 							.add_enabled_ui(allowed, |ui| {
 								icons::button(
@@ -2555,7 +2600,11 @@ impl MessagingUi {
 							})
 							.inner;
 						if archive.clicked() {
-							self.archive_parent = Some(c.id);
+							if state.can_archive(c.id, model::archives::Kind::Public) {
+								self.archive_parent = Some(c.id);
+							} else {
+								self.thread_create.open(state, c.id, None, String::new());
+							}
 						}
 					}
 					let can_reload = state.selected.is_some_and(|id| {
@@ -4267,9 +4316,14 @@ impl MessagingUi {
 		}
 		self.keybinds_shortcut(&ctx);
 		self.theme_preview_navigation(ui);
-		let settings_open =
-			self.settings.open || self.server_settings.is_open() || self.channel_menu.is_open();
+		let settings_open = self.settings.open
+			|| self.server_settings.is_open()
+			|| self.channel_menu.is_open()
+			|| self.inbox_open;
 		self.extensions.begin_theme_editor_frame();
+		if self.inbox_open {
+			ui.disable();
+		}
 		if self.settings.open {
 			self.show_settings(&ctx, state, &mut commands);
 			if self.extensions.previewing_theme() {
@@ -4968,6 +5022,13 @@ impl MessagingUi {
 								.open_reaction(state, message, anchor, trigger);
 						}
 						self.reaction_picker.hide_nitro_emojis = self.hide_nitro_emojis;
+						if self
+							.reaction_picker
+							.reaction_message()
+							.is_some_and(|message| !self.timeline.message_visible(state, message))
+						{
+							self.reaction_picker.dismiss(state, &mut commands);
+						}
 						self.reaction_picker.show_reaction(
 							ui,
 							state,
@@ -4979,6 +5040,11 @@ impl MessagingUi {
 								state.request_reaction_users(message, emoji, open)
 						{
 							commands.push(command);
+						}
+						if state.reactions.users.as_ref().is_some_and(|users| {
+							!self.timeline.message_visible(state, users.message)
+						}) {
+							state.close_reaction_users();
 						}
 						crate::reactions::show_users(
 							ui.ctx(),
@@ -5089,10 +5155,21 @@ impl MessagingUi {
 		{
 			commands.push(state.clear_archives());
 		}
+		if let Some((channel, message)) = self.timeline.bookmark_request.take()
+			&& let Some(command) = state.request_inbox_action(client_core::inbox::Action::Save {
+				channel,
+				message,
+				due_at: None,
+			}) {
+			commands.push(command);
+		}
 		if let Some((channel, message, pinned)) = self.timeline.pin_request.take()
 			&& let Some(command) = state.prepare_pin(channel, message, pinned)
 		{
 			commands.push(command);
+		}
+		if let Some((channel, message)) = self.timeline.publish_request.take() {
+			self.publishing = Some((state.generation, channel, message));
 		}
 		if let Some(channel) = state.pins_changed.take()
 			&& self.search.open
@@ -5163,7 +5240,7 @@ impl MessagingUi {
 				.get(message)
 				.map(|m| thread_create::suggested_name(&crate::i18n::message_text(m)))
 				.unwrap_or_default();
-			self.thread_create.open(channel, Some(message), name);
+			self.thread_create.open(state, channel, Some(message), name);
 		}
 		// A thread shows the message it hangs off; read it lazily like other per-channel data.
 		if let Some(command) = state.request_thread_starter() {
@@ -5173,7 +5250,7 @@ impl MessagingUi {
 			// The editor replaces the Threads dialog instead of stacking on it.
 			commands.push(state.clear_archives());
 			state.clear_channel_action_result(channel);
-			self.thread_create.open(channel, None, String::new());
+			self.thread_create.open(state, channel, None, String::new());
 		}
 		self.thread_create.show(&ctx, state, &mut commands);
 		self.screen.show(&ctx, state);
@@ -5217,25 +5294,34 @@ impl MessagingUi {
 			}
 		}
 		if let Some((channel, message)) = self.timeline.leave_read.take()
+			&& !settings_open
+			&& !self.inbox_open
 			&& let Some(command) = state.prepare_mark_left_channel_read(channel, message)
 		{
 			commands.push(command);
 		}
 		if let Some(channel) = self.timeline.mark_channel_read.take() {
 			self.timeline.mark_read = None;
-			if let Some(command) = state.prepare_mark_channel_read(channel) {
+			if !settings_open
+				&& !self.inbox_open
+				&& let Some(command) = state.prepare_mark_channel_read(channel)
+			{
 				commands.push(command);
 			}
 		}
 		if let Some(message) = self.timeline.mark_unread.take() {
 			self.timeline.mark_read = None;
-			if !settings_open && let Some(command) = state.prepare_mark_unread(message) {
+			if !settings_open
+				&& !self.inbox_open
+				&& let Some(command) = state.prepare_mark_unread(message)
+			{
 				self.timeline.browse_away();
 				self.timeline.reset_unread_divider();
 				commands.push(command);
 			}
 		} else if let Some(message) = self.timeline.mark_read.take() {
 			if !settings_open
+				&& !self.inbox_open
 				&& state.search_target.is_none()
 				&& let Some(command) = state.prepare_mark_read(message)
 			{
@@ -5301,6 +5387,7 @@ impl MessagingUi {
 		}
 		self.group_menu
 			.show(&ctx, state, &mut self.avatars, &mut commands);
+		self.group_create.show(&ctx, state, &mut commands);
 		for intent in self
 			.channel_menu
 			.shortcut_requested
@@ -5515,6 +5602,39 @@ impl MessagingUi {
 		}
 
 		self.reconcile_edit(state);
+		self.announcement_follow.show(&ctx, state, &mut commands);
+		if let Some((generation, channel, message)) = self.publishing {
+			if generation != state.generation
+				|| state.selected != Some(channel)
+				|| state.timeline.get(message).is_none()
+			{
+				self.publishing = None;
+			} else {
+				let allowed =
+					state.can_publish_message(channel, message) && !state.channel_action_pending();
+				match dialog::Confirm::new(
+					"publish-announcement",
+					crate::i18n::translate("announcement-publish-title"),
+					crate::i18n::translate("announcement-publish-detail"),
+				)
+				.confirm_label(crate::i18n::translate("announcement-publish"))
+				.enabled(allowed)
+				.show(&ctx)
+				{
+					Some(dialog::Choice::Confirmed) => {
+						if let Some(command) = state.request_channel_action(
+							channel,
+							client_core::channel_actions::Action::Publish(message),
+						) {
+							commands.push(command);
+						}
+						self.publishing = None;
+					}
+					Some(dialog::Choice::Cancelled) => self.publishing = None,
+					None => {}
+				}
+			}
+		}
 		if self.deleting.is_some_and(|(channel, message)| {
 			state.selected != Some(channel) || state.timeline.get(message).is_none()
 		}) {
@@ -5554,6 +5674,7 @@ impl MessagingUi {
 			}
 		}
 		self.show_call_switch(&ctx, state, &mut commands);
+		self.mentions_inbox(&ctx, state, &mut commands);
 		self.apply_ring_request(state, &mut commands);
 		if let Some((guild, channel, user, change)) = self.voice_moderation.take()
 			&& let Some(command) = state.request_server_admin(
@@ -10159,7 +10280,7 @@ pub fn debug_image_sharing(state: &mut State) -> (Vec<model::ImageShare>, String
 				&mut markdown::FormatCache::default(),
 			),
 			view.pending_upload.as_ref(),
-			(&mut None, &mut false),
+			(&mut None, &mut None, &mut false),
 		);
 	});
 	assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Restore to composer")), "sending artwork has no restore button");

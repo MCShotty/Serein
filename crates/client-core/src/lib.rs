@@ -10,6 +10,7 @@ pub mod game_mentions;
 pub mod gifs;
 pub mod guild_creation;
 pub mod guild_folders;
+pub mod inbox;
 pub mod permissions;
 pub mod stickers;
 pub use permissions::ChannelAccess;
@@ -73,6 +74,15 @@ pub const EVENT_SLOTS: usize = 8; // UI drain batch; reliable events share a 32 
 pub const COMMAND_SLOTS: usize = 16; // ordinary commands <=16 KiB; bulk DM settings <=33 KiB; channel edit <=128 KiB; group icon <=350 KiB
 
 pub enum Command {
+	Mentions {
+		before: Option<Id>,
+		request: u64,
+	},
+	CancelMentions,
+	InboxAction {
+		request: u64,
+		action: inbox::Action,
+	},
 	Polls(polls::Request),
 	StickerPacks,
 	Sticker(Id),
@@ -535,6 +545,15 @@ pub enum Event {
 		request: u64,
 		result: Result<search::Outcome, auth::Failure>,
 	},
+	Mentions {
+		request: u64,
+		result: Result<Vec<Message>, auth::Failure>,
+	},
+	InboxAction {
+		request: u64,
+		result: Result<inbox::Outcome, auth::Failure>,
+	},
+	InboxInvalidated,
 	Gifs {
 		request: u64,
 		result: Result<model::GifPage, auth::Failure>,
@@ -743,6 +762,7 @@ pub struct State {
 	pub archived_thread: Option<Id>,
 	pub thread_starter: thread_starter::Starter,
 	pub search: Option<search::SearchView>,
+	pub inbox: inbox::View,
 	pub search_request: u64,
 	pub gifs: gifs::Gifs,
 	/// A pin changed in this channel; the pins view should be reloaded once.
@@ -979,6 +999,7 @@ impl Default for State {
 			archived_thread: None,
 			thread_starter: Default::default(),
 			search: None,
+			inbox: Default::default(),
 			search_request: 0,
 			gifs: gifs::Gifs::default(),
 			pins_changed: None,
@@ -2166,13 +2187,34 @@ impl State {
 			return;
 		}
 		if let Command::GroupAction { action, request } = command {
-			let _ = self.apply_group_action(group_actions::Event::Written {
-				channel: action.channel(),
-				request,
-				result: Err(auth::Failure::ProtocolAt(
-					"Group action was not queued; try again",
-				)),
-			});
+			let event = if matches!(action, group_actions::Action::Create(_)) {
+				group_actions::Event::Created {
+					request,
+					result: Err(auth::Failure::ProtocolAt(
+						"Group creation was not queued; try again",
+					)),
+				}
+			} else if matches!(
+				action,
+				group_actions::Action::LoadMembers(_) | group_actions::Action::TransferOwner { .. }
+			) {
+				group_actions::Event::MembersLoaded {
+					channel: action.channel(),
+					request,
+					result: Err(auth::Failure::ProtocolAt(
+						"Group member list was not queued; try again",
+					)),
+				}
+			} else {
+				group_actions::Event::Written {
+					channel: action.channel(),
+					request,
+					result: Err(auth::Failure::ProtocolAt(
+						"Group action was not queued; try again",
+					)),
+				}
+			};
+			let _ = self.apply_group_action(event);
 			return;
 		}
 		if let Command::SendServerInvite {
@@ -2280,7 +2322,18 @@ impl State {
 			self.apply_search(channel, request, Err(auth::Failure::Capacity));
 			return;
 		}
-		if matches!(command, Command::CancelSearch | Command::CancelGifs) {
+		if let Command::InboxAction { request, .. } = command {
+			self.apply_inbox_action(request, Err(auth::Failure::Capacity));
+			return;
+		}
+		if let Command::Mentions { request, .. } = command {
+			self.apply_mentions(request, Err(auth::Failure::Capacity));
+			return;
+		}
+		if matches!(
+			command,
+			Command::CancelSearch | Command::CancelGifs | Command::CancelMentions
+		) {
 			return;
 		}
 		if let Command::Gifs { request, .. } = command {
@@ -2737,14 +2790,44 @@ impl State {
 			self.observe_dm_reopened(channel.id);
 			self.observe_group_change(channel.id, true);
 		}
-		if let Event::ChannelChanged(patch) = &envelope.event
-			&& (!matches!(patch.name, Patch::Absent)
-				|| !matches!(patch.icon, Patch::Absent)
-				|| !matches!(patch.kind, Patch::Absent))
-		{
+		if let Event::ChannelChanged(patch) = &envelope.event {
 			self.observe_group_change(patch.id, false);
 		}
+		if let Event::RecipientAdded { channel, .. } | Event::RecipientRemoved { channel, .. } =
+			&envelope.event
+		{
+			self.observe_group_change(*channel, true);
+		}
 		self.filter_view_revisions(&envelope.event);
+		if matches!(
+			&envelope.event,
+			Event::Disconnected
+				| Event::Resync
+				| Event::PermissionsChanged
+				| Event::Ready { .. }
+				| Event::Permissions(_)
+				| Event::Unavailable(_)
+		) || self
+			.inbox
+			.messages
+			.iter()
+			.map(|message| (message.channel, message.id))
+			.chain(
+				self.inbox
+					.saved
+					.iter()
+					.map(|saved| (saved.channel, saved.message)),
+			)
+			.any(|(message_channel, message_id)| match &envelope.event {
+				Event::Patch(patch) => patch.channel == message_channel && patch.id == message_id,
+				Event::Delete { channel, id } => *channel == message_channel && *id == message_id,
+				Event::DeleteBulk { channel, ids } => {
+					*channel == message_channel && ids.contains(&message_id)
+				}
+				_ => false,
+			}) {
+			self.clear_mentions();
+		}
 		self.revision += 1;
 		if matches!(
 			&envelope.event,
@@ -3359,6 +3442,20 @@ impl State {
 			}
 			Event::MemberPresence { .. } | Event::DirectPresence(_) => {
 				unreachable!("presence handled before timeline revision")
+			}
+			Event::InboxInvalidated => {
+				// Gateway echoes can precede or follow REST confirmation. Retain both
+				// its correlation and the visible page; Refresh reconciles other clients.
+				self.inbox.stale = true;
+				Ok(())
+			}
+			Event::InboxAction { request, result } => {
+				self.apply_inbox_action(request, result);
+				Ok(())
+			}
+			Event::Mentions { request, result } => {
+				self.apply_mentions(request, result);
+				Ok(())
 			}
 			Event::MemberSearch { request, result } => {
 				self.searched_members(request, result);
@@ -4159,6 +4256,14 @@ impl State {
 		}
 		self.channels.retain(|c| !removed.contains(&c.id));
 		self.parked_replies.forget_channels(removed);
+		self.inbox
+			.messages
+			.retain(|message| !removed.contains(&message.channel));
+		for item in &mut self.inbox.saved {
+			if removed.contains(&item.channel) {
+				item.body = None;
+			}
+		}
 		self.permissions.forget_channels(removed);
 		for id in removed {
 			self.permissions.channels.remove(id);
@@ -4195,6 +4300,19 @@ impl State {
 		}
 	}
 	fn fail(&mut self, failure: auth::Failure) {
+		// The connection may have ended while its HTTP write was accepted. Retire
+		// the pending UI state, but never automatically repeat the mutation.
+		if self.inbox.loading
+			&& self
+				.inbox
+				.operation
+				.as_ref()
+				.is_some_and(inbox::Action::write)
+		{
+			self.inbox.operation = None;
+			self.clear_mentions();
+			self.inbox.error = Some("Inbox outcome unknown; refresh before retrying");
+		}
 		self.typing.clear();
 		self.status = failure.label();
 		match failure {
@@ -4228,6 +4346,8 @@ impl State {
 			self.clear_direct_presences();
 			self.clear_cached_history();
 			self.clear_search();
+			self.inbox.operation = None;
+			self.clear_mentions();
 			self.search_target = None;
 			self.read_state.cancel();
 			self.clear_profile();
@@ -4342,6 +4462,12 @@ impl Event {
 						_ => 0,
 					})
 					.sum(),
+				Self::GroupAction(group_actions::Event::MembersLoaded { result, .. }) => {
+					result.as_ref().map_or(0, group_actions::Members::bytes)
+				}
+				Self::GroupAction(group_actions::Event::Created { result, .. }) => result
+					.as_ref()
+					.map_or(0, |(channel, members)| channel.bytes() + members.bytes()),
 				Self::ChannelAction(channel_actions::Event::Finished { result, .. }) => {
 					result.as_ref().map_or(0, channel_actions::Outcome::bytes)
 				}
@@ -4455,6 +4581,17 @@ impl Event {
 					result.as_ref().map_or(0, model::forum::Page::bytes)
 				}
 				Self::PostCreated { result, .. } => result.as_ref().map_or(0, Channel::bytes),
+				Self::InboxAction {
+					result: Ok(outcome),
+					..
+				} => outcome.bytes(),
+				Self::Mentions {
+					result: Ok(messages),
+					..
+				} => {
+					messages.capacity() * size_of::<Message>()
+						+ messages.iter().map(Message::bytes).sum::<usize>()
+				}
 				Self::Search {
 					result: Ok(search::Outcome::Page(page) | search::Outcome::Pins(page)),
 					..
