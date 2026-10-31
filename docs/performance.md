@@ -4469,3 +4469,44 @@ perceived latency change. The corrected release completed the 120-second
 synthetic lifecycle soak: 3,827 passes, 122,464 channel visits and 15 logout
 cycles, with retained-history bounds intact. The earlier UI samples and
 screenshots remain labelled to their original revisions.
+
+### Member identity watch and cache validation
+
+The merged fork baseline is `9fd017f7`; the implementation is `049f2961`.
+On Linux x86-64 (Xeon Platinum 8573C, four-core quota, Rust 1.98.1), separate
+release builds ran on CPU 0 with one warmup and ten alternating samples per
+workload. The two new benchmark fixtures were added to the baseline without
+changing its production code. These are core-only measurements, not presented
+frame times, process RSS, network latency or live Discord compatibility.
+
+| Synthetic workload | Baseline median (range) | Changed median (range) | Delta |
+| --- | ---: | ---: | ---: |
+| 10,000 member-watch rebuilds, 128 identities and 500 messages | 109.30 ms (103.76–112.54) | 53.70 ms (51.98–59.30) | −50.9% |
+| 100,000 cached display validations, 128 identities | 9.92 ms (9.53–11.62) | 8.54 ms (7.76–9.25) | −13.9% |
+| 10,000 messages across 20,001 channels | 8.70 ms (8.21–9.79) | 8.89 ms (8.42–9.86) | +2.3% |
+| 100,000 reducer events | 84.14 ms (79.62–88.42) | 81.62 ms (78.89–84.98) | −3.0% |
+
+The general reducer ranges overlap. Both versions retained 500 timeline rows
+and 417,492–417,977 estimated bytes in the ordinary replay. The member-watch
+fixture contains no recorded departures; the existing departure path is
+covered separately by tests. The release replay executables measured
+2,428,464 and 2,428,352 bytes; application and package sizes were unavailable
+for this comparison. No claim about overall application latency follows.
+
+A follow-up at `a0715a4b` collects departure IDs once per watch instead of
+repeatedly searching the identity overlay. It was measured against the same
+baseline with updated fixtures, again using one warmup and ten alternating
+samples. The earlier `049f2961` numbers above remain historical.
+
+| Synthetic workload | Baseline median (range) | Follow-up median (range) | Delta |
+| --- | ---: | ---: | ---: |
+| 10,000 watches, 128 authors | 101.61 ms (98.55–109.35) | 73.62 ms (67.69–77.15) | −27.5% |
+| 10,000 watches, one recorded departure | 328.62 ms (321.06–340.93) | 326.61 ms (319.14–380.66) | −0.6% |
+| 10,000 watches, one recent author and 128 cached identities | 145.88 ms (137.05–152.19) | 109.02 ms (104.28–115.30) | −25.3% |
+| 100,000 cached-display validations | 9.97 ms (9.43–11.77) | 7.74 ms (6.99–9.01) | −22.3% |
+| 10,000 wide-channel message events | 8.64 ms (7.34–9.82) | 8.57 ms (8.00–10.73) | −0.9% |
+| 100,000 reducer events | 78.82 ms (72.99–82.63) | 79.98 ms (76.37–84.10) | +1.5% |
+
+The departure and general reducer ranges overlap. Watch results remain sorted,
+bounded and exclude departed users. These figures measure only the stated core
+workloads; they do not measure application-wide responsiveness.

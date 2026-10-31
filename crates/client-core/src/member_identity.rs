@@ -416,6 +416,20 @@ impl State {
 		{
 			return None;
 		}
+		// Check departure identities once, rather than searching the full overlay for
+		// every watched author. Keep the latest-observation rule even for duplicate entries.
+		let departed: Vec<_> = self
+			.member_labels
+			.entries
+			.iter()
+			.filter(|(_, entry)| entry.guild == guild && entry.departed)
+			.filter(|(_, entry)| {
+				self.member_labels
+					.get(guild, entry.user)
+					.is_some_and(|current| current.departed)
+			})
+			.map(|(_, entry)| entry.user)
+			.collect();
 		let mut users = Vec::with_capacity(128);
 		for user in self
 			.member_labels
@@ -432,13 +446,7 @@ impl State {
 			)
 			.chain(self.observed_member_users(channel).map(|u| u.id))
 		{
-			if user.0 != 0
-				&& !users.contains(&user)
-				&& !self
-					.member_labels
-					.get(guild, user)
-					.is_some_and(|entry| entry.departed)
-			{
+			if user.0 != 0 && !users.contains(&user) && !departed.contains(&user) {
 				users.push(user);
 			}
 			if users.len() == 128 {
@@ -529,14 +537,13 @@ impl State {
 	/// row. This does not confer membership, permissions or profile freshness.
 	pub fn has_cached_member_display(&self, guild: Id, user: Id) -> bool {
 		let valid = |profile: &User, nick: Option<&str>| {
-			MemberDisplay {
+			MemberDisplay::valid_fields(
 				guild,
 				user,
-				name: profile.name.clone(),
-				username: profile.username.clone(),
-				nick: nick.map(str::to_owned),
-			}
-			.valid()
+				&profile.name,
+				profile.username.as_deref(),
+				nick,
+			)
 		};
 		if let Some(update) = self.member_labels.get(guild, user) {
 			if update.departed {
@@ -1285,6 +1292,45 @@ mod cache_search_tests {
 			username: Some("synthetic_account".into()),
 			nick: Some(nick.into()),
 		}
+	}
+
+	#[test]
+	fn cached_display_requires_a_complete_current_identity() {
+		let mut state = state();
+		state.hydrate_member_displays(
+			Id(2),
+			state.member_display_revision(),
+			vec![row(9000, "Old")],
+		);
+		assert!(state.has_cached_member_display(Id(2), Id(9000)));
+		let mut user = crate::tests::message(1).author;
+		user.id = Id(9000);
+		let update = |profile, nick, departed| {
+			crate::Event::MemberIdentity(Box::new(MemberIdentity {
+				guild: Id(2),
+				user: Id(9000),
+				profile,
+				avatar: Patch::Absent,
+				nick,
+				roles: Patch::Absent,
+				departed,
+			}))
+		};
+		state.apply(crate::Envelope {
+			generation: state.generation,
+			event: update(None, Patch::Null, false),
+		});
+		assert!(!state.has_cached_member_display(Id(2), Id(9000)));
+		state.apply(crate::Envelope {
+			generation: state.generation,
+			event: update(Some(user), Patch::Value("New".into()), false),
+		});
+		assert!(state.has_cached_member_display(Id(2), Id(9000)));
+		state.apply(crate::Envelope {
+			generation: state.generation,
+			event: update(None, Patch::Null, true),
+		});
+		assert!(!state.has_cached_member_display(Id(2), Id(9000)));
 	}
 
 	#[test]
